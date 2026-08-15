@@ -198,6 +198,11 @@ mod _ssl {
     #[pyattr]
     const CERT_REQUIRED: i32 = 2;
 
+    // SSLContext hostname-check flags (matches CPython Modules/_ssl.c)
+    // SSLContext.hostname_checks_common_name maps to this flag
+    #[pyattr]
+    const HOSTFLAG_NEVER_CHECK_SUBJECT: i32 = 0x01;
+
     // SSL Verification Flags / Certificate requirements
     #[pyattr]
     const VERIFY_DEFAULT: i32 = 0;
@@ -811,6 +816,9 @@ mod _ssl {
         // Options
         #[pytraverse(skip)]
         options: PyRwLock<i32>,
+        // Hostname verification flags (HOSTFLAG_*)
+        #[pytraverse(skip)]
+        host_flags: PyRwLock<i32>,
         // ALPN protocols
         #[pytraverse(skip)]
         alpn_protocols: PyRwLock<Vec<Vec<u8>>>,
@@ -993,6 +1001,16 @@ mod _ssl {
         #[pygetset(setter)]
         fn set_post_handshake_auth(&self, value: bool) {
             *self.post_handshake_auth.write() = value;
+        }
+
+        #[pygetset]
+        fn _host_flags(&self) -> i32 {
+            *self.host_flags.read()
+        }
+
+        #[pygetset(setter)]
+        fn set__host_flags(&self, value: i32) {
+            *self.host_flags.write() = value;
         }
 
         #[pygetset]
@@ -2363,6 +2381,7 @@ mod _ssl {
                 crls: PyRwLock::new(Vec::new()),
                 cert_keys: PyRwLock::new(Vec::new()),
                 options: PyRwLock::new(default_options),
+                host_flags: PyRwLock::new(0),
                 alpn_protocols: PyRwLock::new(Vec::new()),
                 post_handshake_auth: PyRwLock::new(false),
                 num_tickets: PyRwLock::new(2), // TLS 1.3 default
