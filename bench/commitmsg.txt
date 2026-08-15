@@ -1,8 +1,12 @@
-feat: enable sqlite3 in default features for stdlib parity
+docs: round-2 summary - frozen-module symlink fix, multiprocessing verified
 
-Python users expect `import sqlite3` to work out of the box. The sqlite
-feature was opt-in; make it part of the default build so the release
-binary has full stdlib database support. Verified: default build imports
-sqlite3 3.53.2, test_sqlite3 passes (508 run, 20 skipped).
+- Root cause found for test_importlib failures on Windows: missing git
+  symlinks under crates/vm/Lib/python_builtins/ (core.symlinks=false
+  clone) make the compile-time py_freeze! macro drop __hello__/__phello__
+  from the frozen module table; after restoring symlinks and cleaning the
+  vm build cache, test_importlib passes fully (1440 run, 88 skipped)
+- test_multiprocessing_spawn passes (441 run, 4 files)
+- 100+ stdlib test modules verified green overall
+- sqlite3 in default features (commit 529ba89de)
 
 Assisted-by: deepseek-v4-flash

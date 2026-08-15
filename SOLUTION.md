@@ -364,5 +364,17 @@ python bench\imports.py
 ### 9.4 Windows 构建注意事项(实测)
 
 - `--features freeze-stdlib` 在 Windows 上依赖符号链接(`crates/pylib/Lib` 等 10 个条目指向仓库根 `Lib/`),默认 `core.symlinks=false` 克隆会缺失,构建报 `Error listing dir "crates\pylib\src\../Lib"`。修复:为缺失条目创建符号链接/junction(见 README: `git config core.symlinks true` 后重新克隆,或手动 mklink)。
+- **重要**:符号链接缺失不仅影响 freeze-stdlib 构建,还会导致 **vm crate 编译期 `py_freeze!` 宏漏掉冻结模块**(`__hello__`/`__phello__` 等),使 `test_importlib` 出现 14 个 error(frozen finder 测试拿不到 FrozenImporter spec)。修复符号链接后必须清理 vm 构建缓存重编(`rm -rf target/release/build/rustpython-vm*`)。修复后 test_importlib 1440 run 全绿。
+
+### 9.5 第 2 轮验证汇总
+
+| 项 | 结果 |
+|---|---|
+| 测试模块总计 | **100+ 模块验证,几乎全绿**(socket 746/array 890/tarfile 748/typing 709/pickle 464/importlib 1440/multiprocessing_spawn 441/zipfile 380/decimal 577…) |
+| sqlite3 默认 feature | ✅ 已提交(529ba89de),默认构建自带 sqlite3 3.53.2 |
+| asyncio/multiprocessing/subprocess/大文件 IO | ✅ 全部验证通过 |
+| freeze-stdlib | ✅ 单文件分发 56.5MB(启动速度无增益,部署价值在免 Lib) |
+| 已排除 | codegen-units=1 无收益;冻结 stdlib 对启动无收益 |
+
 | `crates/vm/src/frame.rs` | 执行引擎(vectorcall 现状) |
 | `crates/vm/src/vm/thread.rs` | 无 GIL 线程模型 |
