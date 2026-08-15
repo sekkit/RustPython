@@ -1,15 +1,15 @@
-fix(type): allow __dict__/__weakref__ in __slots__ alongside class attributes
+docs: commit parallel investigation reports + round summary
 
-CPython treats __dict__ and __weakref__ as special slots: a class-level
-attribute with the same name is not a conflict (the member descriptor
-check only applies to ordinary slot names). RustPython rejected this
-with ValueError("'__dict__' in __slots__ conflicts with class
-variable"), which broke celery's Proxy class (celery/local.py defines
-__slots__ containing '__dict__' together with a __dict__ property).
+Four subagent investigations (perf candidates, ctypes/C-ext route,
+ecosystem gaps, stale markers) produced actionable reports under
+bench/reports/. Three fixes landed this round:
 
-Skip the conflict check for these two special names. Verified: the
-celery 5.6.3 pattern now works and matches CPython; ordinary slot/class
-variable conflicts still raise ValueError; test_descr passes
-(162 run, 18 skipped).
+- str.join exact list/tuple fast path (2.6x on join bench)
+- ctypes bitfield read-modify-write with sign extension (CPython parity)
+- __slots__ __dict__/__weakref__ special-slot conflict fix (celery 5.6.3)
+
+Remaining actionable items from reports: ctypes array element access,
+callback-as-argument, cast() semantics; PyInt small-int arithmetic fast
+path; upper/lower no-change fast path.
 
 Assisted-by: deepseek-v4-flash
