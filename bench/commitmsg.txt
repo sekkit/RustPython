@@ -1,14 +1,17 @@
-fix(ctypes): return live struct/union instances for array elements
+fix(ctypes): correct cast() for callbacks and byref results
 
-Array elements of structure/union type were decoded as raw integers
-(read_array_element has no struct branch), so (Point*3)()[i] returned an
-int and pts[i].x = 7 did not work.
+- PyCFuncPtr was cast to its buffer address (causing DEP crashes when
+  invoked); cast it to the stored function pointer instead (CPython
+  casts CFuncPtr to the pointer value in its buffer)
+- cast(byref(x)) raised TypeError; extract the pointer from CArgObject
+  like CPython
 
-When the element type has no primitive type code, build a PyCData
-instance backed by the base buffer at the element offset (CPython view
-semantics: reads and writes through the element hit the array storage).
+Verified: cast(byref(x)) equals addressof(x); cast(callback) yields the
+function pointer; both match CPython. test_ctypes passes (328 run,
+58 skipped).
 
-Verified: (Point*3) element read/write and write-back work and match
-CPython; test_ctypes passes (328 run, 58 skipped).
+With this, all four ctypes defects from the C-extension route report
+(bitfields, struct-array elements, callbacks as arguments, cast) are
+fixed.
 
 Assisted-by: deepseek-v4-flash

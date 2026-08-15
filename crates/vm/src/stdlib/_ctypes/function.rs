@@ -598,6 +598,20 @@ pub(super) fn cast_impl(
         // Simple type (c_void_p, c_char_p, etc.) → value from buffer
         let buffer = simple.0.buffer.read();
         rustpython_host_env::ctypes::read_pointer_from_buffer(&buffer)
+    } else if let Some(func_ptr) = obj.downcast_ref::<PyCFuncPtr>() {
+        // Callback instance: cast to the stored function pointer
+        // (CPython casts CFuncPtr to the pointer value in its buffer).
+        func_ptr.get_func_ptr()
+    } else if let Some(carg) = obj.downcast_ref::<CArgObject>() {
+        // byref() result: use the stored pointer value
+        match &carg.value {
+            CArgValue::Pointer(p) => *p,
+            _ => {
+                return Err(vm.new_type_error(
+                    "cast() argument 1 must be a pointer-like ctypes instance",
+                ));
+            }
+        }
     } else if let Some(cdata) = obj.downcast_ref::<PyCData>() {
         // Array, Structure, Union → buffer address (b_ptr)
         cdata.buffer.read().as_ptr() as usize
