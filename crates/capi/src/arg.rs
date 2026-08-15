@@ -15,7 +15,7 @@ use core::ffi::{CStr, c_char, c_double, c_float, c_int, c_short, c_void};
 use num_complex::Complex64;
 use rustpython_vm::builtins::{
     try_bigint_to_f64, PyByteArray, PyBytes, PyComplex, PyDict, PyFloat, PyInt, PyList, PyNone,
-    PyStr, PyTuple,
+    PyStr, PyTuple, PyType,
 };
 use rustpython_vm::function::FuncArgs;
 use rustpython_vm::vm::thread::with_current_vm;
@@ -1596,6 +1596,193 @@ pub unsafe extern "C" fn rp_va_call_method_objargs(
     })
 }
 
+// ---------------------------------------------------------------------------
+// PyErr_Format (CPython Python/errors.c)
+// ---------------------------------------------------------------------------
+
+fn sign_extend(v: usize, length: &str) -> i64 {
+    if length.contains('l') && !length.contains("ll") {
+        if core::mem::size_of::<core::ffi::c_long>() == 4 {
+            (v as u32 as i32) as i64
+        } else {
+            v as i64
+        }
+    } else if length == "h" || length == "hh" {
+        (v as u16 as i16) as i64
+    } else if length.contains('z') || length.contains('t') || length.contains('j')
+        || length.contains("ll") || length.contains('q') || length.contains('L')
+    {
+        v as i64
+    } else {
+        (v as u32 as i32) as i64
+    }
+}
+
+fn zero_extend(v: usize, length: &str) -> u64 {
+    if length.contains('l') && !length.contains("ll") {
+        if core::mem::size_of::<core::ffi::c_long>() == 4 {
+            v as u32 as u64
+        } else {
+            v as u64
+        }
+    } else if length == "h" || length == "hh" {
+        v as u16 as u64
+    } else if length.contains('z') || length.contains('t') || length.contains('j')
+        || length.contains("ll") || length.contains('q') || length.contains('L')
+    {
+        v as u64
+    } else {
+        v as u32 as u64
+    }
+}
+
+/// Format a message from a printf-style format string (PyErr_Format subset:
+/// s, d, i, u, o, x, X, c, p, R, S, U, T, A, V with l/ll/h/z/t/j length
+/// modifiers; width/precision are accepted and ignored).
+fn format_message(vm: &VirtualMachine, format: &[u8], slots: &mut VaSlots<'_>) -> PyResult<String> {
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < format.len() {
+        let c = format[i];
+        if c != b'%' {
+            out.push(c as char);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= format.len() || format[i] == b'%' {
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        // flags
+        while i < format.len() && matches!(format[i], b'-' | b'+' | b' ' | b'#' | b'0') {
+            i += 1;
+        }
+        // width
+        if i < format.len() && format[i] == b'*' {
+            let _w = slots.take(vm)?;
+            i += 1;
+        } else {
+            while i < format.len() && format[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        // precision
+        if i < format.len() && format[i] == b'.' {
+            i += 1;
+            if i < format.len() && format[i] == b'*' {
+                let _p = slots.take(vm)?;
+                i += 1;
+            } else {
+                while i < format.len() && format[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+        }
+        // length modifiers
+        let mut length = String::new();
+        while i < format.len()
+            && matches!(format[i], b'l' | b'h' | b'z' | b't' | b'j' | b'L' | b'q')
+        {
+            length.push(format[i] as char);
+            i += 1;
+        }
+        if i >= format.len() {
+            out.push('%');
+            break;
+        }
+        let conv = format[i];
+        i += 1;
+        match conv {
+            b's' => {
+                let ptr = slots.take(vm)? as *const c_char;
+                if ptr.is_null() {
+                    out.push_str("(null)");
+                } else {
+                    out.push_str(unsafe { CStr::from_ptr(ptr) }.to_str().map_err(|_| {
+                        vm.new_system_error("PyErr_Format: %s argument is not valid UTF-8")
+                    })?);
+                }
+            }
+            b'd' | b'i' => {
+                let v = sign_extend(slots.take(vm)?, &length);
+                out.push_str(&v.to_string());
+            }
+            b'u' | b'o' | b'x' | b'X' => {
+                let v = zero_extend(slots.take(vm)?, &length);
+                match conv {
+                    b'u' => out.push_str(&v.to_string()),
+                    b'o' => out.push_str(&format!("{v:o}")),
+                    _ => out.push_str(&format!("{v:x}")),
+                }
+            }
+            b'c' => {
+                let v = slots.take(vm)? as u8 as u32;
+                if let Some(ch) = char::from_u32(v) {
+                    out.push(ch);
+                }
+            }
+            b'p' => {
+                let v = slots.take(vm)?;
+                out.push_str(&format!("0x{v:x}"));
+            }
+            b'R' | b'S' | b'A' | b'U' => {
+                let obj = unsafe { (&*(slots.take(vm)? as *mut PyObject)).to_owned() };
+                match conv {
+                    b'R' | b'A' => out.push_str(obj.repr(vm)?.as_ref()),
+                    b'S' | b'U' => out.push_str(obj.str(vm)?.as_ref()),
+                    _ => {}
+                }
+            }
+            b'T' => {
+                let obj = unsafe { (&*(slots.take(vm)? as *mut PyObject)).to_owned() };
+                out.push_str(&type_name_of(&obj));
+            }
+            b'V' => {
+                let ptr = slots.take(vm)? as *const c_char;
+                let obj = slots.take(vm)? as *mut PyObject;
+                if !obj.is_null() {
+                    let obj = unsafe { &*obj }.to_owned();
+                    out.push_str(obj.str(vm)?.as_ref());
+                } else if !ptr.is_null() {
+                    out.push_str(unsafe { CStr::from_ptr(ptr) }.to_str().map_err(|_| {
+                        vm.new_system_error("PyErr_Format: %V argument is not valid UTF-8")
+                    })?);
+                } else {
+                    out.push_str("(null)");
+                }
+            }
+            _ => {
+                out.push('%');
+                out.push(conv as char);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// C shim entry: PyErr_Format. Sets the exception and returns NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_format(
+    exception: *mut PyObject,
+    format: *const c_char,
+    slots: *const usize,
+    nslots: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| -> PyResult<PyObjectRef> {
+        if exception.is_null() || format.is_null() {
+            return Err(vm.new_system_error("PyErr_Format called with NULL argument"));
+        }
+        let format = unsafe { CStr::from_ptr(format) }.to_bytes();
+        let mut slots = VaSlots::new(unsafe { core::slice::from_raw_parts(slots, nslots as usize) });
+        let message = format_message(vm, format, &mut slots)?;
+        let exc_type = unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?;
+        let exc = vm.invoke_exception(exc_type, vec![vm.ctx.new_str(message).into()])?;
+        Err(exc)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;
@@ -1632,6 +1819,7 @@ mod tests {
             ...,
         ) -> *mut pyo3::ffi::PyObject;
         fn PyObject_CallMethodObjArgs(obj: *mut pyo3::ffi::PyObject, name: *mut pyo3::ffi::PyObject, ...) -> *mut pyo3::ffi::PyObject;
+        fn PyErr_Format(exception: *mut pyo3::ffi::PyObject, format: *const c_char, ...) -> *mut pyo3::ffi::PyObject;
     }
 
     #[test]
@@ -1800,6 +1988,32 @@ mod tests {
             assert!(!f.is_null());
             let f: Py<pyo3::PyAny> = Py::from_owned_ptr(py, f as *mut pyo3::ffi::PyObject);
             assert_eq!(f.extract::<i32>(py).unwrap(), 42);
+        });
+    }
+
+    #[test]
+    fn err_format() {
+        Python::attach(|py| unsafe {
+            use pyo3::types::PyTypeMethods;
+            let exc_type = py.get_type::<pyo3::exceptions::PyValueError>();
+            let r = PyErr_Format(
+                exc_type.as_type_ptr() as *mut pyo3::ffi::PyObject,
+                c"value is %d, expected %s".as_ptr(),
+                42i32,
+                c"positive".as_ptr(),
+            );
+            assert!(r.is_null());
+            assert!(PyErr::occurred(py));
+            let err = PyErr::take(py).unwrap();
+            let msg: String = err
+                .value(py)
+                .getattr("args")
+                .unwrap()
+                .get_item(0)
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(msg, "value is 42, expected positive");
         });
     }
 }

@@ -1,24 +1,11 @@
-feat(capi): PyArg_ParseTuple/Py_BuildValue/PyObject_Call* via C varargs shim
+feat(capi): PyErr_Format via the C varargs shim
 
-Stable Rust cannot define C-variadic functions (c_variadic is unstable),
-so add a minimal C shim (shim/getargs.c, compiled with cc) that snapshots
-the variadic arguments as uniform usize slots; all parsing and conversion
-logic lives in Rust (crates/capi/src/arg.rs), mirroring CPython's
-getargs.c and modsupport.c:
+Add PyErr_Format (CPython Python/errors.c), the most-used variadic error
+API in real extensions. The C shim snapshots the varargs with a
+printf-style slot counter; Rust formats the message (s, d, i, u, o, x,
+X, c, p, R, S, U, T, A, V codes with l/ll/h/z/t/j length modifiers;
+width/precision accepted) and raises the exception.
 
-- PyArg_ParseTuple, PyArg_ParseTupleAndKeywords (kwlist merging,
-  positional-only empty names, |/$/: /; markers, ()/[] nesting),
-  PyArg_UnpackTuple.
-- Format codes: s, s#, z, z#, y, y#, u, u#, U, S, b, B, h, H, i, I, l,
-  k, L, K, n, f, d, D, c, C, p, O, O!, O&, w, w#, t#, s*, z*, y*, w*
-  (Py_buffer via the buffer protocol); es/et raise a clear error.
-- Py_BuildValue with s/s#/z/z#/y/y#/u/u#/U/O/N/O&/ints/floats/D and
-  ()/[]/{} grouping; PyObject_CallFunction/CallMethod/CallFunctionObjArgs/
-  CallMethodObjArgs.
-- NUL-terminated UTF-8/UTF-16 caches for the s/z/u codes (CPython keeps
-  those inside str objects; RustPython does not).
-- Unit tests cover parsing, keywords, optional args, defaults, UnpackTuple,
-  build-value round trips and the call helpers: cargo test -p
-  rustpython-capi --lib now runs 111 tests, all green on Windows.
+cargo test -p rustpython-capi --lib: 112 passed on Windows, clippy clean.
 
 Assisted-by: deepseek-v4-flash
