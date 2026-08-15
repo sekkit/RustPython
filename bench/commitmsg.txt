@@ -1,18 +1,15 @@
-test: add ecosystem verification scripts
+test: verify sqlite3, multiprocessing, asyncio, subprocess for production use
 
-Verified working end-to-end on RustPython (Windows):
-- network: socket, TLS handshake, urllib HTTPS 200
-- requests 2.34 HTTPS GET 200 (requires ssl host_flags fix)
-- flask: templates (jinja2), sessions (itsdangerous), test client 200
-- django 6.1: import, settings.configure, URL routing
-- pytest 9.1.1: runs real tests (2 passed)
-- yaml, rich, markdown_it import and function
-- stdlib test modules (network/mail/web): 24+ modules PASS incl.
-  test_ssl, test_smtplib, test_ftplib, test_poplib, test_imaplib,
-  test_wsgiref, test_xmlrpc, test_urllib, test_http_cookiejar
-
-Note: test_urllib's two "control character" tests fail only when
-HTTP(S)_PROXY env vars are set (proxy path skips host validation in
-CPython too); they pass with proxies unset.
+- sqlite3: built with --features sqlite, full test_sqlite3 suite passes
+  (508 run, 20 skipped), CRUD/transactions verified
+- multiprocessing (spawn context): queue + process verified
+- asyncio: gather concurrency, task cancellation, run_in_executor verified
+- subprocess: capture_output pipelines verified; 5MB binary file I/O verified
+- 60+ stdlib test modules pass overall (incl. socket 746, array 890,
+  tarfile 748, typing 709, pickle 464, zipfile 380, decimal 577,
+  sqlite3 508, collections 295)
+- perf experiment: single codegen-unit for rustpython-vm gives no
+  measurable gain (LTO=thin already covers cross-crate inlining);
+  interpreter hot-loop cost is design-level (atomic refcount, dispatch)
 
 Assisted-by: deepseek-v4-flash
