@@ -1,12 +1,15 @@
-docs: round-2 summary - frozen-module symlink fix, multiprocessing verified
+docs: round-3 perf analysis - call path already optimized, gaps are design-level
 
-- Root cause found for test_importlib failures on Windows: missing git
-  symlinks under crates/vm/Lib/python_builtins/ (core.symlinks=false
-  clone) make the compile-time py_freeze! macro drop __hello__/__phello__
-  from the frozen module table; after restoring symlinks and cleaning the
-  vm build cache, test_importlib passes fully (1440 run, 88 skipped)
-- test_multiprocessing_spawn passes (441 run, 4 files)
-- 100+ stdlib test modules verified green overall
-- sqlite3 in default features (commit 529ba89de)
+- Benchmarked and decomposed call cost incrementally: function call adds
+  ~203ns/call vs CPython ~34ns (6x), method calls 7x; no single bottleneck
+- Confirmed upstream already has: trampoline tailcalls (no Rust recursion),
+  CallArgBuffer stack staging (no per-call Vec), invoke_exact_args_slots,
+  LOAD_GLOBAL version-cached specialization - simple calls are already
+  zero-heap-alloc
+- Remaining gap is spread across interpreter base costs (dispatch, atomic
+  refcount, datastack frame management, type checks); needs systemic work
+- Warning recorded: `cargo build --features flame-it` overwrites the
+  release binary with instrumented code (~18x slower); rebuild plain
+  release afterwards
 
 Assisted-by: deepseek-v4-flash

@@ -360,6 +360,20 @@ python bench\imports.py
 | `rustpython-vm` 单 codegen-unit | 无收益(±2%,LTO=thin 已覆盖跨 crate 内联) |
 | freeze-stdlib 启动速度 | 无收益(58.7 vs 55.4ms;启动瓶颈在解释器初始化,非 stdlib 加载) |
 | freeze-stdlib 部署价值 | ✅ 单文件分发(56.5MB,无需 Lib 目录) |
+| **调用路径零分配改造** | **无需改造**:上游已有 tailcall(trampoline)+ `CallArgBuffer` 栈上参数 + `invoke_exact_args_slots`,简单 PyFunction 调用已是零堆分配 |
+
+### 9.3b 第 3 轮性能剖析结论
+
+- **数据校准**:此前部分"性能恶化 18 倍"测量是误用 `--features flame-it` 构建产物(`cargo build --features flame-it` 会覆盖 `target/release/rustpython.exe`,插桩使一切慢 ~18x;需重建普通版)。普通版数据与第 1 轮一致(调用 7.0x / 方法 6.8x / 字符串 8.6x)。
+- **增量瓶颈分解**(3M 次,普通版,vs CPython 3.11):
+  | 层 | RustPython | CPython | 单次增量 |
+  |---|---|---|---|
+  | for 循环基础 | 244ms | 42ms | 5.8x |
+  | +局部变量 | +43ms | +2ms | — |
+  | +int add | +145ms | +45ms | — |
+  | **+函数调用** | **+610ms(~203ns/次)** | +101ms(~34ns/次) | **6x** |
+  | +方法调用 | +1344ms 总 | +193ms 总 | 7.0x |
+- **根因结论**:调用路径已高度优化(tailcall 避免 Rust 递归、CallArgBuffer 避免 Vec 分配、LOAD_GLOBAL 有版本缓存);剩余差距**分散在解释器基础成本**(指令 dispatch、原子引用计数、datastack 帧管理、类型检查),无单点银弹,需系统级优化(更紧凑 dispatch / immortal 对象 / 对象布局),属 Phase 2 大工程。
 
 ### 9.4 Windows 构建注意事项(实测)
 
