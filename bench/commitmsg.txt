@@ -1,16 +1,19 @@
-docs: record negative perf results (case-identity and int fast paths)
+fix(ctypes): support callbacks as function arguments (from_param + conversion)
 
-Two performance candidates from the subagent report were implemented,
-measured and reverted:
+CFUNCTYPE/WINFUNCTYPE instances could not be passed as arguments to DLL
+functions: PyCFuncPtrType lacked from_param, the type_code validation
+rejected function-pointer types, and neither conv_param nor
+convert_object handled PyCFuncPtr values. EnumWindows(Proc(cb), 0) failed
+with TypeError("Unsupported argument type").
 
-1. str.upper/lower "return self when unchanged": conflicts with the
-   CPython test suite - string_tests.checkequal asserts assertIsNot
-   (CPython 3.11/3.15 also always return a new object). Not viable.
-2. PyInt i64 fast path for add/sub/mul: only ~1% gain - the bottleneck
-   is PyInt object + BigInt value (Vec) allocation itself, not BigInt
-   arithmetic. Real fix needs inline int representation (data model
-   refactor, Phase 2).
+- PyCFuncPtrType::from_param: returns the callback instance (CPython
+  parity), keeping it alive through the call
+- convert_object: exempt function-pointer types from _type_ validation;
+  convert PyCFuncPtr to its stored function pointer
+- conv_param: convert PyCFuncPtr to a pointer value, keeping the callable
+  alive
 
-Both recorded in SOLUTION.md 9.3c to avoid repeating.
+Verified: EnumWindows with the standard WINFUNCTYPE decorator pattern
+enumerates windows (467); test_ctypes passes (328 run, 58 skipped).
 
 Assisted-by: deepseek-v4-flash

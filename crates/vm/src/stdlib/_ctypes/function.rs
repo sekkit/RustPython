@@ -147,6 +147,16 @@ fn conv_param(value: &PyObject, vm: &VirtualMachine) -> PyResult<Argument> {
         });
     }
 
+    // 3b. PyCFuncPtr (callback) -> function pointer value; keep the
+    //      callable alive for the duration of the foreign call.
+    if let Some(func_ptr) = value.downcast_ref::<PyCFuncPtr>() {
+        let addr = func_ptr.get_func_ptr();
+        return Ok(Argument {
+            keep: Some(value.to_owned()),
+            value: CArgValue::pointer(addr),
+        });
+    }
+
     // 4. Python str -> wide string pointer (like PyUnicode_AsWideCharString)
     if let Some(s) = value.downcast_ref::<PyStr>() {
         let wide_bytes = rustpython_host_env::ctypes::utf16z_bytes(s.as_wtf8());
@@ -216,6 +226,7 @@ impl ArgumentType for PyTypeRef {
             || self.fast_issubclass(PyCPointer::static_type())
             || self.fast_issubclass(PyCStructure::static_type())
             || self.fast_issubclass(PyCUnion::static_type())
+            || self.class().fast_issubclass(PyCFuncPtrType::static_type())
         {
             None
         } else {
@@ -252,6 +263,14 @@ impl ArgumentType for PyTypeRef {
         // None -> NULL pointer
         if vm.is_none(&converted) {
             return Ok((CArgValue::pointer(0), None));
+        }
+
+        // PyCFuncPtr (callback) -> function pointer value
+        if let Some(func_ptr) = converted.downcast_ref::<PyCFuncPtr>() {
+            return Ok((
+                CArgValue::pointer(func_ptr.get_func_ptr()),
+                Some(converted.clone()),
+            ));
         }
 
         // For pointer types (POINTER(T)), we need to pass the pointer VALUE stored in buffer
@@ -341,6 +360,22 @@ impl PyCFuncPtrType {
     #[pygetset(name = "__pointer_type__", setter)]
     fn set_pointer_type(zelf: PyTypeRef, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
         super::base::pointer_type_set(&zelf, value, vm)
+    }
+
+    /// from_param: CPython's CFuncPtr types expose from_param so the
+    /// callback instance (carrying the function pointer) can be passed
+    /// directly as an argument; _ctypes extracts the pointer when
+    /// building the call.
+    #[pyclassmethod]
+    fn from_param(cls: PyTypeRef, value: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        if value.downcast_ref::<PyCFuncPtr>().is_some() {
+            Ok(value)
+        } else {
+            Err(vm.new_type_error(format!(
+                "cannot convert '{}' to this function pointer type",
+                value.class().name()
+            )))
+        }
     }
 }
 
