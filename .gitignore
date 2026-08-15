@@ -31,3 +31,10 @@ Lib/test/data/*
 cpython/
 .claude/
 docs/superpowers/
+
+# pip --target downloads and lab scratch (never commit vendored packages)
+bench/sitepkg*/
+bench/labs/
+bench/reports/*.tmp
+bench/*.exe
+bench/*.pyc

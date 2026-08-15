@@ -1,7 +1,6 @@
-chore: remove accidentally committed vendored django package (sitepkg5)
+chore: ignore pip-downloaded packages and lab scratch under bench/
 
-The previous commit included bench/sitepkg5 (pip-downloaded django and
-deps). Remove it from tracking; django verification uses pip --target
-on demand.
+Prevents accidentally committing vendored packages (bench/sitepkg*,
+bench/labs/) and scratch binaries from experiments.
 
 Assisted-by: deepseek-v4-flash
