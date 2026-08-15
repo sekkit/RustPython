@@ -1,18 +1,9 @@
-fix(sqlite): skip NULL decltype in detect_types conversion (CPython parity)
+docs: record sqlite decltype fix for django ORM support
 
-sqlite3_column_decltype() returns NULL for columns without a declared
-type (expressions, custom function results). With detect_types enabled
-(django sets detect_types=3), RustPython called ptr_to_str on the NULL
-pointer and raised MemoryError("string pointer is null") on every such
-fetch, breaking django's sqlite backend (register_functions ->
-sqlite_compileoption_used query failed).
-
-CPython skips conversion when decltype is NULL (_pysqlite_fetch_one_row).
-Mirror that: guard with is_null() before conversion.
-
-Verified: all connect-parameter combinations (detect_types/uri/
-check_same_thread) fetch correctly; django 6.1 ORM on sqlite3 backend
-creates/queries users end-to-end; test_sqlite3 still passes
-(508 run, 20 skipped).
+Commit 539d03b6b fixed NULL decltype handling with detect_types
+(sqlite3_column_decltype returns NULL for expression/function columns;
+CPython skips conversion, RustPython raised MemoryError). django 6.1 ORM
+on the sqlite3 backend now works end-to-end (schema creation, CRUD,
+queries).
 
 Assisted-by: deepseek-v4-flash

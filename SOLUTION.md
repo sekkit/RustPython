@@ -324,13 +324,14 @@ python bench\imports.py
 | `27cec7b0d` | 移除 test_finalize_running_thread 过时标记 | test_threading PASS(229 run) |
 | `680121df3` | 生态验证脚本 + 网络/邮件/Web 测试结果记录 | 24+ 测试模块全绿 |
 | `d2789975d` | sqlite3/multiprocessing/asyncio/subprocess 生产验证 | test_sqlite3 508 run 全绿 |
+| `539d03b6b` | **sqlite: detect_types 下 NULL decltype 处理**(CPython 对齐) | **django 6.1 ORM + sqlite 全通**;test_sqlite3 仍 508 run 全绿 |
 
 ### 9.1 生态可用性现状(实测)
 
 | 类别 | 库 | 状态 |
 |---|---|---|
 | HTTP 客户端 | requests 2.34.2 + urllib3 | ✅ HTTPS GET 200 |
-| Web 框架 | flask(模板/session)、django 6.1(路由)、wsgiref | ✅ 全通 |
+| Web 框架 | flask(模板/session)、django 6.1(路由 + **ORM + sqlite**) | ✅ 全通 |
 | 测试框架 | pytest 9.1.1 | ✅ 真实测试 2 passed |
 | 数据格式 | yaml、json、xmlrpc、tomllib | ✅ |
 | 终端 UI | rich、pygments | ✅ |
