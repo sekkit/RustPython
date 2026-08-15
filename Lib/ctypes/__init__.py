@@ -560,6 +560,31 @@ pydll = LibraryLoader(PyDLL)
 
 if _os.name == "nt":
     pythonapi = PyDLL("python dll", None, _sys.dllhandle)
+    if _sys.dllhandle == 0:
+        # TODO: RUSTPYTHON; no native python dll exports available.
+        # CPython resolves ctypes.pythonapi symbols from the python DLL;
+        # RustPython cannot, so provide import-time-compatible stubs so
+        # libraries that reference CPython C API symbols at import time
+        # (e.g. click._winconsole on Windows) import cleanly. Calls raise
+        # NotImplementedError instead of failing at attribute lookup.
+        class _PyApiStub:
+            def __init__(self, name):
+                self.name = name
+                self.restype = None
+                self.argtypes = None
+
+            def __call__(self, *args, **kwargs):
+                raise NotImplementedError(
+                    "ctypes.pythonapi.{0} is not supported by this interpreter".format(self.name)
+                )
+
+        class _PyApi:
+            _handle = 0  # used by _ctypes.in_dll symbol lookup (always fails)
+
+            def __getattr__(self, name):
+                return _PyApiStub(name)
+
+        pythonapi = _PyApi()
 elif _sys.platform in ["android", "cygwin"]:
     # These are Unix-like platforms which use a dynamically-linked libpython.
     pythonapi = PyDLL(_sysconfig.get_config_var("LDLIBRARY"))
