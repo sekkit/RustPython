@@ -1471,14 +1471,42 @@ impl GetDescriptor for PyCField {
         let cdata = Self::get_cdata_from_obj(&obj, vm)?;
 
         // PyCData_get
-        cdata.get_field(
+        let result = cdata.get_field(
             zelf.proto.as_object(),
             zelf.index,
             size,
             offset,
             obj.clone(),
             vm,
-        )
+        )?;
+        if zelf.bitfield_size > 0 {
+            // Extract the bitfield from the storage unit with unsigned
+            // semantics, matching CPython's b_get (cfield.c).
+            let bits = zelf.bitfield_size as u32;
+            let shift = zelf.bit_offset_val as u32;
+            let mask = (1u64 << bits) - 1;
+            let mask = (1u64 << bits) - 1;
+            let v = crate::builtins::int::get_value(&result)
+                .to_i64()
+                .ok_or_else(|| vm.new_type_error("bitfield value too large"))? as u64;
+            // ctypes bitfields of signed integer types read back with
+            // sign extension, matching CPython's b_get (cfield.c).
+            let signed = matches!(
+                zelf.proto.as_object().get_attr("_type_", vm),
+                Ok(t) if t.downcast_ref::<crate::builtins::PyStr>().map(|s| {
+                    matches!(s.as_wtf8().to_string_lossy().as_ref(), "b" | "h" | "i" | "l" | "q" | "n")
+                }) == Some(true),
+            );
+            let raw = (v >> shift) & mask;
+            let extracted = if signed && bits > 0 && (raw & (1u64 << (bits - 1))) != 0 {
+                // Sign-extend: fill all bits above the field with 1s.
+                raw | !mask
+            } else {
+                raw
+            };
+            return Ok(vm.ctx.new_int(extracted as i64).into());
+        }
+        Ok(result)
     }
 }
 
@@ -1734,15 +1762,51 @@ impl PyCField {
                     && size > 1;
 
                 // PyCData_set
-                cdata.set_field(
-                    zelf.proto.as_object(),
-                    value,
-                    zelf.index,
-                    size,
-                    offset,
-                    needs_swap,
-                    vm,
-                )
+                if zelf.bitfield_size > 0 {
+                    // Read-modify-write the storage unit: clear the bitfield,
+                    // OR in the masked new value (matching CPython's b_set).
+                    let bits = zelf.bitfield_size as u32;
+                    let shift = zelf.bit_offset_val as u32;
+                    let mask = (1u64 << bits) - 1;
+                    let current = cdata.get_field(
+                        zelf.proto.as_object(),
+                        zelf.index,
+                        size,
+                        offset,
+                        obj.clone(),
+                        vm,
+                    )?;
+                    let cur = crate::builtins::int::get_value(&current)
+                        .to_i64()
+                        .ok_or_else(|| vm.new_type_error("bitfield storage is not an int"))?
+                        as u64;
+                    let new_val = crate::builtins::int::get_value(&value)
+                        .to_i64()
+                        .ok_or_else(|| vm.new_type_error("bitfield value is not an int"))?
+                        as u64;
+                    let merged = (cur & !(mask << shift)) | ((new_val & mask) << shift);
+                    // PyCData_set
+                    cdata.set_field(
+                        zelf.proto.as_object(),
+                        vm.ctx.new_int(merged).into(),
+                        zelf.index,
+                        size,
+                        offset,
+                        needs_swap,
+                        vm,
+                    )
+                } else {
+                    // PyCData_set
+                    cdata.set_field(
+                        zelf.proto.as_object(),
+                        value,
+                        zelf.index,
+                        size,
+                        offset,
+                        needs_swap,
+                        vm,
+                    )
+                }
             }
             PySetterValue::Delete => Err(vm.new_type_error("cannot delete field")),
         }

@@ -1,16 +1,18 @@
-perf(str): add exact list/tuple fast path to str.join
+fix(ctypes): implement bitfield read-modify-write semantics
 
-str.join was 21.4x slower than CPython (worst single gap in strbench).
-The generic path went through the iterator protocol and per-element
-TryFromObject conversion, then grew the buffer with repeated push_str.
+Bitfield fields (e.g. ("a", ctypes.c_int, 3)) were stored and read as
+plain integers, so adjacent bitfields overwrote each other (setting
+a=5,b=3 then reading a returned 3). CPython's b_get/b_set (cfield.c)
+mask and shift the storage unit.
 
-Mirror CPython's unicode_join: for exact list/tuple of exact str,
-pre-scan the total length and build the result in a single pre-sized
-allocation with no per-element conversion. Single-element joins return
-the element itself (CPython identity behavior); non-str elements fall
-back to the generic path which raises TypeError as before.
+- descr_get: extract the bitfield with unsigned shift + mask, then
+  sign-extend for signed ctypes types (b/h/i/l/q/n) — matches CPython
+  exactly (verified: c_int bitfield 1/3/4 layout reads back identically,
+  including 1-bit signed -1 semantics)
+- descr_set: read-modify-write the storage unit (clear field bits, OR in
+  masked value) instead of overwriting the whole unit
 
-Measured (bench/strbench.py, 200k iterations): join 0.386s -> 0.148s
-(2.6x). test_str + test_string pass (192 run, 12 skipped).
+Verified: signed/unsigned bitfield readback and overwrite match CPython;
+test_ctypes passes (328 run, 58 skipped).
 
 Assisted-by: deepseek-v4-flash
