@@ -1,14 +1,8 @@
-docs: record round-2 findings (sqlite/asyncio/mp verified, freeze-stdlib)
+feat: enable sqlite3 in default features for stdlib parity
 
-- sqlite3 verified via --features sqlite: test_sqlite3 508 run green;
-  suggest adding sqlite to default features for drop-in stdlib parity
-- asyncio (gather/cancel/executor), multiprocessing (spawn), subprocess
-  and 5MB binary I/O all verified
-- 80+ stdlib test modules now pass overall
-- freeze-stdlib: works (56.5MB single-file binary, no Lib needed) but
-  Windows clones need the crates/*/Lib symlinks restored (git
-  core.symlinks=false); documented in SOLUTION.md
-- perf dead ends ruled out: single codegen-unit for vm crate (no gain),
-  frozen stdlib for startup (no gain) - startup cost is interpreter init
+Python users expect `import sqlite3` to work out of the box. The sqlite
+feature was opt-in; make it part of the default build so the release
+binary has full stdlib database support. Verified: default build imports
+sqlite3 3.53.2, test_sqlite3 passes (508 run, 20 skipped).
 
 Assisted-by: deepseek-v4-flash
