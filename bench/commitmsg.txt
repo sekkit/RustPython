@@ -1,17 +1,9 @@
-fix(ctypes): correct cast() for callbacks and byref results
+docs: mark ctypes 4-defect set complete + Win32 automation verified
 
-- PyCFuncPtr was cast to its buffer address (causing DEP crashes when
-  invoked); cast it to the stored function pointer instead (CPython
-  casts CFuncPtr to the pointer value in its buffer)
-- cast(byref(x)) raised TypeError; extract the pointer from CArgObject
-  like CPython
-
-Verified: cast(byref(x)) equals addressof(x); cast(callback) yields the
-function pointer; both match CPython. test_ctypes passes (328 run,
-58 skipped).
-
-With this, all four ctypes defects from the C-extension route report
-(bitfields, struct-array elements, callbacks as arguments, cast) are
-fixed.
+All four ctypes defects from the C-extension route report are now fixed
+(bitfields 77c2ad0f3, callbacks-as-args bd3f47b5b, struct-array elements
+2d5d14794, cast semantics 9891162f0). Verified end-to-end: GetSystemInfo
++ EnumWindows + GetWindowTextW + struct arrays match CPython output;
+pure-ctypes ecosystem (wmi-style libs, Win32 automation) is unlocked.
 
 Assisted-by: deepseek-v4-flash

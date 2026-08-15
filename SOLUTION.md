@@ -328,15 +328,20 @@ python bench\imports.py
 | `3fb0acb11` | **perf(str): str.join exact list/tuple 快速路径**(预扫描+单次分配) | join 21.4x → 8.2x 差距(0.386→0.148s);test_str/test_string 全绿 |
 | `77c2ad0f3` | **fix(ctypes): 位域读改写语义**(掩码+移位+符号扩展) | 与 CPython 逐位一致(含 1-bit 有符号 -1 语义);test_ctypes 328 run 全绿 |
 | `204c57b19` | **fix(type): `__slots__` 中 `__dict__`/`__weakref__` 不与类属性冲突** | **celery 5.6.3 解锁**(import/app/任务定义/发布);test_descr 162 run 全绿 |
+| `bd3f47b5b` | **fix(ctypes): 回调作为函数参数**(from_param + 转换豁免) | **EnumWindows 标准写法可用**(467 窗口);test_ctypes 328 run 全绿 |
+| `2d5d14794` | **fix(ctypes): 结构体/联合数组元素返回活实例**(视图语义) | `(Point*3)[i].x = 7` 读写回正确;test_ctypes 全绿 |
+| `9891162f0` | **fix(ctypes): cast() 语义**(回调→函数指针、byref 支持) | cast(byref) == addressof;cast(callback) 正确;test_ctypes 全绿 |
 
 ### 9.0 并行调查(4 subagents)产出报告
 
 | 报告 | 核心结论 |
 |---|---|
 | `bench/reports/perf_candidates.md` | 小整数缓存已与 CPython 一致;immortal 仅骨架;join 21.4x 是最大单点(已修);PyInt BigInt 双分配、upper/lower 无条件分配、dispatch 固定开销为后续候选 |
-| `bench/reports/cext_route.md` | ctypes 4 真缺陷(位域已修;数组元素、回调参数、cast 语义待修);capi 325 导出缺模块初始化核心;numpy 三层根因(.pyd 加载缺失) |
+| `bench/reports/cext_route.md` | ctypes 4 真缺陷(位域/数组元素/回调参数/cast——**全部已修**);capi 325 导出缺模块初始化核心;numpy 三层根因(.pyd 加载缺失) |
 | `bench/reports/ecosystem_gaps.md` | **17/18 纯 Python 包全通**(click/jinja2/httpx/aiohttp/sympy/networkx/pydantic v1/dateutil…);唯一纯 Python 失败 celery 已修 |
 | `bench/reports/stale_markers.md` | **0 个过时标记**(1075 处 expectedFailure 全部仍真实失败);无"unexpected success";失败主因:语义差异/错误消息 |
+
+**ctypes 4 缺陷全清后解锁**:纯 ctypes 生态(wmi 类库、pywin32 纯 ctypes 部分、手写 Win32 自动化)——综合验证 GetSystemInfo + EnumWindows + GetWindowTextW + 结构体数组与 CPython 输出一致。
 
 ### 9.1 生态可用性现状(实测)
 
