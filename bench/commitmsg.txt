@@ -1,15 +1,14 @@
-test: verify sqlite3, multiprocessing, asyncio, subprocess for production use
+docs: record round-2 findings (sqlite/asyncio/mp verified, freeze-stdlib)
 
-- sqlite3: built with --features sqlite, full test_sqlite3 suite passes
-  (508 run, 20 skipped), CRUD/transactions verified
-- multiprocessing (spawn context): queue + process verified
-- asyncio: gather concurrency, task cancellation, run_in_executor verified
-- subprocess: capture_output pipelines verified; 5MB binary file I/O verified
-- 60+ stdlib test modules pass overall (incl. socket 746, array 890,
-  tarfile 748, typing 709, pickle 464, zipfile 380, decimal 577,
-  sqlite3 508, collections 295)
-- perf experiment: single codegen-unit for rustpython-vm gives no
-  measurable gain (LTO=thin already covers cross-crate inlining);
-  interpreter hot-loop cost is design-level (atomic refcount, dispatch)
+- sqlite3 verified via --features sqlite: test_sqlite3 508 run green;
+  suggest adding sqlite to default features for drop-in stdlib parity
+- asyncio (gather/cancel/executor), multiprocessing (spawn), subprocess
+  and 5MB binary I/O all verified
+- 80+ stdlib test modules now pass overall
+- freeze-stdlib: works (56.5MB single-file binary, no Lib needed) but
+  Windows clones need the crates/*/Lib symlinks restored (git
+  core.symlinks=false); documented in SOLUTION.md
+- perf dead ends ruled out: single codegen-unit for vm crate (no gain),
+  frozen stdlib for startup (no gain) - startup cost is interpreter init
 
 Assisted-by: deepseek-v4-flash

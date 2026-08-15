@@ -323,6 +323,7 @@ python bench\imports.py
 | `402af0956` | ctypes.pythonapi stub(无 python DLL 时) | **flask 全栈 200**;test_ctypes PASS(328 run) |
 | `27cec7b0d` | 移除 test_finalize_running_thread 过时标记 | test_threading PASS(229 run) |
 | `680121df3` | 生态验证脚本 + 网络/邮件/Web 测试结果记录 | 24+ 测试模块全绿 |
+| `d2789975d` | sqlite3/multiprocessing/asyncio/subprocess 生产验证 | test_sqlite3 508 run 全绿 |
 
 ### 9.1 生态可用性现状(实测)
 
@@ -333,8 +334,11 @@ python bench\imports.py
 | 测试框架 | pytest 9.1.1 | ✅ 真实测试 2 passed |
 | 数据格式 | yaml、json、xmlrpc、tomllib | ✅ |
 | 终端 UI | rich、pygments | ✅ |
+| 数据库 | sqlite3(`--features sqlite`) | ✅ test_sqlite3 508 run 全绿 |
+| 异步 | asyncio(gather/cancel/executor) | ✅ 并发正确(0.19s/3 任务) |
+| 进程 | multiprocessing(spawn)、subprocess | ✅ 验证通过 |
 | 邮件/文件协议 | smtplib/ftplib/poplib/imaplib 测试 | ✅ 全 PASS |
-| 标准库测试 | 40+ 模块(ssl/os/io/datetime/subprocess/logging/urllib…) | ✅ 几乎全绿 |
+| 标准库测试 | **80+ 模块**(socket 746/array 890/tarfile 748/typing 709/decimal 577…) | ✅ 几乎全绿 |
 
 ### 9.2 性能剩余差距(待 Phase 2)
 
@@ -348,5 +352,17 @@ python bench\imports.py
 | str.slice/find/startswith | 0.06 | 0.013 | 4.5-5x |
 
 → 字符串调用链(方法分派 + WTF-8 边界 + 迭代器分配)是最大单点,建议 Phase 2 优先做 str 方法内联缓存 + 调用路径(vectorcall)。
+
+### 9.3 已排除的优化方向(实验结论)
+
+| 实验 | 结果 |
+|---|---|
+| `rustpython-vm` 单 codegen-unit | 无收益(±2%,LTO=thin 已覆盖跨 crate 内联) |
+| freeze-stdlib 启动速度 | 无收益(58.7 vs 55.4ms;启动瓶颈在解释器初始化,非 stdlib 加载) |
+| freeze-stdlib 部署价值 | ✅ 单文件分发(56.5MB,无需 Lib 目录) |
+
+### 9.4 Windows 构建注意事项(实测)
+
+- `--features freeze-stdlib` 在 Windows 上依赖符号链接(`crates/pylib/Lib` 等 10 个条目指向仓库根 `Lib/`),默认 `core.symlinks=false` 克隆会缺失,构建报 `Error listing dir "crates\pylib\src\../Lib"`。修复:为缺失条目创建符号链接/junction(见 README: `git config core.symlinks true` 后重新克隆,或手动 mklink)。
 | `crates/vm/src/frame.rs` | 执行引擎(vectorcall 现状) |
 | `crates/vm/src/vm/thread.rs` | 无 GIL 线程模型 |
