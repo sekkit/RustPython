@@ -10,7 +10,7 @@ use rustpython_vm::function::PySetterValue;
 use rustpython_vm::types::{PyComparisonOp, hash_not_implemented};
 use rustpython_vm::{AsObject, PyPayload, PyResult, VirtualMachine};
 
-mod pytype;
+pub mod pytype;
 
 macro_rules! define_py_check {
     (fn $name:ident, $($ctx_path:ident).+) => {

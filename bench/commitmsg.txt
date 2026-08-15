@@ -1,26 +1,24 @@
-feat(capi): PyModuleDef/PyModule_Create + run C-API tests on Windows
+feat(capi): PyArg_ParseTuple/Py_BuildValue/PyObject_Call* via C varargs shim
 
-- Add PyModuleDef/PyModuleDef_Slot/PyModuleDefBase with CPython-exact
-  layouts, PyModuleDef_Init, PyModule_Create/_PyModule_Create, and the
-  CPython 3.15 (PEP 793) PySlot machinery: PyModule_FromSlotsAndSpec,
-  PyModule_Exec, PyModule_ExecDef, PyModule_SetDocString,
-  PyModule_GetDict, PyModule_Check/CheckExact. Slot ids use the 3.15
-  renumbering (Py_mod_create=84, Py_mod_exec=85, ...).
-- Add PyType_GetSlot, PyType_Freeze and PyType_FromSlots (heap type
-  creation via the vm's type machinery), PyErr_CheckSignals,
-  PyUnicode_FromWideChar/PyUnicode_AsWideChar, and a minimal buffer
-  protocol (PyObject_GetBuffer for bytes/bytearray, PyBuffer_Release,
-  PyBuffer_GetPointer) - the 14 symbols pyo3 needs to link its tests.
-- Vendor pyo3-ffi 0.29.2 (pyo3-ffi-patched) and drop its Windows
-  `#[link(name = "pythonXY")]` fallback attribute: it made MSVC resolve
-  every Py* symbol through an import library as __imp_* entries, which
-  conflicts with rustpython-capi's own no_mangle exports and prevented
-  `cargo test -p rustpython-capi` from linking on Windows at all
-  (upstream CI skips these tests on Windows for this reason). Direct
-  references now link against the rustpython-capi exports. Wire the
-  patch into the workspace [patch.crates-io].
-- Unit tests for PyModule_Create with a PyMethodDef table and for
-  PyModuleDef_Init index assignment. Full `cargo test -p rustpython-capi
-  --lib`: 103 passed, 0 failed on Windows.
+Stable Rust cannot define C-variadic functions (c_variadic is unstable),
+so add a minimal C shim (shim/getargs.c, compiled with cc) that snapshots
+the variadic arguments as uniform usize slots; all parsing and conversion
+logic lives in Rust (crates/capi/src/arg.rs), mirroring CPython's
+getargs.c and modsupport.c:
+
+- PyArg_ParseTuple, PyArg_ParseTupleAndKeywords (kwlist merging,
+  positional-only empty names, |/$/: /; markers, ()/[] nesting),
+  PyArg_UnpackTuple.
+- Format codes: s, s#, z, z#, y, y#, u, u#, U, S, b, B, h, H, i, I, l,
+  k, L, K, n, f, d, D, c, C, p, O, O!, O&, w, w#, t#, s*, z*, y*, w*
+  (Py_buffer via the buffer protocol); es/et raise a clear error.
+- Py_BuildValue with s/s#/z/z#/y/y#/u/u#/U/O/N/O&/ints/floats/D and
+  ()/[]/{} grouping; PyObject_CallFunction/CallMethod/CallFunctionObjArgs/
+  CallMethodObjArgs.
+- NUL-terminated UTF-8/UTF-16 caches for the s/z/u codes (CPython keeps
+  those inside str objects; RustPython does not).
+- Unit tests cover parsing, keywords, optional args, defaults, UnpackTuple,
+  build-value round trips and the call helpers: cargo test -p
+  rustpython-capi --lib now runs 111 tests, all green on Windows.
 
 Assisted-by: deepseek-v4-flash

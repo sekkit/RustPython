@@ -24,5 +24,8 @@ rustpython-pylib = { workspace = true }
 [dev-dependencies]
 pyo3 = { workspace = true, features = ["auto-initialize", "abi3t"] }
 
+[build-dependencies]
+cc = "1"
+
 [lints]
 workspace = true

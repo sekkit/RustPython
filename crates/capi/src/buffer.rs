@@ -22,7 +22,7 @@ mod buffer_flags {
     pub const PyBUF_ND: c_int = 0x0008;
     pub const PyBUF_STRIDES: c_int = 0x0010 | PyBUF_ND;
 }
-use buffer_flags::*;
+pub(crate) use buffer_flags::*;
 
 /// Layout mirrors CPython's Include/cpython/object.h `Py_buffer`.
 #[repr(C)]
