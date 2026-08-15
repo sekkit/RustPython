@@ -333,6 +333,8 @@ python bench\imports.py
 | `9891162f0` | **fix(ctypes): cast() 语义**(回调→函数指针、byref 支持) | cast(byref) == addressof;cast(callback) 正确;test_ctypes 全绿 |
 | `24c154f31` | **fix(stdlib): `nt._add_dll_directory`/`_remove_dll_directory`**(Win32 API) | `os.add_dll_directory` 往返可用;test_os 375 run 全绿 |
 | `8cf8b37ed` | **feat(stdlib): cProfile**(纯 Python `_lsprof` shim + profiling 包同步) | 输出与 CPython 结构一致;`cProfile.run`/`pstats` 可用 |
+| `c3a027acf` | **feat(capi): PyModuleDef/PyModule_Create + Windows 下 C-API 测试可链接可运行** | PyModuleDef/Init/Create/FromSlotsAndSpec(PEP 793)/Exec/ExecDef/SetDocString/GetDict、PyType_GetSlot/Freeze/FromSlots、PyErr_CheckSignals、PyUnicode_From/AsWideChar、buffer 协议(PyObject_GetBuffer/Release/GetPointer);vendor pyo3-ffi 去掉 Windows `#[link(pythonXY)]` 回退属性;`cargo test -p rustpython-capi --lib` **103/103 全绿(Windows,上游 CI 无法运行)** |
+| `3b1db295b` | **feat(capi): PyArg_ParseTuple/Py_BuildValue/PyObject_Call\*(C 可变参 shim + Rust 解析)** | getargs/modsupport 核心格式码(s/z/y/u/#/\*/U/S/O/O!/O&/w/t#/整型/浮点/D/c/C/p + \|/\$/:/;/()/[])、keywords 合并、UnpackTuple、BuildValue 分组、CallFunction/Method/ObjArgs;`cargo test -p rustpython-capi --lib` **111/111 全绿** |
 
 ### 9.0 并行调查(4 subagents)产出报告
 
