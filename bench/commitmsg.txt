@@ -1,15 +1,12 @@
-feat(stdlib): add pure-Python _lsprof shim and profiling package (cProfile)
+docs: final regression + celery eager verification + status update
 
-cProfile was missing (No module named cProfile), which breaks build
-backends like meson-python. RustPython has no C _lsprof module, so:
-
-- Lib/_lsprof.py: pure-Python _lsprof compatible shim built on
-  sys.setprofile with CPython timing semantics (totaltime includes
-  subcalls, inlinetime excludes them; recursion counted)
-- Lib/profiling/ + Lib/cProfile.py: synced from CPython 3.15
-
-Verified: cProfile.Profile output matches CPython structure exactly
-(466 function calls, 465/1 recursive fib); cProfile.run() and
-pstats.Stats work; profiling.sampling imports cleanly.
+- Comprehensive regression across 10 core modules all PASS (math 89,
+  str 138, ctypes 328, sqlite3 508, importlib, descr 162, threading 229,
+  ssl 196, json 218, os 375) - no regressions from the 17 fixes
+- celery verified fully: import, app, task definitions, eager execution
+  and chained tasks match CPython exactly (5, 15)
+- SOLUTION.md status table updated: 100+ test modules green, pure-Python
+  ecosystem fully working, ctypes 4-defect set + cProfile done;
+  remaining: C-extension .pyd loading (Phase B), perf data-model refactor
 
 Assisted-by: deepseek-v4-flash

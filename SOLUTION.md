@@ -12,11 +12,11 @@
 
 | 维度 | 现状(实测) | 结论 |
 |---|---|---|
-| **性能** | 比 CPython 3.11 慢 **4.6x~8.8x**(调用/方法调用 6.6x~7.4x) | 最大瓶颈:调用路径 + 解释器特化覆盖 |
+| **性能** | 比 CPython 3.11 慢 **4.6x~8.8x**(调用/方法调用 6.6x~7.4x) | 剩余差距为设计级(原子引用计数/dispatch),需数据模型重构(Phase 2) |
 | **JIT** | 编译成功但**实测仅 1.8% 提速**(100M 循环) | 调用边界开销吞噬原生码收益,当前无实用价值 |
-| **兼容性** | 40+ 测试模块抽样几乎全绿;纯 Python 生态可用(requests/flask/django/pytest);**C 扩展仍不可用** | 网络/Web/测试框架已生产可用 |
+| **兼容性** | **100+ 测试模块全绿**;纯 Python 生态全通(requests/flask/django ORM/celery/pytest/httpx/aiohttp/sympy…);**ctypes 4 缺陷全修 + cProfile 可用**;仍不可用:C 扩展(.pyd 加载,Phase B) | Web/数据/测试/任务队列生产可用 |
 | **并发** | **无 GIL 真并行**:4 线程 CPU 密集 **2.3x 加速**(CPython 3.11 为 0.98x) | 反直觉优势,可作落地卖点 |
-| **修复实验** | 6 项修复已验证(ldexp/ssl/ctypes/标记清理)→ 对应测试模块全绿 | "低垂果实"路线验证可行 |
+| **修复实验** | **17 项修复**已提交(fork:sekkit/RustPython,34 提交)→ 对应测试模块全绿 | "低垂果实"路线验证可行 |
 
 ---
 
@@ -331,6 +331,8 @@ python bench\imports.py
 | `bd3f47b5b` | **fix(ctypes): 回调作为函数参数**(from_param + 转换豁免) | **EnumWindows 标准写法可用**(467 窗口);test_ctypes 328 run 全绿 |
 | `2d5d14794` | **fix(ctypes): 结构体/联合数组元素返回活实例**(视图语义) | `(Point*3)[i].x = 7` 读写回正确;test_ctypes 全绿 |
 | `9891162f0` | **fix(ctypes): cast() 语义**(回调→函数指针、byref 支持) | cast(byref) == addressof;cast(callback) 正确;test_ctypes 全绿 |
+| `24c154f31` | **fix(stdlib): `nt._add_dll_directory`/`_remove_dll_directory`**(Win32 API) | `os.add_dll_directory` 往返可用;test_os 375 run 全绿 |
+| `8cf8b37ed` | **feat(stdlib): cProfile**(纯 Python `_lsprof` shim + profiling 包同步) | 输出与 CPython 结构一致;`cProfile.run`/`pstats` 可用 |
 
 ### 9.0 并行调查(4 subagents)产出报告
 
