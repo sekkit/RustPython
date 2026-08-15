@@ -1,5 +1,5 @@
 use super::{
-    PositionIterInternal, PyBytesRef, PyDict, PyTupleRef, PyType, PyTypeRef,
+    PositionIterInternal, PyBytesRef, PyDict, PyList, PyTuple, PyTupleRef, PyType, PyTypeRef,
     int::{PyInt, PyIntRef},
     iter::{
         IterStatus::{self, Exhausted},
@@ -1156,12 +1156,62 @@ impl PyStr {
         elements
     }
 
+    /// Fast path for str.join: exact list/tuple of exact str elements.
+    ///
+    /// Mirrors CPython unicode_join: verify all elements are exact str
+    /// (zero conversion), pre-scan for the total length, and build the
+    /// result in a single pre-sized allocation. Returns None when the
+    /// fast path does not apply and the generic iterator path should run.
+    fn try_join_exact_strs(
+        items: &[PyObjectRef],
+        sep: &Wtf8,
+        vm: &VirtualMachine,
+    ) -> Option<PyStrRef> {
+        if items.is_empty() {
+            return Some(vm.ctx.new_str(Wtf8Buf::new()));
+        }
+        if items.len() == 1 {
+            // CPython returns the single element itself for one-element joins.
+            let first = items[0].downcast_ref_if_exact::<PyStr>(vm)?;
+            return Some(first.to_owned());
+        }
+        let mut total: usize = 0;
+        for item in items {
+            let s = item.downcast_ref_if_exact::<PyStr>(vm)?;
+            total = total.saturating_add(s.as_wtf8().len());
+        }
+        total = total.saturating_add(sep.len().saturating_mul(items.len() - 1));
+        let mut buf = Wtf8Buf::with_capacity(total);
+        for (i, item) in items.iter().enumerate() {
+            if i > 0 {
+                buf.push_wtf8(sep);
+            }
+            let s = item.downcast_ref_if_exact::<PyStr>(vm).unwrap();
+            buf.push_wtf8(s.as_wtf8());
+        }
+        Some(vm.ctx.new_str(buf))
+    }
+
     #[pymethod]
     fn join(
         zelf: PyRef<Self>,
         iterable: ArgIterable<PyStrRef>,
         vm: &VirtualMachine,
     ) -> PyResult<PyStrRef> {
+        // Fast path: exact list/tuple of exact str — skip the
+        // iterator protocol and per-element conversion entirely.
+        let obj = iterable.as_object();
+        if let Some(list) = obj.downcast_ref_if_exact::<PyList>(vm) {
+            let items = list.borrow_vec();
+            if let Some(result) = Self::try_join_exact_strs(&items, zelf.as_wtf8(), vm) {
+                return Ok(result);
+            }
+        } else if let Some(tuple) = obj.downcast_ref_if_exact::<PyTuple>(vm) {
+            let items = tuple.as_slice();
+            if let Some(result) = Self::try_join_exact_strs(items, zelf.as_wtf8(), vm) {
+                return Ok(result);
+            }
+        }
         let iter = iterable.iter(vm)?;
         let joined = match iter.exactly_one() {
             Ok(first) => {

@@ -1,6 +1,16 @@
-chore: ignore pip-downloaded packages and lab scratch under bench/
+perf(str): add exact list/tuple fast path to str.join
 
-Prevents accidentally committing vendored packages (bench/sitepkg*,
-bench/labs/) and scratch binaries from experiments.
+str.join was 21.4x slower than CPython (worst single gap in strbench).
+The generic path went through the iterator protocol and per-element
+TryFromObject conversion, then grew the buffer with repeated push_str.
+
+Mirror CPython's unicode_join: for exact list/tuple of exact str,
+pre-scan the total length and build the result in a single pre-sized
+allocation with no per-element conversion. Single-element joins return
+the element itself (CPython identity behavior); non-str elements fall
+back to the generic path which raises TypeError as before.
+
+Measured (bench/strbench.py, 200k iterations): join 0.386s -> 0.148s
+(2.6x). test_str + test_string pass (192 run, 12 skipped).
 
 Assisted-by: deepseek-v4-flash
