@@ -367,6 +367,13 @@ pub unsafe extern "C" fn PyException_SetTraceback(exc: *mut PyObject, tb: *mut P
     })
 }
 
+/// PyErr_CheckSignals: RustPython has no C-level signal delivery; there is
+/// never a pending signal to handle, so this always succeeds.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_CheckSignals() -> c_int {
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::PyTypeInfo;

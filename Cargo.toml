@@ -128,6 +128,10 @@ panic = "abort"
 parking_lot_core = { git = "https://github.com/youknowone/parking_lot", branch = "rustpython" }
 # EXPERIMENT (local): fix ucrt ldexp subnormal truncation -> correct round-to-nearest
 pymath = { path = "pymath-patched" }
+# Windows capi tests: drop pyo3-ffi's `#[link(name = "pythonXY")]` fallback so
+# pyo3's extern references resolve to rustpython-capi's own exports instead of
+# an import library.
+pyo3-ffi = { path = "pyo3-ffi-patched" }
 # REDOX START, Uncomment when you want to compile/check with redoxer
 # REDOX END
 

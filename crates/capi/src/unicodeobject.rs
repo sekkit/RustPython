@@ -518,6 +518,99 @@ pub unsafe extern "C" fn PyUnicode_EqualToUTF8AndSize(
     })
 }
 
+#[cfg(windows)]
+unsafe fn widechar_len(mut w: *const libc::wchar_t) -> usize {
+    let mut n = 0;
+    while unsafe { *w } != 0 {
+        n += 1;
+        w = unsafe { w.add(1) };
+    }
+    n
+}
+
+/// PyUnicode_FromWideChar: build a str from a wchar_t buffer (UTF-16 on
+/// Windows, UCS-4 elsewhere).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_FromWideChar(
+    w: *const libc::wchar_t,
+    size: isize,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        if w.is_null() && size != 0 {
+            return Err(vm.new_system_error(
+                "PyUnicode_FromWideChar called with null data and non-zero size",
+            ));
+        }
+        let size: usize = if size == -1 {
+            if w.is_null() {
+                0
+            } else {
+                unsafe { widechar_len(w) }
+            }
+        } else {
+            size.try_into().map_err(|_| {
+                vm.new_system_error("PyUnicode_FromWideChar called with negative size")
+            })?
+        };
+        #[cfg(windows)]
+        {
+            let units = unsafe { slice::from_raw_parts(w.cast::<u16>(), size) };
+            let text = String::from_utf16(units).map_err(|_| {
+                vm.new_unicode_decode_error("PyUnicode_FromWideChar got invalid UTF-16 data")
+            })?;
+            Ok(vm.ctx.new_str(text))
+        }
+        #[cfg(not(windows))]
+        {
+            let units = unsafe { slice::from_raw_parts(w.cast::<u32>(), size) };
+            let mut text = String::with_capacity(size);
+            for &unit in units {
+                let ch = char::from_u32(unit).ok_or_else(|| {
+                    vm.new_unicode_decode_error("PyUnicode_FromWideChar got an invalid code point")
+                })?;
+                text.push(ch);
+            }
+            Ok(vm.ctx.new_str(text))
+        }
+    })
+}
+
+/// PyUnicode_AsWideChar: copy the str into a wchar_t buffer. Follows CPython:
+/// a NULL buffer returns the required size including the NUL; a too-small
+/// buffer is filled without a terminator; otherwise the string plus NUL is
+/// written. Returns the number of wchar characters written (excluding NUL).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_AsWideChar(
+    unicode: *mut PyObject,
+    w: *mut libc::wchar_t,
+    size: isize,
+) -> isize {
+    with_vm(|vm| -> PyResult<isize> {
+        let unicode = unsafe { &*unicode }.try_downcast_ref::<PyStr>(vm)?;
+        let text = unicode.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_AsWideChar only supports UTF-8 or ASCII strings")
+        })?;
+        #[cfg(windows)]
+        let units: Vec<u16> = text.encode_utf16().collect();
+        #[cfg(not(windows))]
+        let units: Vec<u32> = text.chars().map(|c| c as u32).collect();
+        let res = units.len() as isize;
+        if w.is_null() {
+            return Ok(res + 1);
+        }
+        if size > res {
+            let n = units.len();
+            unsafe { core::ptr::copy_nonoverlapping(units.as_ptr(), w.cast(), n) };
+            unsafe { *w.add(n) = 0 };
+            Ok(res)
+        } else {
+            let n = size as usize;
+            unsafe { core::ptr::copy_nonoverlapping(units.as_ptr(), w.cast(), n) };
+            Ok(size)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
