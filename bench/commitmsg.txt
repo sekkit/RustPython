@@ -1,15 +1,18 @@
-docs: round-3 perf analysis - call path already optimized, gaps are design-level
+fix(sqlite): skip NULL decltype in detect_types conversion (CPython parity)
 
-- Benchmarked and decomposed call cost incrementally: function call adds
-  ~203ns/call vs CPython ~34ns (6x), method calls 7x; no single bottleneck
-- Confirmed upstream already has: trampoline tailcalls (no Rust recursion),
-  CallArgBuffer stack staging (no per-call Vec), invoke_exact_args_slots,
-  LOAD_GLOBAL version-cached specialization - simple calls are already
-  zero-heap-alloc
-- Remaining gap is spread across interpreter base costs (dispatch, atomic
-  refcount, datastack frame management, type checks); needs systemic work
-- Warning recorded: `cargo build --features flame-it` overwrites the
-  release binary with instrumented code (~18x slower); rebuild plain
-  release afterwards
+sqlite3_column_decltype() returns NULL for columns without a declared
+type (expressions, custom function results). With detect_types enabled
+(django sets detect_types=3), RustPython called ptr_to_str on the NULL
+pointer and raised MemoryError("string pointer is null") on every such
+fetch, breaking django's sqlite backend (register_functions ->
+sqlite_compileoption_used query failed).
+
+CPython skips conversion when decltype is NULL (_pysqlite_fetch_one_row).
+Mirror that: guard with is_null() before conversion.
+
+Verified: all connect-parameter combinations (detect_types/uri/
+check_same_thread) fetch correctly; django 6.1 ORM on sqlite3 backend
+creates/queries users end-to-end; test_sqlite3 still passes
+(508 run, 20 skipped).
 
 Assisted-by: deepseek-v4-flash

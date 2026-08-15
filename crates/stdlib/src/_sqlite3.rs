@@ -2119,12 +2119,19 @@ mod _sqlite3 {
                 }
                 if detect_types & PARSE_DECLTYPES != 0 {
                     let decltype = st.column_decltype(i);
-                    let decltype = ptr_to_str(decltype, vm)?;
-                    if let Some(decltype) = decltype.split_terminator(&[' ', '(']).next() {
-                        let decltype = decltype.to_uppercase();
-                        if let Some(converter) = converters().get_item_opt(&decltype, vm)? {
-                            cast_map.push(Some(converter.clone()));
-                            continue;
+                    // sqlite3_column_decltype() returns NULL for columns
+                    // without a declared type (e.g. expressions and custom
+                    // function results). CPython skips the conversion in
+                    // that case (see _pysqlite_fetch_one_row); treat NULL
+                    // the same way instead of erroring.
+                    if !decltype.is_null() {
+                        let decltype = ptr_to_str(decltype, vm)?;
+                        if let Some(decltype) = decltype.split_terminator(&[' ', '(']).next() {
+                            let decltype = decltype.to_uppercase();
+                            if let Some(converter) = converters().get_item_opt(&decltype, vm)? {
+                                cast_map.push(Some(converter.clone()));
+                                continue;
+                            }
                         }
                     }
                 }
