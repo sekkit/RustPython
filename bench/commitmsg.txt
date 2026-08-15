@@ -1,13 +1,15 @@
-fix(stdlib): implement nt._add_dll_directory/_remove_dll_directory
+feat(stdlib): add pure-Python _lsprof shim and profiling package (cProfile)
 
-os.add_dll_directory was broken (nt._add_dll_directory missing), which
-numpy's delvewheel patch calls first. Implemented via
-AddDllDirectory/RemoveDllDirectory in host_env + nt.rs. Verified:
-add_dll_directory round-trips with close(); test_os passes
-(375 run, 155 skipped).
+cProfile was missing (No module named cProfile), which breaks build
+backends like meson-python. RustPython has no C _lsprof module, so:
 
-Note: _imp.extension_suffixes stays empty (documented) because .pyd/.so
-loading is not implemented yet; non-empty suffixes would make CPython's
-extension test-suite modules fail instead of skipping themselves.
+- Lib/_lsprof.py: pure-Python _lsprof compatible shim built on
+  sys.setprofile with CPython timing semantics (totaltime includes
+  subcalls, inlinetime excludes them; recursion counted)
+- Lib/profiling/ + Lib/cProfile.py: synced from CPython 3.15
+
+Verified: cProfile.Profile output matches CPython structure exactly
+(466 function calls, 465/1 recursive fib); cProfile.run() and
+pstats.Stats work; profiling.sampling imports cleanly.
 
 Assisted-by: deepseek-v4-flash
