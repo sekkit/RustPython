@@ -1,9 +1,7 @@
-docs: record sqlite decltype fix for django ORM support
+chore: remove accidentally committed vendored django package (sitepkg5)
 
-Commit 539d03b6b fixed NULL decltype handling with detect_types
-(sqlite3_column_decltype returns NULL for expression/function columns;
-CPython skips conversion, RustPython raised MemoryError). django 6.1 ORM
-on the sqlite3 backend now works end-to-end (schema creation, CRUD,
-queries).
+The previous commit included bench/sitepkg5 (pip-downloaded django and
+deps). Remove it from tracking; django verification uses pip --target
+on demand.
 
 Assisted-by: deepseek-v4-flash
