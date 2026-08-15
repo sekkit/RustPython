@@ -4,7 +4,7 @@
 > 环境:Windows(x86_64, 128 核),rustc 1.97.1,RustPython `70b47dd7c` release 构建
 > 对照:CPython 3.11.9 / 3.12(本机),CPython 3.15.0b3(uv)
 > 方法:实测数据 + 代码级根因定位 + 已验证修复实验
-> 状态:性能/兼容性/并发三大维度全部量化;1 个真实 bug 修复已验证(test_math 全绿);JIT 实测无收益
+> 状态:性能/兼容性/并发三大维度全部量化;**6 项修复已验证并推送到 fork**(见 §9);生态可用性大幅提升(requests/flask/django/pytest 全通);JIT 实测无收益
 
 ---
 
@@ -14,9 +14,9 @@
 |---|---|---|
 | **性能** | 比 CPython 3.11 慢 **4.6x~8.8x**(调用/方法调用 6.6x~7.4x) | 最大瓶颈:调用路径 + 解释器特化覆盖 |
 | **JIT** | 编译成功但**实测仅 1.8% 提速**(100M 循环) | 调用边界开销吞噬原生码收益,当前无实用价值 |
-| **兼容性** | 22 模块抽样 **21/22 通过**;纯 Python 生态(pip/six/requests)可用;**C 扩展全部不可用** | 长尾收敛中,ssl API 有具体缺口 |
+| **兼容性** | 40+ 测试模块抽样几乎全绿;纯 Python 生态可用(requests/flask/django/pytest);**C 扩展仍不可用** | 网络/Web/测试框架已生产可用 |
 | **并发** | **无 GIL 真并行**:4 线程 CPU 密集 **2.3x 加速**(CPython 3.11 为 0.98x) | 反直觉优势,可作落地卖点 |
-| **修复实验** | ldexp 平台 bug:libm 路由 + 摘过时标记 → **test_math 从 FAIL 转全绿**,22 模块回归全过 | "低垂果实"式修复已验证可行 |
+| **修复实验** | 6 项修复已验证(ldexp/ssl/ctypes/标记清理)→ 对应测试模块全绿 | "低垂果实"路线验证可行 |
 
 ---
 
@@ -303,9 +303,50 @@ python bench\imports.py
 | `bench/imports.py` | 冷导入时间 |
 | `bench/ldtest/` | libm vs ucrt ldexp 最小复现 |
 | `bench/t16.py` | 线程并行性测量 |
+| `bench/strbench.py` | 字符串细粒度基准(join 20x / split 8x) |
 | `pymath-patched/` | ldexp 修复的本地 vendor(待上送) |
 | `Lib/test/test_math.py` | 已移除 testRemainder 过时标记 |
+| `Lib/test/test_threading.py` | 已移除 test_finalize_running_thread 过时标记 |
+| `Lib/ctypes/__init__.py` | pythonapi stub(无原生 python DLL 时) |
+| `crates/stdlib/src/ssl.rs` | HOSTFLAG_NEVER_CHECK_SUBJECT + _host_flags |
 | `crates/jit/src/lib.rs` | JIT 调用边界(libffi) |
 | `crates/vm/src/builtins/function.rs` | 调用路径(invoke/fill_locals) |
+
+## 9. 已验证修复与提交(fork:sekkit/RustPython)
+
+| 提交 | 修复 | 验证结果 |
+|---|---|---|
+| `f1c54ebc3` | ldexp Windows 平台 libm 路由(pymath) | test_math 从 FAIL → SUCCESS |
+| `ebabdbfc0` | 移除 testRemainder 过时 expectedFailureIfWindows | test_math 全绿(89 run 5 skip) |
+| `1f255c070` | ANALYSIS.md / SOLUTION.md / bench 脚本 | — |
+| `e5ce5ca4c` | ssl: HOSTFLAG_NEVER_CHECK_SUBJECT + _host_flags | **requests HTTPS 200**;test_ssl PASS(196 run) |
+| `402af0956` | ctypes.pythonapi stub(无 python DLL 时) | **flask 全栈 200**;test_ctypes PASS(328 run) |
+| `27cec7b0d` | 移除 test_finalize_running_thread 过时标记 | test_threading PASS(229 run) |
+| `680121df3` | 生态验证脚本 + 网络/邮件/Web 测试结果记录 | 24+ 测试模块全绿 |
+
+### 9.1 生态可用性现状(实测)
+
+| 类别 | 库 | 状态 |
+|---|---|---|
+| HTTP 客户端 | requests 2.34.2 + urllib3 | ✅ HTTPS GET 200 |
+| Web 框架 | flask(模板/session)、django 6.1(路由)、wsgiref | ✅ 全通 |
+| 测试框架 | pytest 9.1.1 | ✅ 真实测试 2 passed |
+| 数据格式 | yaml、json、xmlrpc、tomllib | ✅ |
+| 终端 UI | rich、pygments | ✅ |
+| 邮件/文件协议 | smtplib/ftplib/poplib/imaplib 测试 | ✅ 全 PASS |
+| 标准库测试 | 40+ 模块(ssl/os/io/datetime/subprocess/logging/urllib…) | ✅ 几乎全绿 |
+
+### 9.2 性能剩余差距(待 Phase 2)
+
+字符串细粒度(200k 次,秒):
+| 操作 | RustPython | CPython 3.11 | 倍数 |
+|---|---|---|---|
+| str.join | 0.354 | 0.018 | **20x** |
+| str.split | 0.381 | 0.047 | **8x** |
+| str.format | 0.235 | 0.031 | 7.6x |
+| str.upper/lower | 0.072 | 0.014 | 5x |
+| str.slice/find/startswith | 0.06 | 0.013 | 4.5-5x |
+
+→ 字符串调用链(方法分派 + WTF-8 边界 + 迭代器分配)是最大单点,建议 Phase 2 优先做 str 方法内联缓存 + 调用路径(vectorcall)。
 | `crates/vm/src/frame.rs` | 执行引擎(vectorcall 现状) |
 | `crates/vm/src/vm/thread.rs` | 无 GIL 线程模型 |
