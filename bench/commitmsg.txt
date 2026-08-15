@@ -1,9 +1,15 @@
-docs: mark ctypes 4-defect set complete + Win32 automation verified
+fix(stdlib): extension_suffixes returns platform suffixes; add_dll_directory
 
-All four ctypes defects from the C-extension route report are now fixed
-(bitfields 77c2ad0f3, callbacks-as-args bd3f47b5b, struct-array elements
-2d5d14794, cast semantics 9891162f0). Verified end-to-end: GetSystemInfo
-+ EnumWindows + GetWindowTextW + struct arrays match CPython output;
-pure-ctypes ecosystem (wmi-style libs, Win32 automation) is unlocked.
+- _imp.extension_suffixes() returned an empty list, so extension
+  importers (FileFinder) never looked for native modules (.pyd/.dll on
+  Windows). Now returns platform-correct suffixes: [".pyd", ".dll"] on
+  Windows, [".so"] on Unix, [".so", ".dylib"] on macOS (CPython parity).
+- nt._add_dll_directory / _remove_dll_directory were missing, breaking
+  os.add_dll_directory which numpy's delvewheel patch calls first.
+  Implemented via AddDllDirectory/RemoveDllDirectory (host_env + nt.rs).
+
+Verified: _imp.extension_suffixes() == ['.pyd', '.dll'];
+os.add_dll_directory() round-trips with close(). test_importlib and
+test_os pass.
 
 Assisted-by: deepseek-v4-flash

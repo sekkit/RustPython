@@ -81,6 +81,22 @@ pub(crate) mod module {
         host_nt::supports_virtual_terminal()
     }
 
+    #[pyfunction]
+    pub(super) fn _add_dll_directory(
+        path: OsPath,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        let wide = path.to_wide_cstring(vm)?;
+        host_nt::add_dll_directory(&wide)
+            .map_err(|err| vm.new_os_error(err.to_string()))
+    }
+
+    #[pyfunction]
+    pub(super) fn _remove_dll_directory(cookie: usize, vm: &VirtualMachine) -> PyResult<()> {
+        host_nt::remove_dll_directory(cookie)
+            .map_err(|err| vm.new_os_error(err.to_string()))
+    }
+
     #[derive(FromArgs)]
     pub(super) struct SymlinkArgs<'fd> {
         src: OsPath,

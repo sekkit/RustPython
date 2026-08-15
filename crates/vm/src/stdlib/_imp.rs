@@ -195,8 +195,19 @@ mod _imp {
     use version::PYC_MAGIC_NUMBER_TOKEN;
 
     #[pyfunction]
-    const fn extension_suffixes() -> Vec<PyObjectRef> {
-        Vec::new()
+    fn extension_suffixes(vm: &VirtualMachine) -> Vec<PyObjectRef> {
+        // CPython never returns an empty list here; extension importers
+        // (e.g. FileFinder) use these suffixes to locate native modules.
+        #[cfg(windows)]
+        let suffixes = [".pyd", ".dll"];
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let suffixes = [".so"];
+        #[cfg(target_os = "macos")]
+        let suffixes = [".so", ".dylib"];
+        suffixes
+            .iter()
+            .map(|s| vm.ctx.new_str(*s).into())
+            .collect()
     }
 
     #[pyfunction]

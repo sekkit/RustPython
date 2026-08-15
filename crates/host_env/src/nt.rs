@@ -35,7 +35,7 @@ use windows_sys::{
             INVALID_FILE_ATTRIBUTES, OPEN_EXISTING, SetFileAttributesW, SetFileInformationByHandle,
             WIN32_FIND_DATAW,
         },
-        System::{Console, Threading},
+        System::{Console, LibraryLoader::AddDllDirectory, LibraryLoader::RemoveDllDirectory, Threading},
     },
     w,
 };
@@ -203,6 +203,31 @@ fn win32_attribute_data_to_stat(
     }
 }
 
+
+/// AddDllDirectory wrapper: adds a directory to the DLL search path and
+/// returns an opaque cookie for RemoveDllDirectory.
+pub fn add_dll_directory(path: &widestring::WideCString) -> io::Result<usize> {
+    unsafe {
+        let cookie = AddDllDirectory(path.as_ptr());
+        if cookie.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(cookie as usize)
+        }
+    }
+}
+
+/// RemoveDllDirectory wrapper: removes a directory previously added with
+/// add_dll_directory.
+pub fn remove_dll_directory(cookie: usize) -> io::Result<()> {
+    unsafe {
+        if RemoveDllDirectory(cookie as *const core::ffi::c_void) == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
 pub fn visible_env_vars() -> impl Iterator<Item = (String, String)> {
     crate::os::vars().filter(|(key, _)| !key.starts_with('='))
 }
