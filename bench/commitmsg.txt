@@ -1,18 +1,15 @@
-fix(ctypes): implement bitfield read-modify-write semantics
+fix(type): allow __dict__/__weakref__ in __slots__ alongside class attributes
 
-Bitfield fields (e.g. ("a", ctypes.c_int, 3)) were stored and read as
-plain integers, so adjacent bitfields overwrote each other (setting
-a=5,b=3 then reading a returned 3). CPython's b_get/b_set (cfield.c)
-mask and shift the storage unit.
+CPython treats __dict__ and __weakref__ as special slots: a class-level
+attribute with the same name is not a conflict (the member descriptor
+check only applies to ordinary slot names). RustPython rejected this
+with ValueError("'__dict__' in __slots__ conflicts with class
+variable"), which broke celery's Proxy class (celery/local.py defines
+__slots__ containing '__dict__' together with a __dict__ property).
 
-- descr_get: extract the bitfield with unsigned shift + mask, then
-  sign-extend for signed ctypes types (b/h/i/l/q/n) — matches CPython
-  exactly (verified: c_int bitfield 1/3/4 layout reads back identically,
-  including 1-bit signed -1 semantics)
-- descr_set: read-modify-write the storage unit (clear field bits, OR in
-  masked value) instead of overwriting the whole unit
-
-Verified: signed/unsigned bitfield readback and overwrite match CPython;
-test_ctypes passes (328 run, 58 skipped).
+Skip the conflict check for these two special names. Verified: the
+celery 5.6.3 pattern now works and matches CPython; ordinary slot/class
+variable conflicts still raise ValueError; test_descr passes
+(162 run, 18 skipped).
 
 Assisted-by: deepseek-v4-flash

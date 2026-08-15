@@ -2281,8 +2281,15 @@ impl Constructor for PyType {
                     seen_weakref = true;
                 }
 
-                // Check if slot name conflicts with class attributes
-                if attributes.contains_key(vm.ctx.intern_str(slot.as_wtf8())) {
+                // Check if slot name conflicts with class attributes.
+                // __dict__ and __weakref__ are special slots: CPython does not
+                // treat a same-named class attribute as a conflict for them
+                // (celery's Proxy class defines __slots__ containing
+                // '__dict__' alongside a __dict__ property).
+                if slot_name != b"__dict__"
+                    && slot_name != b"__weakref__"
+                    && attributes.contains_key(vm.ctx.intern_str(slot.as_wtf8()))
+                {
                     return Err(vm.new_value_error(format!(
                         "'{}' in __slots__ conflicts with class variable",
                         slot.as_wtf8()
