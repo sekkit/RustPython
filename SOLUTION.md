@@ -388,6 +388,13 @@ python bench\imports.py
   | +方法调用 | +1344ms 总 | +193ms 总 | 7.0x |
 - **根因结论**:调用路径已高度优化(tailcall 避免 Rust 递归、CallArgBuffer 避免 Vec 分配、LOAD_GLOBAL 有版本缓存);剩余差距**分散在解释器基础成本**(指令 dispatch、原子引用计数、datastack 帧管理、类型检查),无单点银弹,需系统级优化(更紧凑 dispatch / immortal 对象 / 对象布局),属 Phase 2 大工程。
 
+### 9.3c 已尝试并回退的优化(负面结论,避免重复)
+
+| 候选 | 结果 | 结论 |
+|---|---|---|
+| **upper/lower "无变化返回 self"** | 已实现并回退 | **与 CPython 测试套件冲突**:`string_tests.checkequal` 强制 `assertIsNot`(CPython 3.11/3.15 实测也总是返回新对象)。此方向不可行 |
+| **PyInt 算术 i64 快路径**(checked_add/sub/mul 绕过 BigInt 运算) | 已实现并回退 | 收益仅 ~1%(arith 4.13M→4.19M ops/s):瓶颈是 **PyInt 对象 + BigInt 值(Vec)的分配本身**,而非 BigInt 运算;小整数缓存(-5..256)与 freelist 已存在但覆盖有限。真正解法是 **PyInt 内联数字表示**(数据模型重构,高风险,Phase 2) |
+
 ### 9.4 Windows 构建注意事项(实测)
 
 - `--features freeze-stdlib` 在 Windows 上依赖符号链接(`crates/pylib/Lib` 等 10 个条目指向仓库根 `Lib/`),默认 `core.symlinks=false` 克隆会缺失,构建报 `Error listing dir "crates\pylib\src\../Lib"`。修复:为缺失条目创建符号链接/junction(见 README: `git config core.symlinks true` 后重新克隆,或手动 mklink)。

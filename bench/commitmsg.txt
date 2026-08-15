@@ -1,15 +1,16 @@
-docs: commit parallel investigation reports + round summary
+docs: record negative perf results (case-identity and int fast paths)
 
-Four subagent investigations (perf candidates, ctypes/C-ext route,
-ecosystem gaps, stale markers) produced actionable reports under
-bench/reports/. Three fixes landed this round:
+Two performance candidates from the subagent report were implemented,
+measured and reverted:
 
-- str.join exact list/tuple fast path (2.6x on join bench)
-- ctypes bitfield read-modify-write with sign extension (CPython parity)
-- __slots__ __dict__/__weakref__ special-slot conflict fix (celery 5.6.3)
+1. str.upper/lower "return self when unchanged": conflicts with the
+   CPython test suite - string_tests.checkequal asserts assertIsNot
+   (CPython 3.11/3.15 also always return a new object). Not viable.
+2. PyInt i64 fast path for add/sub/mul: only ~1% gain - the bottleneck
+   is PyInt object + BigInt value (Vec) allocation itself, not BigInt
+   arithmetic. Real fix needs inline int representation (data model
+   refactor, Phase 2).
 
-Remaining actionable items from reports: ctypes array element access,
-callback-as-argument, cast() semantics; PyInt small-int arithmetic fast
-path; upper/lower no-change fast path.
+Both recorded in SOLUTION.md 9.3c to avoid repeating.
 
 Assisted-by: deepseek-v4-flash
