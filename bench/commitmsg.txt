@@ -1,19 +1,14 @@
-fix(ctypes): support callbacks as function arguments (from_param + conversion)
+fix(ctypes): return live struct/union instances for array elements
 
-CFUNCTYPE/WINFUNCTYPE instances could not be passed as arguments to DLL
-functions: PyCFuncPtrType lacked from_param, the type_code validation
-rejected function-pointer types, and neither conv_param nor
-convert_object handled PyCFuncPtr values. EnumWindows(Proc(cb), 0) failed
-with TypeError("Unsupported argument type").
+Array elements of structure/union type were decoded as raw integers
+(read_array_element has no struct branch), so (Point*3)()[i] returned an
+int and pts[i].x = 7 did not work.
 
-- PyCFuncPtrType::from_param: returns the callback instance (CPython
-  parity), keeping it alive through the call
-- convert_object: exempt function-pointer types from _type_ validation;
-  convert PyCFuncPtr to its stored function pointer
-- conv_param: convert PyCFuncPtr to a pointer value, keeping the callable
-  alive
+When the element type has no primitive type code, build a PyCData
+instance backed by the base buffer at the element offset (CPython view
+semantics: reads and writes through the element hit the array storage).
 
-Verified: EnumWindows with the standard WINFUNCTYPE decorator pattern
-enumerates windows (467); test_ctypes passes (328 run, 58 skipped).
+Verified: (Point*3) element read/write and write-back work and match
+CPython; test_ctypes passes (328 run, 58 skipped).
 
 Assisted-by: deepseek-v4-flash

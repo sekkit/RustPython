@@ -570,6 +570,19 @@ impl PyCArray {
         };
 
         let buffer = buffer_lock.read();
+
+        // Element type is a structure/union (no primitive type code):
+        // return a live instance backed by the base buffer (CPython view
+        // semantics - writes through the element update the array).
+        if type_code.is_none()
+            && let Some(elem_type) = stg.as_ref().and_then(|s| s.element_type.clone())
+        {
+            let ptr = buffer.as_ptr().wrapping_add(final_offset) as *mut u8;
+            let base = base_obj.clone().unwrap_or_else(|| zelf.to_owned().into());
+            let cdata = unsafe { super::PyCData::from_base_obj(ptr, element_size, base, index) };
+            return cdata.into_ref_with_type(vm, elem_type).map(Into::into);
+        }
+
         Ok(Self::read_element_from_buffer(
             &buffer,
             final_offset,
