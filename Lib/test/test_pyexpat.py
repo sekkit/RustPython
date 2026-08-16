@@ -683,15 +683,12 @@ class ChardataBufferTest(unittest.TestCase):
     test setting of chardata buffer size
     """
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_1025_bytes(self):
         self.assertEqual(self.small_buffer_test(1025), 2)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_1000_bytes(self):
         self.assertEqual(self.small_buffer_test(1000), 1)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_wrong_size(self):
         parser = expat.ParserCreate()
         parser.buffer_text = 1

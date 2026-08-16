@@ -40,17 +40,87 @@ macro_rules! create_bool_property {
     };
 }
 
+macro_rules! create_int_property {
+    ($ctx: expr, $attributes: expr, $name: expr, $class: expr, $element: ident) => {
+        let attr = $ctx.new_static_getset(
+            $name,
+            $class,
+            move |this: &PyExpatLikeXmlParser| -> usize { *this.$element.read() },
+            move |this: &PyExpatLikeXmlParser,
+                  value: PyObjectRef,
+                  vm: &VirtualMachine|
+                  -> PyResult<()> {
+                let int = value
+                    .downcast_ref::<PyInt>()
+                    .ok_or_else(|| vm.new_type_error(format!("{} must be an int", $name)))?;
+                // expat stores the buffer size as a C ssize_t; reject values
+                // that overflow it and non-positive values.
+                let size = int.try_to_primitive::<i64>(vm).map_err(|_| {
+                    vm.new_value_error(format!("{} must be a positive integer", $name))
+                })?;
+                if size <= 0 {
+                    return Err(vm.new_value_error(format!(
+                        "{} must be a positive integer",
+                        $name
+                    )));
+                }
+                *this.$element.write() = size as usize;
+                Ok(())
+            },
+        );
+
+        $attributes.insert($ctx.intern_str($name), attr.into());
+    };
+}
+
 #[pymodule(name = "pyexpat")]
 mod _pyexpat {
     use crate::vm::{
         AsObject, Context, Py, PyObjectRef, PyPayload, PyRef, PyResult, TryFromObject,
         VirtualMachine,
-        builtins::{PyBytesRef, PyException, PyModule, PyStr, PyStrRef, PyType, PyUtf8StrRef},
+        builtins::{PyBytesRef, PyException, PyInt, PyModule, PyStr, PyStrRef, PyType, PyUtf8StrRef},
         extend_module,
         function::{ArgBytesLike, ArgPrimitiveIndex, Either, IntoFuncArgs, OptionalArg},
         types::Constructor,
     };
     use rustpython_common::lock::PyRwLock;
+
+    /// xml-rs only recognizes a handful of encoding labels; expat accepts many
+    /// aliases (e.g. `iso8859` for ISO-8859-1). Rewrite the XML declaration so
+    /// xml-rs can decode the document. The prolog is ASCII, so byte offsets
+    /// from the lossy decode line up with the original buffer.
+    fn normalize_encoding_decl(bytes: &[u8]) -> Vec<u8> {
+        let head = &bytes[..bytes.len().min(256)];
+        let s = String::from_utf8_lossy(head);
+        let Some(rel) = s.find("encoding") else {
+            return bytes.to_vec();
+        };
+        let after = &s[rel + "encoding".len()..];
+        let after_eq = after.trim_start().strip_prefix('=').unwrap_or(after.trim_start());
+        let trimmed = after_eq.trim_start();
+        let quote = trimmed.chars().next().filter(|&c| c == '"' || c == '\'');
+        let Some(quote) = quote else {
+            return bytes.to_vec();
+        };
+        // Number of bytes consumed between "encoding" and the value quote
+        // (leading spaces, '=', leading spaces).
+        let consumed = after.len() - trimmed.len();
+        let val_start = rel + "encoding".len() + consumed + quote.len_utf8();
+        let val = &trimmed[quote.len_utf8()..];
+        let Some(close) = val.find(quote) else {
+            return bytes.to_vec();
+        };
+        let val_end = val_start + close;
+        let mapped = match s[val_start..val_end].to_ascii_lowercase().as_str() {
+            "iso8859" | "iso8859-1" | "iso-8859_1" | "iso_8859_1" | "latin1" => "iso-8859-1",
+            "utf8" => "utf-8",
+            "ascii" | "usascii" | "us_ascii" => "us-ascii",
+            _ => return bytes.to_vec(),
+        };
+        let mut out = bytes.to_vec();
+        out.splice(val_start..val_end, mapped.bytes());
+        out
+    }
     use std::io::Cursor;
     use xml::reader::XmlEvent;
 
@@ -97,6 +167,8 @@ mod _pyexpat {
         buffer_text: MutableObject,
         #[pytraverse(skip)]
         text_buffer: PyRwLock<String>,
+        #[pytraverse(skip)]
+        buffer_size: PyRwLock<usize>,
         namespace_prefixes: MutableObject,
         ordered_attributes: MutableObject,
         specified_attributes: MutableObject,
@@ -150,6 +222,7 @@ mod _pyexpat {
                 entity_decl: MutableObject::new(vm.ctx.none()),
                 buffer_text: MutableObject::new(vm.ctx.new_bool(false).into()),
                 text_buffer: PyRwLock::new(String::new()),
+                buffer_size: PyRwLock::new(1024),
                 namespace_prefixes: MutableObject::new(vm.ctx.new_bool(false).into()),
                 ordered_attributes: MutableObject::new(vm.ctx.new_bool(false).into()),
                 specified_attributes: MutableObject::new(vm.ctx.new_bool(false).into()),
@@ -192,6 +265,7 @@ mod _pyexpat {
             );
             create_property!(ctx, attributes, "EntityDeclHandler", class, entity_decl);
             create_bool_property!(ctx, attributes, "buffer_text", class, buffer_text);
+            create_int_property!(ctx, attributes, "buffer_size", class, buffer_size);
             create_bool_property!(
                 ctx,
                 attributes,
@@ -354,9 +428,12 @@ mod _pyexpat {
         where
             T: std::io::Read,
         {
-            for e in parser {
-                match e? {
-                    XmlEvent::StartElement {
+            // Flush buffered text even when the stream ends mid-document
+            // (incremental parse without isfinal), like expat.
+            let result = (|| {
+                for e in parser {
+                    match e? {
+                        XmlEvent::StartElement {
                         name, attributes, ..
                     } => {
                         self.flush_if_handler(vm, &self.start_element);
@@ -417,11 +494,13 @@ mod _pyexpat {
                         invoke_handler(vm, &self.end_cdata_section, ());
                     }
                     _ => {}
+                    }
                 }
-            }
+                Ok(())
+            })();
             // Flush any remaining buffered text at the end of the parse.
             self.flush_text_buffer(vm);
-            Ok(())
+            result
         }
 
         fn buffering(&self, vm: &VirtualMachine) -> bool {
@@ -437,14 +516,24 @@ mod _pyexpat {
         }
 
         /// Flush buffered character data, calling the CharacterDataHandler
-        /// once with all text accumulated since the last flush.
+        /// with the accumulated text in chunks of at most buffer_size bytes.
         fn flush_text_buffer(&self, vm: &VirtualMachine) {
             let text = core::mem::take(&mut *self.text_buffer.write());
             if text.is_empty() {
                 return;
             }
-            let str = PyStr::from(text).into_ref(&vm.ctx);
-            invoke_handler(vm, &self.character_data, (str,));
+            let size = (*self.buffer_size.read()).max(1);
+            let len = text.len();
+            let mut start = 0;
+            while start < len {
+                let mut end = (start + size).min(len);
+                while end > start && !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let str = PyStr::from(text[start..end].to_owned()).into_ref(&vm.ctx);
+                invoke_handler(vm, &self.character_data, (str,));
+                start = end;
+            }
         }
 
         #[pymethod(name = "Parse")]
@@ -462,6 +551,7 @@ mod _pyexpat {
             if bytes.is_empty() {
                 return 1;
             }
+            let bytes = normalize_encoding_decl(&bytes);
             let reader = Cursor::<Vec<u8>>::new(bytes);
             let parser = self.create_config().create_reader(reader);
             // Note: xml-rs is stricter than libexpat; some errors are silently ignored
@@ -478,6 +568,7 @@ mod _pyexpat {
             if buf.is_empty() {
                 return Ok(1);
             }
+            let buf = normalize_encoding_decl(&buf);
             let reader = Cursor::new(buf);
             let parser = self.create_config().create_reader(reader);
             // Note: xml-rs is stricter than libexpat; some errors are silently ignored
