@@ -465,3 +465,26 @@ python bench\imports.py
   - numeric 45 处:Unihan-3.2.0 数值(4E00=1.0、5793=1e20);numeric_changed=-1 字符(9F8 等)仍 None。
 - **回归**:test_unicodedata 56 / test_str 138 / test_codecs 287 / test_builtin 138 / test_float 54 / test_int 52 / test_bytes 317 / test_unicode_identifiers 3 全绿;`cargo test -p rustpython-unicode` 12/12;clippy 无告警。
 - **数据迁移**:`latest/` 数据从 17.0.0 回退到 16.0.0(与 CPython 3.14 一致);此前 17.0.0 独有的字符(088F、1ACF 等)在 16.0.0 为保留未分配,`name()` 返回 ValueError(与 CPython 3.14 一致,3.15 才有)。
+
+---
+
+## 11. Round 15:UTF-8 mode 默认关闭,子进程输出按 locale 解码
+
+> 状态:`sys.flags.utf8_mode` 默认 0(与 CPython 3.14 一致);`locale.getpreferredencoding()` 返回 cp936(此前 utf-8);test_subprocess **353 run 全绿**(此前 test_getoutput UnicodeDecodeError)。
+
+### 11.1 现象
+
+- `subprocess.getstatusoutput("type <file>")` 抛 `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd5`。Windows `type` 命令输出按 ANSI 代码页(cp936/GBK)编码,而 RustPython 以 utf-8 解码。
+- 根因:`src/settings.rs` 把 `utf8_mode` 默认强制为 **1**(注释称 locale 检测不完整),导致 `locale.getpreferredencoding()` 返回 `'utf-8'`(CPython 返回 `'cp936'`),subprocess `text=True` 按此解码。
+
+### 11.2 修复
+
+- `src/settings.rs`:`utf8_mode < 0`(未显式设置)时解析为 **0**,与 CPython 默认一致;`PYTHONUTF8=1` / `-X utf8` 仍可开启。
+- `crates/vm/src/stdlib/sys.rs`:库嵌入路径(`utf8_mode < 0`)同样落到 0。
+- `_io.text_encoding(None)` 与 stdio 编码随之走 `"locale"`(cp936),`errors="surrogateescape"` 保证非编码字符不崩溃——均为 CPython 行为。
+
+### 11.3 验证
+
+- `sys.flags.utf8_mode` 0、`locale.getpreferredencoding(True)` cp936、`subprocess.getoutput("type NUL 2>&1")` 正常——与 CPython 3.14.6 逐项一致。
+- test_subprocess **353 run 全绿**(此前 1 error);回归 40+ 模块全绿(print/io/codecs/sys/str/bytes/unicodedata/builtin/venv/signal/threading/os/…)。
+- 附带:test_urllib 2 项与 test_shutil 1 项为**环境/CPython 测试缺陷**(在本机 CPython 3.14.6 同样失败:HTTPS 隧道控制字符抛 ValueError 而非 InvalidURL;`NeedCurrentDirectoryForExePathW` 本机返回 False),按规范标记 expectedFailure 并注释原因。

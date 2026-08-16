@@ -1499,7 +1499,7 @@ pub mod sys {
                 isolated: settings.isolated as u8,
                 dev_mode: settings.dev_mode,
                 utf8_mode: if settings.utf8_mode < 0 {
-                    1
+                    0
                 } else {
                     settings.utf8_mode as u8
                 },

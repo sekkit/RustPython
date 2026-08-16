@@ -343,10 +343,11 @@ pub fn parse_opts() -> Result<(Settings, RunMode), lexopt::Error> {
     settings.xoptions.extend(xopts);
 
     // Resolve utf8_mode if not explicitly set by PYTHONUTF8 or -X utf8.
-    // Default to UTF-8 mode since RustPython's locale encoding detection
-    // is incomplete. Users can set PYTHONUTF8=0 or -X utf8=0 to disable.
+    // Match CPython's default (utf8_mode == 0): text I/O falls back to the
+    // locale encoding, and locale.getpreferredencoding() reports it. UTF-8
+    // mode is opt-in via PYTHONUTF8=1 / -X utf8.
     if settings.utf8_mode < 0 {
-        settings.utf8_mode = 1;
+        settings.utf8_mode = 0;
     }
 
     settings.warn_default_encoding =
