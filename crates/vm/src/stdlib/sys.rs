@@ -1863,6 +1863,18 @@ pub(crate) fn init_module(vm: &VirtualMachine, module: &Py<PyModule>, builtins: 
     let jit_def = sys_jit::module_def(&vm.ctx);
     let jit_module = jit_def.create_module(vm).unwrap();
 
+    // sys.monitoring: the pymodule macro built the submodule and attached it
+    // as the `monitoring` attribute; register it in sys.modules under the
+    // dotted name too, so `import sys.monitoring` works (CPython does the
+    // same via PyImport_AddModule("sys.monitoring")).
+    if let Ok(monitoring) = module.get_attr("monitoring", vm)
+        && !vm.is_none(&monitoring)
+    {
+        modules
+            .set_item("sys.monitoring", monitoring, vm)
+            .unwrap();
+    }
+
     extend_module!(vm, module, {
         "__doc__" => sys::DOC.to_owned().to_pyobject(vm),
         "modules" => modules,

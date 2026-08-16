@@ -120,6 +120,8 @@ mod builtins {
         #[pyarg(any, optional)]
         optimize: OptionalArg<ArgPrimitiveIndex<i32>>,
         #[pyarg(named, optional)]
+        module: OptionalArg<PyObjectRef>,
+        #[pyarg(named, optional)]
         _feature_version: OptionalArg<i32>,
     }
 
@@ -193,6 +195,19 @@ mod builtins {
         }
         #[cfg(feature = "ast")]
         {
+            // CPython parity: the keyword-only `module` argument must be a
+            // string or None; it is only used for SyntaxWarning attribution,
+            // so no further wiring is needed here.
+            if let Some(module) = args.module.into_option()
+                && !module.fast_isinstance(vm.ctx.types.str_type)
+                && !vm.is_none(&module)
+            {
+                return Err(vm.new_type_error(format!(
+                    "compile() argument 'module' must be str or None, not {}",
+                    module.class().name()
+                )));
+            }
+
             // CPython parity: PyUnicode_FSDecoder accepts only str / bytes /
             // __fspath__-bearing objects. Reject buffer-protocol types like
             // bytearray and memoryview that would otherwise pass through
