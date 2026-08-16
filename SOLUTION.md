@@ -4,7 +4,7 @@
 > 环境:Windows(x86_64, 128 核),rustc 1.97.1,RustPython `70b47dd7c` release 构建
 > 对照:CPython 3.11.9 / 3.12(本机),CPython 3.15.0b3(uv)
 > 方法:实测数据 + 代码级根因定位 + 已验证修复实验
-> 状态:性能/兼容性/并发三大维度全部量化;**9 项修复已验证并推送到 fork**(见 §9);生态可用性大幅提升(requests/flask/django/pytest 全通);C 扩展(.pyd)PEP 489 加载已打通,**pip 二进制 wheel 可安装可 import**,**`python -m venv` 可用**(名称无关的 C-API 中继);test_importlib 1440 / test_venv 40 全绿;JIT 实测无收益
+> 状态:性能/兼容性/并发三大维度全部量化;**10 项修复已验证并推送到 fork**(见 §9);生态可用性大幅提升(requests/flask/django/pytest 全通);C 扩展(.pyd)PEP 489 加载已打通,**pip 二进制 wheel 可安装可 import**,**`python -m venv` 可用且 test_venv 40 全绿**(名称无关的 C-API 中继);test_importlib 1440 全绿;JIT 实测无收益
 
 ---
 
@@ -16,7 +16,7 @@
 | **JIT** | 编译成功但**实测仅 1.8% 提速**(100M 循环) | 调用边界开销吞噬原生码收益,当前无实用价值 |
 | **兼容性** | **100+ 测试模块全绿**;纯 Python 生态全通(requests/flask/django ORM/celery/pytest/httpx/aiohttp/sympy…);**ctypes 4 缺陷全修 + cProfile 可用**;仍不可用:任意第三方 C 扩展(仅 shim ABI 可加载,Phase B) | Web/数据/测试/任务队列生产可用 |
 | **并发** | **无 GIL 真并行**:4 线程 CPU 密集 **2.3x 加速**(CPython 3.11 为 0.98x) | 反直觉优势,可作落地卖点 |
-| **修复实验** | **20 项修复**已提交(fork:sekkit/RustPython,39 提交)→ 对应测试模块全绿 | "低垂果实"路线验证可行 |
+| **修复实验** | **21 项修复**已提交(fork:sekkit/RustPython,41 提交)→ 对应测试模块全绿 | "低垂果实"路线验证可行 |
 
 ---
 
@@ -339,6 +339,7 @@ python bench\imports.py
 | `970d86c4e` | **feat(capi): PEP 489 多阶段扩展加载 + CPython 测试扩展模块可构建** | `_imp.create_dynamic` 完整加载序列(PyInit/PyInitU 短名编码、init 结果校验、slot 扫描、Py_mod_create、exec、single-phase 全局缓存 + m_copy/m_init 语义、reload);`exec_dynamic` 按 md_state 语义跳过重复 exec;capi 新导出(PyModule_Add\*/GetDef/GetState/New、PyState_\*、PyType_FromSpec 系列、_PyArg_CheckPositional/_PyArg_UnpackKeywords、_PyNamespace_New、PyTime_\*、_Py_NoneStruct/PyUnicode_Type/PyLong_Type/PyBool_Type 数据符号);模块方法绑定 module 为 self;**module→def 与 exec 标记改存模块自身 __dict__(修复指针复用导致的间歇性 test_bad_modules[exec_unreported_exception] 失败)**;`bench/build_test_extensions.ps1` 从 CPython 3.14.7 源码构建 _testsinglephase/_testmultiphase;`test_importlib` **1440 run 全绿(连续 4 轮)**,smoke 全过,test_ctypes 328 run 全绿 |
 | `754f44d43` | **feat: CPython-exact SOABI 后缀 + pip 二进制 wheel 可安装可 import** | `SOABI="cp314-win_amd64"`(version.rs,仿 pyconfig.h)、`EXT_SUFFIX=".cp314-win_amd64.pyd"`、`_imp.extension_suffixes()→[".cp314-win_amd64.pyd"]`(FileFinder 只认 SOABI 命名,与 CPython 3.14 一致);扩展全部改名为 SOABI 命名;`bench/wheel_demo/` 复现 demo — wheel 标签 `rustpython314-cp314-win_amd64`(解释器部分来自 sys.implementation.name,ABI 部分来自 SOABI;**真实 CPython cp314 wheel 被 pip 拒绝,只有按 shim ABI 构建的扩展能装**);实测:`pip install` 二进制 wheel → site-packages → import 成功(含 uninstall/reinstall),pip 从 PyPI 装 six 1.17.0 ✅;回归:test_importlib 1440 / test_ctypes 328 / test_sysconfig 37 全绿,smoke 全过,capi 112 pass,clippy clean |
 | `43c8437e3` | **feat: `python -m venv` 可用 + 与可执行文件名无关的 C-API 中继(rustpythonapi.dll)** | venv.py Windows 分支不再复制 CPython 的 venvlauncher(该 launcher 无法运行 RustPython),改为复制解释器本体为 python.exe/pythonw.exe(+ python3.14.exe);getpath.rs 在 venv 中从**基础**前缀(home)构建 stdlib 搜索路径(venv 自身无 Lib/DLLs);venv.py 同时把 python311/314/3.dll 与 rustpythonapi.dll 复制进 Scripts;**shim 转发目标从 `rustpython.exe.<sym>` 改为名称无关的 `rustpythonapi.dll.<sym>`**(624 个 jmp thunk 经 slot 跳转到进程映像自身导出,数据符号 PyExc_\*×66 与 4 个 128B 头桩为真实存储,DllMain 自初始化 + exe 侧 statics 填充后重同步);capi 注册中继数据地址(NONE_STUB_ADDRS×2、is_type_stub_addr)使 Py_RETURN_NONE/PyType_IsSubtype 翻译照常;实测:**venv 内 `pip install` 二进制 wheel → import 成功**(prefix=venv、base_prefix=base);回归:test_venv **40 run 全绿**(此前创建即失败),test_importlib 1440 / test_ctypes 328 / test_sysconfig 37 全绿,smoke 全过,capi 112 pass,clippy clean |
+| `97e887998` | **fix(venv): Scripts 下同时保留解释器本名(rustpython.exe)+ 清除 12 处过时 expectedFailure 标记** | test_venv 的 envpy() 按 sys._base_executable 的 basename(rustpython.exe)找 venv python,而 venv 里只有 python.exe → 所有 venv 子进程测试 FileNotFoundError 并被 expectedFailure 掩盖;修复后 **12 个测试转绿**(test_prefixes/test_sysconfig/test_executable/test_multiprocessing/test_multiprocessing_recursion/test_defaults_with_str_path/test_defaults_with_pathlike/test_special_chars_windows/test_unicode_in_batch_file/test_upgrade/test_no_pip_by_default/test_explicit_no_pip),标记全部移除;中继与可执行文件名无关,rustpython.exe 名下的 venv python 同样可加载扩展;test_venv **40 run 全绿**(12 个 posix/符号链接类 skip),test_importlib 1440 / test_ctypes 328 / test_sysconfig 37 全绿 |
 
 ### 9.0 并行调查(4 subagents)产出报告
 
