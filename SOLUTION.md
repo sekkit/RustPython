@@ -4,7 +4,7 @@
 > 环境:Windows(x86_64, 128 核),rustc 1.97.1,RustPython `70b47dd7c` release 构建
 > 对照:CPython 3.11.9 / 3.12(本机),CPython 3.15.0b3(uv)
 > 方法:实测数据 + 代码级根因定位 + 已验证修复实验
-> 状态:性能/兼容性/并发三大维度全部量化;**11 项修复已验证并推送到 fork**(见 §9);生态可用性大幅提升(requests/flask/django/pytest 全通);C 扩展(.pyd)PEP 489 加载已打通,**pip 二进制 wheel 可安装可 import**,**`python -m venv` 可用且 test_venv 40 全绿**,**信号系统修复**(SIGINT 同步投递、interrupt_main 不再挂死,test_signal 57 / test_threading 229 全绿);test_importlib 1440 全绿;JIT 实测无收益
+> 状态:性能/兼容性/并发三大维度全部量化;**12 项修复已验证并推送到 fork**(见 §9);生态可用性大幅提升(requests/flask/django/pytest 全通);C 扩展(.pyd)PEP 489 加载已打通,**pip 二进制 wheel 可安装可 import**,**`python -m venv` 可用且 test_venv 40 全绿**,**信号系统修复**(SIGINT 同步投递、interrupt_main 不再挂死,test_signal 57 / test_threading 229 全绿),**winreg WTF-8 代理项处理**(test_mimetypes 38 / test_winreg 25 全绿);test_importlib 1440 全绿;JIT 实测无收益
 
 ---
 
@@ -16,7 +16,7 @@
 | **JIT** | 编译成功但**实测仅 1.8% 提速**(100M 循环) | 调用边界开销吞噬原生码收益,当前无实用价值 |
 | **兼容性** | **100+ 测试模块全绿**;纯 Python 生态全通(requests/flask/django ORM/celery/pytest/httpx/aiohttp/sympy…);**ctypes 4 缺陷全修 + cProfile 可用**;仍不可用:任意第三方 C 扩展(仅 shim ABI 可加载,Phase B) | Web/数据/测试/任务队列生产可用 |
 | **并发** | **无 GIL 真并行**:4 线程 CPU 密集 **2.3x 加速**(CPython 3.11 为 0.98x) | 反直觉优势,可作落地卖点 |
-| **修复实验** | **22 项修复**已提交(fork:sekkit/RustPython,42 提交)→ 对应测试模块全绿 | "低垂果实"路线验证可行 |
+| **修复实验** | **23 项修复**已提交(fork:sekkit/RustPython,43 提交)→ 对应测试模块全绿 | "低垂果实"路线验证可行 |
 
 ---
 
@@ -341,6 +341,7 @@ python bench\imports.py
 | `43c8437e3` | **feat: `python -m venv` 可用 + 与可执行文件名无关的 C-API 中继(rustpythonapi.dll)** | venv.py Windows 分支不再复制 CPython 的 venvlauncher(该 launcher 无法运行 RustPython),改为复制解释器本体为 python.exe/pythonw.exe(+ python3.14.exe);getpath.rs 在 venv 中从**基础**前缀(home)构建 stdlib 搜索路径(venv 自身无 Lib/DLLs);venv.py 同时把 python311/314/3.dll 与 rustpythonapi.dll 复制进 Scripts;**shim 转发目标从 `rustpython.exe.<sym>` 改为名称无关的 `rustpythonapi.dll.<sym>`**(624 个 jmp thunk 经 slot 跳转到进程映像自身导出,数据符号 PyExc_\*×66 与 4 个 128B 头桩为真实存储,DllMain 自初始化 + exe 侧 statics 填充后重同步);capi 注册中继数据地址(NONE_STUB_ADDRS×2、is_type_stub_addr)使 Py_RETURN_NONE/PyType_IsSubtype 翻译照常;实测:**venv 内 `pip install` 二进制 wheel → import 成功**(prefix=venv、base_prefix=base);回归:test_venv **40 run 全绿**(此前创建即失败),test_importlib 1440 / test_ctypes 328 / test_sysconfig 37 全绿,smoke 全过,capi 112 pass,clippy clean |
 | `97e887998` | **fix(venv): Scripts 下同时保留解释器本名(rustpython.exe)+ 清除 12 处过时 expectedFailure 标记** | test_venv 的 envpy() 按 sys._base_executable 的 basename(rustpython.exe)找 venv python,而 venv 里只有 python.exe → 所有 venv 子进程测试 FileNotFoundError 并被 expectedFailure 掩盖;修复后 **12 个测试转绿**(test_prefixes/test_sysconfig/test_executable/test_multiprocessing/test_multiprocessing_recursion/test_defaults_with_str_path/test_defaults_with_pathlike/test_special_chars_windows/test_unicode_in_batch_file/test_upgrade/test_no_pip_by_default/test_explicit_no_pip),标记全部移除;中继与可执行文件名无关,rustpython.exe 名下的 venv python 同样可加载扩展;test_venv **40 run 全绿**(12 个 posix/符号链接类 skip),test_importlib 1440 / test_ctypes 328 / test_sysconfig 37 全绿 |
 | `96eba01e5` | **fix(signal): 中断只投递给主线程;线程 VM 继承 handler 表** | `signal.raise_signal(SIGINT)` 从不同步抛 KeyboardInterrupt(handler 注册在 import 期,而 capi 模式下脚本跑在 `new_thread()` 建的线程 VM 上,其 handler 表为空;sys.modules 共享导致 `import signal` 不再重跑 module exec);`_thread.interrupt_main` 在递归场景被工作线程抢先消费中断(全局 eval-breaker 先到先得)导致主线程忙循环挂死,test_signal/test_threading 的 regrtest 子进程中途退出(exit 3);修复:① `new_thread()` 从父 VM **拷贝** handler 表;② `trigger_signals` 在非主线程上**只重新武装、不消费**信号(与 CPython 一致:Python 级 handler 只在主线程运行),且先于查表,杜绝陈旧表吞信号;实测:getsignal 返回 default_int_handler、raise_signal 同步抛 KeyboardInterrupt、interrupt_main 递归场景不再挂起;回归:test_signal **57 run 全绿**(此前杀 runner)、test_threading 229、test_importlib 1,440、test_venv 40、test_ctypes 328、test_subprocess 353 全绿,smoke 全过,clippy clean,capi 112 pass |
+| `1f5486490` | **fix(winreg): 注册表名/值按 WTF-8 解码;接受含代理项的字符串** | test_mimetypes 失败两连:① HKEY_CLASSES_ROOT 含孤立代理项的键名,`EnumKey` 用严格 `String::from_utf16` 解码 → `ValueError: UTF16 error: invalid utf-16: lone surrogate found`;② 修好后 `OpenKey` 报 `RuntimeError: Expected payload 'str' but 'str' found` — winreg 的 `String` 参数经 PyUtf8Str 载荷下转换,只接受合法 UTF-8 串;修复(对齐 CPython 的 PyUnicode_FromWideChar/AsWideChar 往返):`EnumKey/EnumValue/QueryValueEx` 与 REG_SZ/REG_MULTI_SZ 值改为 `Wtf8Buf::from_wide` 解码(孤立代理项保留在 Python str 中);winreg 全部键/值/文件名/计算机名参数从 `String` 改为 `PyStrRef`,经 `as_wtf8().to_wide*()` 转宽字符,`OsStr` 接口用 `OsString::from_wide` 端到端保留代理项;实测:test_mimetypes **38 run 全绿**(此前 1 error)、test_winreg 25 全绿;回归:test_importlib 1,440 / test_ctypes 328 / test_sysconfig 37 / test_venv 40 / test_signal 57 / test_threading 229 全绿,smoke 全过 |
 
 ### 9.0 并行调查(4 subagents)产出报告
 
