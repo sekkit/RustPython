@@ -179,7 +179,7 @@ pub(crate) mod _hashlib {
         key: ArgBytesLike,
         #[pyarg(positional)]
         msg: ArgBytesLike,
-        #[pyarg(positional)]
+        #[pyarg(any)]
         digest: PyObjectRef,
     }
 
@@ -305,6 +305,8 @@ pub(crate) mod _hashlib {
     impl PyHmac {
         #[pyslot]
         fn slot_new(_cls: PyTypeRef, _args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            // CPython 3.14 marks _hashlib.HMAC with Py_TPFLAGS_DISALLOW_INSTANTIATION;
+            // HMAC objects are created via _hashlib.hmac_new() instead.
             Err(vm.new_type_error("cannot create '_hashlib.HMAC' instances"))
         }
 
