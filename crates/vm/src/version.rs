@@ -25,6 +25,14 @@ pub const VERSION_HEX: usize =
 #[cfg(windows)]
 pub const WINVER: &str = env!("WINVER_CPY");
 
+/// CPython-style SOABI tag (e.g. "cp314-win_amd64"), mirroring CPython's
+/// "cp" + major + minor + "-" + platform (PC/pyconfig.h). Extensions are
+/// named "<module>.<SOABI>.pyd" and pip derives the wheel ABI tag from this
+/// string, so it must stay in sync with `_imp.extension_suffixes()` and
+/// sysconfig's EXT_SUFFIX.
+#[cfg(windows)]
+pub const SOABI: &str = concat!("cp", env!("MAJOR_CPY"), env!("MINOR_CPY"), "-win_amd64");
+
 pub const GIT_REVISION: &str = env!("RUSTPYTHON_GIT_HASH");
 pub const GIT_IDENTIFIER: &str = env!("RUSTPYTHON_GIT_IDENTIFIER");
 // const GIT_TAG: &str = env!("RUSTPYTHON_GIT_TAG");

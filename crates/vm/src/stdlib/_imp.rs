@@ -204,8 +204,11 @@ mod _imp {
     fn extension_suffixes(vm: &VirtualMachine) -> Vec<PyObjectRef> {
         #[cfg(windows)]
         {
-            // .pyd extension loading is supported through create_dynamic.
-            vec![vm.ctx.new_str(".pyd").into()]
+            // CPython-exact SOABI suffix (".cp314-win_amd64.pyd"): the
+            // FileFinder only finds files named <name> + this suffix, and
+            // wheels built for this interpreter carry it, so modules import
+            // after `pip install`.
+            vec![vm.ctx.new_str(format!(".{}.pyd", crate::version::SOABI)).into()]
         }
         #[cfg(not(windows))]
         {
