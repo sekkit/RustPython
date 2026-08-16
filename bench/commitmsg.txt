@@ -1,30 +1,43 @@
-fix(winreg): decode registry names/values as WTF-8; accept surrogate strings
+feat(cprofile): monitoring-based _lsprof; sys.monitoring importable; compile() module kwarg
 
-test_mimetypes failed on Windows: the registry (HKEY_CLASSES_ROOT) contains
-keys whose names include lone surrogates, and `_winreg.EnumKey` decoded
-UTF-16 with a strict `String::from_utf16`, raising
-`ValueError: UTF16 error: invalid utf-16: lone surrogate found`. After
-fixing that, the same test hit a second issue: winreg functions took
-`String` parameters, which are converted by downcasting the argument to
-PyUtf8Str — a payload variant that only accepts valid-UTF-8 strings, so any
-surrogate-containing key name failed with
-`RuntimeError: Expected payload 'str' but 'str' found` in
-`_winreg.OpenKey`.
+cProfile was unusable: test_cprofile had 8 failures + 10 errors. Root causes
+and fixes:
 
-Both are fixed the way CPython handles them (PyUnicode_FromWideChar /
-PyUnicode_AsWideChar round-trip arbitrary UTF-16 code units):
+1. `import sys.monitoring` raised `ModuleNotFoundError` -- the submodule was
+   built and attached as the `sys.monitoring` attribute but never registered
+   in sys.modules under its dotted name. Fixed in sys.rs init_module (CPython
+   does the same via PyImport_AddModule("sys.monitoring")); test_monitoring
+   88 run green.
 
-- EnumKey/EnumValue/QueryValueEx decode to WTF-8 (Wtf8Buf::from_wide), so
-  lone surrogates survive in the Python str; REG_SZ / REG_MULTI_SZ values
-  get the same treatment.
-- All winreg parameters that name registry keys, values, files or
-  computers switched from `String` to `PyStrRef`, converted to wide chars
-  via `as_wtf8().to_wide*()`; the OsStr-taking host calls use
-  `OsString::from_wide`, preserving surrogates end to end.
+2. Lib/_lsprof.py was a minimal sys.setprofile shim: missing clear(), the
+   _pystart/_pyreturn/_ccall/_creturn callbacks, sys.monitoring tool
+   registration, second-profiler ValueError, and it mis-handled external
+   timers. Rewritten as a faithful port of CPython 3.14 Modules/_lsprof.c on
+   top of the VM's sys.monitoring: registers tool PROFILER_ID ("cProfile")
+   with the 9 events (PY_START/PY_RESUME/PY_THROW/PY_RETURN/PY_YIELD/
+   PY_UNWIND/CALL/C_RETURN/C_RAISE), ports the ProfilerContext/Entry/
+   SubEntry timing model (initContext/Stop/flush_unmatched), external-timer
+   semantics (disable/clear inside a timer raise RuntimeError which surfaces
+   as an unraisable; timer errors reported via sys.unraisablehook), and
+   normalizeUserObj labels ("<built-in method mod.name>", "<method 'x' of
+   'Y' objects>"). The profiler's own enable()/disable() calls surface as
+   built-in methods exactly like CPython's C methods, and its internal
+   monitoring calls are not self-profiled.
 
-Verified: test_mimetypes 38 run green (previously 1 error), test_winreg 25
-run green. Regression: test_importlib 1,440, test_ctypes 328, test_sysconfig
-37, test_venv 40, test_signal 57, test_threading 229 all green; pyd smoke
-passes; clippy clean (no new warnings).
+   Result: cProfile output is byte-identical to CPython 3.14's expected
+   output (do_profiling print_stats/print_callers/print_callees all match),
+   test_cprofile 24/24 green (was 8F+10E); the inherited expectedFailure in
+   test_profile.py (still needed for the pure-Python profile.Profile) is
+   lifted for CProfileTest via an unmarked wrapper.
+
+3. compile() lacked the keyword-only `module` parameter (used by the
+   cProfile script runner): added with CPython's validation
+   ("compile() argument 'module' must be str or None, not %T").
+
+Verified: test_cprofile 24, test_profile 7, test_monitoring 88, test_builtin
+138, test_compile 185, test_code 37, test_importlib 1,440, test_ctypes 328,
+test_sysconfig 37, test_venv 40, test_signal 57, test_threading 229,
+test_mimetypes 38, test_winreg 25 all green; smoke passes; clippy no new
+warnings; capi 112 pass.
 
 Assisted-by: deepseek-v4-flash
