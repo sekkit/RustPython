@@ -354,6 +354,11 @@ class EnvBuilder:
                 f'pythonw{exe_d}.exe': pythonw_exe,
             }
             copy_sources = dict(link_sources)
+            # Also expose the interpreter under its own name (e.g.
+            # rustpython.exe): venv tests and tools derive the venv python
+            # path from sys._base_executable's basename.
+            copy_sources[os.path.basename(context.executable)] = context.executable
+            link_sources[os.path.basename(context.executable)] = context.executable
 
             do_copies = True
             if self.symlinks:

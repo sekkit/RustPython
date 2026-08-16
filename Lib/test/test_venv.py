@@ -118,7 +118,6 @@ class BasicTest(BaseTest):
         fn = self.get_env_file(*args)
         self.assertTrue(os.path.isdir(fn))
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_defaults_with_str_path(self):
         """
         Test the create function with default arguments and a str path.
@@ -127,7 +126,6 @@ class BasicTest(BaseTest):
         self.run_with_capture(venv.create, self.env_dir)
         self._check_output_of_default_create()
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_defaults_with_pathlike(self):
         """
         Test the create function with default arguments and a path-like path.
@@ -266,7 +264,6 @@ class BasicTest(BaseTest):
             with patch('venv.subprocess.check_output', pip_cmd_checker):
                 builder.upgrade_dependencies(fake_context)
 
-    @unittest.expectedFailureIfWindows("TODO: RUSTPYTHON")
     @requireVenvCreate
     def test_prefixes(self):
         """
@@ -286,7 +283,6 @@ class BasicTest(BaseTest):
             self.assertEqual(pathlib.Path(out.strip().decode()),
                              pathlib.Path(expected), prefix)
 
-    @unittest.expectedFailureIfWindows("TODO: RUSTPYTHON")
     @requireVenvCreate
     def test_sysconfig(self):
         """
@@ -429,7 +425,6 @@ class BasicTest(BaseTest):
             self.assertRaises((ValueError, OSError), venv.create, self.env_dir)
             self.clear_directory(self.env_dir)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_upgrade(self):
         """
         Test upgrading an existing environment directory.
@@ -486,7 +481,6 @@ class BasicTest(BaseTest):
     # run the test, the pyvenv.cfg in the venv created in the test will
     # point to the venv being used to run the test, and we lose the link
     # to the source build - so Python can't initialise properly.
-    @unittest.expectedFailureIfWindows("TODO: RUSTPYTHON")
     @requireVenvCreate
     def test_executable(self):
         """
@@ -568,7 +562,6 @@ class BasicTest(BaseTest):
         self.assertEndsWith(lines[1], env_name.encode())
 
     # gh-124651: test quoted strings on Windows
-    @unittest.expectedFailureIfWindows("TODO: RUSTPYTHON")
     @unittest.skipUnless(os.name == 'nt', 'only relevant on Windows')
     def test_special_chars_windows(self):
         """
@@ -592,7 +585,6 @@ class BasicTest(BaseTest):
         self.assertTrue(env_name.encode() in lines[0])
         self.assertEndsWith(lines[1], env_name.encode())
 
-    @unittest.expectedFailureIfWindows("TODO: RUSTPYTHON")
     @unittest.skipUnless(os.name == 'nt', 'only relevant on Windows')
     def test_unicode_in_batch_file(self):
         """
@@ -624,7 +616,6 @@ class BasicTest(BaseTest):
             filepath_regex = r"'[A-Z]:\\\\(?:[^\\\\]+\\\\)*[^\\\\]+'"
             self.assertRegex(err, rf"Unable to symlink {filepath_regex} to {filepath_regex}")
 
-    @unittest.expectedFailureIfWindows("TODO: RUSTPYTHON")
     @requireVenvCreate
     def test_multiprocessing(self):
         """
@@ -644,7 +635,6 @@ class BasicTest(BaseTest):
             'pool.terminate()'])
         self.assertEqual(out.strip(), "python".encode())
 
-    @unittest.expectedFailureIfWindows("TODO: RUSTPYTHON")
     @requireVenvCreate
     def test_multiprocessing_recursion(self):
         """
@@ -957,13 +947,11 @@ class EnsurePipTest(BaseTest):
         self.assertEqual(out.strip(), "OK")
 
 
-    @unittest.expectedFailureIfWindows("TODO: RUSTPYTHON")
     def test_no_pip_by_default(self):
         rmtree(self.env_dir)
         self.run_with_capture(venv.create, self.env_dir)
         self.assert_pip_not_installed()
 
-    @unittest.expectedFailureIfWindows("TODO: RUSTPYTHON")
     def test_explicit_no_pip(self):
         rmtree(self.env_dir)
         self.run_with_capture(venv.create, self.env_dir, with_pip=False)

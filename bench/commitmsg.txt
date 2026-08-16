@@ -1,49 +1,25 @@
-feat: venv support + name-independent C-API relay (rustpythonapi.dll)
+fix(venv): expose the interpreter under its own name; clear 12 stale test markers
 
-`python -m venv` failed on Windows: venv.py tried to copy CPython's
-venvlaunchert.exe (the free-threaded launcher, chosen because we advertise
-Py_GIL_DISABLED=1), which doesn't exist here. And even the regular launcher
-is a CPython binary that cannot run RustPython.
+test_venv's helper derives the venv python path from
+sys._base_executable's basename (envpy() -> Scripts\rustpython.exe), but the
+venv only contained python.exe/pythonw.exe copies, so every venv subprocess
+test failed with FileNotFoundError and was masked by expectedFailure
+markers.
 
-Two problems were solved:
+- Lib/venv/__init__.py (Windows setup_python): also copy the interpreter
+  under its own name (e.g. rustpython.exe) into Scripts. The C-API relay
+  (rustpythonapi.dll) is name-independent, so this exe loads extensions
+  exactly like python.exe.
+- Lib/test/test_venv.py: remove 12 @unittest.expectedFailure markers that
+  the venv/rely work now makes pass:
+  test_prefixes, test_sysconfig, test_executable, test_multiprocessing,
+  test_multiprocessing_recursion, test_defaults_with_str_path,
+  test_defaults_with_pathlike, test_special_chars_windows,
+  test_unicode_in_batch_file, test_upgrade, test_no_pip_by_default,
+  test_explicit_no_pip.
 
-1. venv creation now produces a working venv python:
-   - Lib/venv/__init__.py (Windows setup_python) copies the running
-     executable under the conventional names (python.exe, pythonw.exe,
-     python3.14.exe) instead of the CPython launcher. The interpreter
-     already reads pyvenv.cfg (crates/vm/src/getpath.rs), so the copy is a
-     real venv python.
-   - getpath.rs: in a venv, module search paths (Lib, DLLs, stdlib dir)
-     are now built from the *base* prefix (pyvenv.cfg home); a venv has no
-     stdlib of its own. sys.prefix stays the venv dir, sys.base_prefix the
-     base install.
-   - venv.py also copies the C-API shims (python311/314/3.dll) and the
-     relay (rustpythonapi.dll) next to the venv python so extensions load.
-
-2. Extensions must load regardless of the executable's file name: a venv
-   python is a copy named python.exe, but the shims forwarded to
-   "rustpython.exe.<sym>", which cannot resolve in that process. The shims
-   now forward to a name-independent relay, rustpythonapi.dll
-   (bench/make_python_dll_shims.ps1):
-   - 624 jmp thunks (one per function export) jumping through slots filled
-     by rustpythonapi_init() with the address of the process image's own
-     export (GetProcAddress(GetModuleHandle(NULL))), so all calls still run
-     in the exe's module and share its thread-local VM;
-   - real storage for the data exports (66 PyExc_* pointer slots and the
-     128-byte header stubs _Py_NoneStruct/PyUnicode_Type/PyLong_Type/
-     PyBool_Type), copied from the process image;
-   - self-initializing DllMain, plus a re-init from
-     crates/capi/src/objectstatics.rs after the exe's statics are filled;
-   - crates/capi: register the relay's data addresses with the vm so
-     Py_RETURN_NONE / PyType_IsSubtype style checks translate them
-     (import.rs NONE_STUB_ADDRS, objectstatics is_type_stub_addr, pytype.rs).
-
-Verified end to end: `-m venv` creates a venv whose Scripts contain
-python.exe + shims + relay; the venv python reports prefix=venv,
-base_prefix=base; `pip install` of the binary wheel inside the venv works
-and the installed .cp314-win_amd64.pyd imports and runs through the relay.
-Regression: test_venv 40 run green (previously failed to create anything),
-test_importlib 1440 run green, test_ctypes 328, test_sysconfig 37, pyd
-smoke all pass, capi cargo test 112 pass, clippy clean.
+test_venv now runs 40 tests green (12 posix/symlink-only skips remain), up
+from 40 with 12 stale expected-failures; regression: test_importlib 1440,
+test_ctypes 328, test_sysconfig 37, pyd smoke all pass.
 
 Assisted-by: deepseek-v4-flash
