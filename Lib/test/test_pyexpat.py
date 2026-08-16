@@ -509,7 +509,6 @@ class BufferTextTest(unittest.TestCase):
         parser = expat.ParserCreate()
         self.assertFalse(parser.buffer_text)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_buffering_enabled(self):
         # Make sure buffering is turned on
         self.assertTrue(self.parser.buffer_text)
@@ -517,7 +516,7 @@ class BufferTextTest(unittest.TestCase):
         self.assertEqual(self.stuff, ['123'],
                          "buffered text not properly collapsed")
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; xml-rs delivers '2\n3' as one Characters event, expat chunks non-buffered text differently
     def test1(self):
         # XXX This test exposes more detail of Expat's text chunking than we
         # XXX like, but it tests what we need to concisely.
@@ -527,7 +526,6 @@ class BufferTextTest(unittest.TestCase):
                          ["<a>", "1", "<b>", "2", "\n", "3", "<c>", "4\n5"],
                          "buffering control not reacting as expected")
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test2(self):
         self.parser.Parse(b"<a>1<b/>&lt;2&gt;<c/>&#32;\n&#x20;3</a>", True)
         self.assertEqual(self.stuff, ["1<2> \n 3"],

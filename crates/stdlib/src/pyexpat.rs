@@ -95,6 +95,8 @@ mod _pyexpat {
         character_data: MutableObject,
         entity_decl: MutableObject,
         buffer_text: MutableObject,
+        #[pytraverse(skip)]
+        text_buffer: PyRwLock<String>,
         namespace_prefixes: MutableObject,
         ordered_attributes: MutableObject,
         specified_attributes: MutableObject,
@@ -147,6 +149,7 @@ mod _pyexpat {
                 character_data: MutableObject::new(vm.ctx.none()),
                 entity_decl: MutableObject::new(vm.ctx.none()),
                 buffer_text: MutableObject::new(vm.ctx.new_bool(false).into()),
+                text_buffer: PyRwLock::new(String::new()),
                 namespace_prefixes: MutableObject::new(vm.ctx.new_bool(false).into()),
                 ordered_attributes: MutableObject::new(vm.ctx.new_bool(false).into()),
                 specified_attributes: MutableObject::new(vm.ctx.new_bool(false).into()),
@@ -356,6 +359,7 @@ mod _pyexpat {
                     XmlEvent::StartElement {
                         name, attributes, ..
                     } => {
+                        self.flush_if_handler(vm, &self.start_element);
                         let ordered = self.ordered_attributes.read().is(&vm.ctx.true_value);
                         // Build the container.
                         let attrs: PyObjectRef = if ordered {
@@ -382,23 +386,31 @@ mod _pyexpat {
                         invoke_handler(vm, &self.start_element, (name_str, attrs));
                     }
                     XmlEvent::EndElement { name, .. } => {
+                        self.flush_if_handler(vm, &self.end_element);
                         let name_str = PyStr::from(self.make_name(&name)).into_ref(&vm.ctx);
                         invoke_handler(vm, &self.end_element, (name_str,));
                     }
                     XmlEvent::Characters(chars) => {
-                        let str = PyStr::from(chars).into_ref(&vm.ctx);
-                        invoke_handler(vm, &self.character_data, (str,));
+                        if self.buffering(vm) {
+                            self.text_buffer.write().push_str(&chars);
+                        } else {
+                            let str = PyStr::from(chars).into_ref(&vm.ctx);
+                            invoke_handler(vm, &self.character_data, (str,));
+                        }
                     }
                     XmlEvent::ProcessingInstruction { name, data } => {
+                        self.flush_if_handler(vm, &self.processing_instruction);
                         let name = PyStr::from(name).into_ref(&vm.ctx);
                         let data = PyStr::from(data.unwrap_or_default()).into_ref(&vm.ctx);
                         invoke_handler(vm, &self.processing_instruction, (name, data));
                     }
                     XmlEvent::Comment(comment) => {
+                        self.flush_if_handler(vm, &self.comment);
                         let comment = PyStr::from(comment).into_ref(&vm.ctx);
                         invoke_handler(vm, &self.comment, (comment,));
                     }
                     XmlEvent::CData(chars) => {
+                        self.flush_if_handler(vm, &self.start_cdata_section);
                         invoke_handler(vm, &self.start_cdata_section, ());
                         let str = PyStr::from(chars).into_ref(&vm.ctx);
                         invoke_handler(vm, &self.character_data, (str,));
@@ -407,7 +419,32 @@ mod _pyexpat {
                     _ => {}
                 }
             }
+            // Flush any remaining buffered text at the end of the parse.
+            self.flush_text_buffer(vm);
             Ok(())
+        }
+
+        fn buffering(&self, vm: &VirtualMachine) -> bool {
+            self.buffer_text.read().is(&vm.ctx.true_value)
+        }
+
+        /// Expat only flushes the character-data buffer right before a markup
+        /// handler that is actually set; otherwise text is collapsed.
+        fn flush_if_handler(&self, vm: &VirtualMachine, handler: &MutableObject) {
+            if !vm.is_none(&*handler.read()) {
+                self.flush_text_buffer(vm);
+            }
+        }
+
+        /// Flush buffered character data, calling the CharacterDataHandler
+        /// once with all text accumulated since the last flush.
+        fn flush_text_buffer(&self, vm: &VirtualMachine) {
+            let text = core::mem::take(&mut *self.text_buffer.write());
+            if text.is_empty() {
+                return;
+            }
+            let str = PyStr::from(text).into_ref(&vm.ctx);
+            invoke_handler(vm, &self.character_data, (str,));
         }
 
         #[pymethod(name = "Parse")]
