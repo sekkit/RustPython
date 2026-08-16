@@ -1,43 +1,42 @@
-feat(cprofile): monitoring-based _lsprof; sys.monitoring importable; compile() module kwarg
+fix(profile): c_call trace events only for builtin functions/methods; trace through specialized call instructions
 
-cProfile was unusable: test_cprofile had 8 failures + 10 errors. Root causes
-and fixes:
+profile.Profile's output differed from CPython's expected test_profile
+output in three ways: extra ":0(C)"/":0(range)" entries (class/type calls
+recorded as C calls), a 2/4 call count for list.append, and systematic
+timing differences. Root causes, both in the VM:
 
-1. `import sys.monitoring` raised `ModuleNotFoundError` -- the submodule was
-   built and attached as the `sys.monitoring` attribute but never registered
-   in sys.modules under its dotted name. Fixed in sys.rs init_module (CPython
-   does the same via PyImport_AddModule("sys.monitoring")); test_monitoring
-   88 run green.
+1. PyCallable::invoke/invoke_vectorcall fired c_call/c_return/c_exception
+   for EVERY non-Python-function callable, but CPython's trace_call_function
+   (ceval.c) only fires them for PyCFunction/PyCMethod and for method
+   descriptors (bound with the first argument); types, partials, etc. are
+   called without tracing events. Now the trace argument is chosen by
+   trace_c_callable(): builtin functions/methods pass through unchanged,
+   method descriptors are bound with the first argument (skipped when there
+   is none), everything else fires no C-call events.
 
-2. Lib/_lsprof.py was a minimal sys.setprofile shim: missing clear(), the
-   _pystart/_pyreturn/_ccall/_creturn callbacks, sys.monitoring tool
-   registration, second-profiler ValueError, and it mis-handled external
-   timers. Rewritten as a faithful port of CPython 3.14 Modules/_lsprof.c on
-   top of the VM's sys.monitoring: registers tool PROFILER_ID ("cProfile")
-   with the 9 events (PY_START/PY_RESUME/PY_THROW/PY_RETURN/PY_YIELD/
-   PY_UNWIND/CALL/C_RETURN/C_RAISE), ports the ProfilerContext/Entry/
-   SubEntry timing model (initContext/Stop/flush_unmatched), external-timer
-   semantics (disable/clear inside a timer raise RuntimeError which surfaces
-   as an unraisable; timer errors reported via sys.unraisablehook), and
-   normalizeUserObj labels ("<built-in method mod.name>", "<method 'x' of
-   'Y' objects>"). The profiler's own enable()/disable() calls surface as
-   built-in methods exactly like CPython's C methods, and its internal
-   monitoring calls are not self-profiled.
+2. The adaptive call specializations CallMethodDescriptorNoargs/O/Fast/
+   FastWithKeywords, CallLen, CallIsinstance and CallListAppend invoked the
+   native function directly, bypassing the trace machinery, so calls made
+   after an instruction was specialized were invisible to the profiler
+   (the 2/4 append count). While tracing is active they now fall back to
+   the generic vectorcall path, matching CPython's behavior of using the
+   un-specialized CALL while tracing (CallBuiltinO/Fast/FastWithKeywords,
+   CallNonPyGeneral and CallKwNonPy already route through vectorcall and
+   needed no change; type-call specializations CallType1/Str1/Tuple1/
+   CallBuiltinClass/CallAllocAndEnterInit correctly fire no c_call, as in
+   CPython).
 
-   Result: cProfile output is byte-identical to CPython 3.14's expected
-   output (do_profiling print_stats/print_callers/print_callees all match),
-   test_cprofile 24/24 green (was 8F+10E); the inherited expectedFailure in
-   test_profile.py (still needed for the pure-Python profile.Profile) is
-   lifted for CProfileTest via an unmarked wrapper.
+Result: profile.Profile output is byte-identical to CPython 3.14's expected
+output (do_profiling print_stats/print_callers/print_callees all match), so
+the @unittest.expectedFailure on ProfileTest.test_cprofile is removed and
+the CProfileTest wrapper in test_cprofile.py reverts to plain inheritance.
+test_profile 7/7 and test_cprofile 24/24 green with zero expectedFailures.
 
-3. compile() lacked the keyword-only `module` parameter (used by the
-   cProfile script runner): added with CPython's validation
-   ("compile() argument 'module' must be str or None, not %T").
-
-Verified: test_cprofile 24, test_profile 7, test_monitoring 88, test_builtin
-138, test_compile 185, test_code 37, test_importlib 1,440, test_ctypes 328,
-test_sysconfig 37, test_venv 40, test_signal 57, test_threading 229,
-test_mimetypes 38, test_winreg 25 all green; smoke passes; clippy no new
-warnings; capi 112 pass.
+Verified: test_sys_settrace 448, test_sys_setprofile 29, test_profile 7,
+test_cprofile 24, test_monitoring 88, test_builtin 138, test_compile 185,
+test_code 37, test_importlib 1,440, test_ctypes 328, test_sysconfig 37,
+test_venv 40, test_signal 57, test_threading 229, test_mimetypes 38,
+test_winreg 25, test_pdb 210, test_traceback 370, test_inspect 362 all
+green; clippy no new warnings; capi 112 pass.
 
 Assisted-by: deepseek-v4-flash

@@ -2,7 +2,6 @@
 
 import sys
 import unittest
-import functools
 
 # rip off all interesting stuff from test_profile
 try:
@@ -21,14 +20,6 @@ class CProfileTest(ProfileTest):
     profilerclass = cProfile.Profile
     profilermodule = cProfile
     expected_max_output = "{built-in method builtins.max}"
-
-    # cProfile now produces CPython's expected output exactly; the
-    # @unittest.expectedFailure in test_profile.py's ProfileTest applies to
-    # the pure-Python profile.Profile only, so re-run the comparison unmarked.
-    @functools.wraps(ProfileTest.test_cprofile)
-    def test_cprofile(self):
-        return ProfileTest.test_cprofile(self)
-    test_cprofile.__unittest_expecting_failure__ = False
 
     def get_expected_output(self):
         return _ProfileOutput

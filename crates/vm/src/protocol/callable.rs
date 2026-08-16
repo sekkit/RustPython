@@ -1,5 +1,6 @@
 use crate::{
-    builtins::{PyBoundMethod, PyFunction},
+    AsObject,
+    builtins::{descriptor::PyMethodDescriptor, PyBoundMethod, PyFunction},
     function::{FuncArgs, IntoFuncArgs},
     types::{GenericMethod, VectorCallFunc},
     {PyObject, PyObjectRef, PyResult, VirtualMachine},
@@ -81,22 +82,21 @@ impl<'a> PyCallable<'a> {
         }
         // Python functions get 'call'/'return' events from with_frame().
         // Bound methods delegate to the inner callable, which fires its own events.
-        // All other callables (built-in functions, etc.) get 'c_call'/'c_return'/'c_exception'.
-        let is_python_callable = self.obj.downcast_ref::<PyFunction>().is_some()
-            || self.obj.downcast_ref::<PyBoundMethod>().is_some();
-        if is_python_callable {
-            (self.call)(self.obj, args, vm)
+        // All other callables only get c_call/c_return/c_exception when they are
+        // built-in functions/methods or method descriptors, matching CPython's
+        // trace_call_function in ceval.c (types, partials, ... are called
+        // without tracing events).
+        let Some(trace_callable) = self.trace_c_callable(vm, args.args.first()) else {
+            return (self.call)(self.obj, args, vm);
+        };
+        vm.trace_event(TraceEvent::CCall, Some(trace_callable.clone()))?;
+        let result = (self.call)(self.obj, args, vm);
+        if result.is_ok() {
+            vm.trace_event(TraceEvent::CReturn, Some(trace_callable))?;
         } else {
-            let callable = self.obj.to_owned();
-            vm.trace_event(TraceEvent::CCall, Some(callable.clone()))?;
-            let result = (self.call)(self.obj, args, vm);
-            if result.is_ok() {
-                vm.trace_event(TraceEvent::CReturn, Some(callable))?;
-            } else {
-                let _ = vm.trace_event(TraceEvent::CException, Some(callable));
-            }
-            result
+            let _ = vm.trace_event(TraceEvent::CException, Some(trace_callable));
         }
+        result
     }
 
     /// Vectorcall dispatch: use vectorcall slot if available, else fall back to FuncArgs.
@@ -112,26 +112,53 @@ impl<'a> PyCallable<'a> {
             if !vm.use_tracing.get() {
                 return vc(self.obj, args, nargs, kwnames, vm);
             }
-            let is_python_callable = self.obj.downcast_ref::<PyFunction>().is_some()
-                || self.obj.downcast_ref::<PyBoundMethod>().is_some();
-            if is_python_callable {
-                vc(self.obj, args, nargs, kwnames, vm)
+            let Some(trace_callable) = self.trace_c_callable(vm, args.first()) else {
+                return vc(self.obj, args, nargs, kwnames, vm);
+            };
+            vm.trace_event(TraceEvent::CCall, Some(trace_callable.clone()))?;
+            let result = vc(self.obj, args, nargs, kwnames, vm);
+            if result.is_ok() {
+                vm.trace_event(TraceEvent::CReturn, Some(trace_callable))?;
             } else {
-                let callable = self.obj.to_owned();
-                vm.trace_event(TraceEvent::CCall, Some(callable.clone()))?;
-                let result = vc(self.obj, args, nargs, kwnames, vm);
-                if result.is_ok() {
-                    vm.trace_event(TraceEvent::CReturn, Some(callable))?;
-                } else {
-                    let _ = vm.trace_event(TraceEvent::CException, Some(callable));
-                }
-                result
+                let _ = vm.trace_event(TraceEvent::CException, Some(trace_callable));
             }
+            result
         } else {
             // Fallback: convert owned Vec to FuncArgs (move, no clone)
             let func_args = FuncArgs::from_vectorcall_owned(args, nargs, kwnames);
             self.invoke(func_args, vm)
         }
+    }
+
+    /// The object passed to c_call/c_return/c_exception trace events, or None
+    /// when the callable does not receive them (CPython trace_call_function
+    /// parity: only PyCFunction/PyCMethod and method descriptors, the latter
+    /// bound with the first argument, are traced).
+    fn trace_c_callable(
+        &self,
+        vm: &VirtualMachine,
+        first_arg: Option<&PyObjectRef>,
+    ) -> Option<PyObjectRef> {
+        if self.obj.downcast_ref::<PyFunction>().is_some()
+            || self.obj.downcast_ref::<PyBoundMethod>().is_some()
+        {
+            return None;
+        }
+        if self.obj.class().is(vm.ctx.types.builtin_function_or_method_type) {
+            return Some(self.obj.to_owned());
+        }
+        if self.obj.class().is(vm.ctx.types.method_descriptor_type) {
+            // CPython creates a temporary bound method as the trace argument.
+            // Without a first argument the call itself would raise TypeError,
+            // so no profiling either.
+            if let Some(descr) = self.obj.downcast_ref::<PyMethodDescriptor>()
+                && let Some(self_arg) = first_arg
+            {
+                return Some(descr.bind(self_arg.clone(), &vm.ctx).into());
+            }
+            return None;
+        }
+        None
     }
 }
 

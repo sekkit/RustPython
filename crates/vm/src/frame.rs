@@ -5944,6 +5944,11 @@ impl ExecutingFrame<'_> {
             }
             Instruction::CallLen => {
                 let nargs: u32 = arg.into();
+                // While tracing is active, fall back to the generic path so
+                // c_call/c_return/c_exception events fire.
+                if vm.use_tracing.get() {
+                    return self.execute_call_vectorcall(nargs, vm);
+                }
                 if nargs == 1 {
                     // Stack: [callable, null, arg]
                     let obj = self.pop_value(); // arg
@@ -5969,6 +5974,11 @@ impl ExecutingFrame<'_> {
             }
             Instruction::CallIsinstance => {
                 let nargs: u32 = arg.into();
+                // While tracing is active, fall back to the generic path so
+                // c_call/c_return/c_exception events fire.
+                if vm.use_tracing.get() {
+                    return self.execute_call_vectorcall(nargs, vm);
+                }
                 let stack_len = self.localsplus.stack_len();
                 let self_or_null_is_some = self
                     .localsplus
@@ -6211,6 +6221,11 @@ impl ExecutingFrame<'_> {
             }
             Instruction::CallListAppend => {
                 let nargs: u32 = arg.into();
+                // While tracing is active, fall back to the generic path so
+                // c_call/c_return/c_exception events fire.
+                if vm.use_tracing.get() {
+                    return self.execute_call_vectorcall(nargs, vm);
+                }
                 if nargs == 1 {
                     // Stack: [callable, self_or_null, item]
                     let stack_len = self.localsplus.stack_len();
@@ -6252,6 +6267,12 @@ impl ExecutingFrame<'_> {
             }
             Instruction::CallMethodDescriptorNoargs => {
                 let nargs: u32 = arg.into();
+                // While tracing is active, fall back to the generic path so
+                // c_call/c_return/c_exception events fire (CPython behaves
+                // the same for its adaptive CALL specializations).
+                if vm.use_tracing.get() {
+                    return self.execute_call_vectorcall(nargs, vm);
+                }
                 let stack_len = self.localsplus.stack_len();
                 let self_or_null_is_some = self
                     .localsplus
@@ -6299,6 +6320,11 @@ impl ExecutingFrame<'_> {
             }
             Instruction::CallMethodDescriptorO => {
                 let nargs: u32 = arg.into();
+                // While tracing is active, fall back to the generic path so
+                // c_call/c_return/c_exception events fire.
+                if vm.use_tracing.get() {
+                    return self.execute_call_vectorcall(nargs, vm);
+                }
                 let stack_len = self.localsplus.stack_len();
                 let self_or_null_is_some = self
                     .localsplus
@@ -6346,6 +6372,11 @@ impl ExecutingFrame<'_> {
             }
             Instruction::CallMethodDescriptorFast => {
                 let nargs: u32 = arg.into();
+                // While tracing is active, fall back to the generic path so
+                // c_call/c_return/c_exception events fire.
+                if vm.use_tracing.get() {
+                    return self.execute_call_vectorcall(nargs, vm);
+                }
                 let stack_len = self.localsplus.stack_len();
                 let self_or_null_is_some = self
                     .localsplus
@@ -6471,6 +6502,11 @@ impl ExecutingFrame<'_> {
             Instruction::CallMethodDescriptorFastWithKeywords => {
                 // Native function interface is uniform regardless of keyword support
                 let nargs: u32 = arg.into();
+                // While tracing is active, fall back to the generic path so
+                // c_call/c_return/c_exception events fire.
+                if vm.use_tracing.get() {
+                    return self.execute_call_vectorcall(nargs, vm);
+                }
                 let stack_len = self.localsplus.stack_len();
                 let self_or_null_is_some = self
                     .localsplus
