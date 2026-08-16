@@ -1,39 +1,30 @@
-fix(signal): deliver interrupts to the main thread; seed thread VMs' handler table
+fix(winreg): decode registry names/values as WTF-8; accept surrogate strings
 
-`signal.raise_signal(SIGINT)` never raised KeyboardInterrupt synchronously:
-the default SIGINT handler registered at import time was invisible to the
-running script, so pending KeyboardInterrupts only fired at shutdown
-("Exception ignored in: <_io.TextIOWrapper>"). And `_thread.interrupt_main`
-while the main thread was recursing left it stuck in a busy loop, killing
-test_signal/test_threading runs (regrtest child exited 3 mid-suite).
+test_mimetypes failed on Windows: the registry (HKEY_CLASSES_ROOT) contains
+keys whose names include lone surrogates, and `_winreg.EnumKey` decoded
+UTF-16 with a strict `String::from_utf16`, raising
+`ValueError: UTF16 error: invalid utf-16: lone surrogate found`. After
+fixing that, the same test hit a second issue: winreg functions took
+`String` parameters, which are converted by downcasting the argument to
+PyUtf8Str — a payload variant that only accepts valid-UTF-8 strings, so any
+surrogate-containing key name failed with
+`RuntimeError: Expected payload 'str' but 'str' found` in
+`_winreg.OpenKey`.
 
-Root causes:
+Both are fixed the way CPython handles them (PyUnicode_FromWideChar /
+PyUnicode_AsWideChar round-trip arbitrary UTF-16 code units):
 
-1. With the capi feature the executable runs the script on a per-thread VM
-   created by `VirtualMachine::new_thread()`, which got a *fresh empty*
-   signal-handler table. sys.modules is shared with the main interpreter
-   VM, so the later `import signal` did not re-run the module exec that
-   registers the default handlers, and `getsignal` read a different table
-   than `signal()` had written.
-   Fix: `new_thread()` seeds its table with a copy of the parent VM's
-   (registered during the main interpreter's initialization).
+- EnumKey/EnumValue/QueryValueEx decode to WTF-8 (Wtf8Buf::from_wide), so
+  lone surrogates survive in the Python str; REG_SZ / REG_MULTI_SZ values
+  get the same treatment.
+- All winreg parameters that name registry keys, values, files or
+  computers switched from `String` to `PyStrRef`, converted to wide chars
+  via `as_wtf8().to_wide*()`; the OsStr-taking host calls use
+  `OsString::from_wide`, preserving surrogates end to end.
 
-2. The eval-breaker that signals set is process-global, so whichever
-   thread hit its next bytecode safepoint consumed the interrupt —
-   `interrupt_main` from a worker raised KeyboardInterrupt in the worker
-   itself, and the main thread never saw it.
-   Fix: `trigger_signals` defers any signal encountered on a non-main
-   thread (re-arms the trigger and the eval-breaker), matching CPython,
-   which runs Python-level signal handlers on the main thread only.
-   Deferral happens before consulting the handler table, so a worker's
-   copied (possibly stale) table can never swallow a signal.
-
-Verified: `signal.getsignal(SIGINT)` returns default_int_handler,
-`signal.raise_signal(SIGINT)` raises KeyboardInterrupt at the call, and the
-test_threading interrupt_main recursion scenario no longer hangs.
-Regression: test_signal 57 run green (previously terminated the runner),
-test_threading 229, test_importlib 1,440, test_venv 40, test_ctypes 328,
-test_subprocess 353 all green; pyd smoke passes; clippy clean; capi cargo
-test 112 pass.
+Verified: test_mimetypes 38 run green (previously 1 error), test_winreg 25
+run green. Regression: test_importlib 1,440, test_ctypes 328, test_sysconfig
+37, test_venv 40, test_signal 57, test_threading 229 all green; pyd smoke
+passes; clippy clean (no new warnings).
 
 Assisted-by: deepseek-v4-flash
