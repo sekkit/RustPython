@@ -481,7 +481,7 @@ mod _sqlite3 {
             };
 
             if let Err(exc) = f() {
-                context.result_exception(vm, exc, "user-defined function raised exception\0")
+                context.result_exception(vm, exc, "user-defined function raised exception\0", Some(&func))
             }
         }
 
@@ -502,6 +502,7 @@ mod _sqlite3 {
                             vm,
                             exc,
                             "user-defined aggregate's '__init__' method raised error\0",
+                            Some(&cls),
                         );
                     }
                 }
@@ -646,12 +647,14 @@ mod _sqlite3 {
                         vm,
                         exc,
                         &format!("user-defined aggregate's '{name}' method not defined\0"),
+                        Some(instance),
                     )
                 } else {
                     context.result_exception(
                         vm,
                         exc,
                         &format!("user-defined aggregate's '{name}' method raised error\0"),
+                        Some(instance),
                     )
                 }
             }
@@ -680,12 +683,14 @@ mod _sqlite3 {
                         vm,
                         exc,
                         &format!("user-defined aggregate's '{name}' method not defined\0"),
+                        Some(instance),
                     )
                 } else {
                     context.result_exception(
                         vm,
                         exc,
                         &format!("user-defined aggregate's '{name}' method raised error\0"),
+                        Some(instance),
                     )
                 }
             }
@@ -3458,7 +3463,13 @@ mod _sqlite3 {
             }
         }
 
-        fn result_exception(self, vm: &VirtualMachine, exc: PyBaseExceptionRef, msg: &str) {
+        fn result_exception(
+            self,
+            vm: &VirtualMachine,
+            exc: PyBaseExceptionRef,
+            msg: &str,
+            callable: Option<&PyObject>,
+        ) {
             if exc.fast_isinstance(vm.ctx.exceptions.memory_error) {
                 unsafe { sqlite3_result_error_nomem(self.ctx) }
             } else if exc.fast_isinstance(vm.ctx.exceptions.overflow_error) {
@@ -3467,7 +3478,13 @@ mod _sqlite3 {
                 unsafe { sqlite3_result_error(self.ctx, msg.as_ptr().cast(), -1) }
             }
             if enable_traceback().load(Ordering::Relaxed) {
-                vm.print_exception(exc);
+                // Mirror CPython's PyErr_FormatUnraisable("Exception ignored on
+                // sqlite3 callback %R", callable): report via sys.unraisablehook.
+                let callable_repr = callable
+                    .map(|c| c.repr(vm).map(|r| r.to_string()).unwrap_or_default())
+                    .unwrap_or_default();
+                let err_msg = format!("Exception ignored on sqlite3 callback {callable_repr}");
+                vm.run_unraisable(exc, Some(err_msg), vm.ctx.none());
             }
         }
 
