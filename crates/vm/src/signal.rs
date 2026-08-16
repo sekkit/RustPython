@@ -94,6 +94,19 @@ fn trigger_signals(vm: &VirtualMachine) -> PyResult<()> {
     for (signum, trigger) in TRIGGERS.iter().enumerate().skip(1) {
         let triggered = trigger.swap(false, Ordering::Relaxed);
 
+        if triggered && !vm.is_main_thread() {
+            // CPython runs Python-level signal handlers in the main thread
+            // only. A worker thread that reaches the eval breaker first must
+            // not consume the interrupt (e.g. `_thread.interrupt_main` would
+            // raise KeyboardInterrupt in the caller instead of the main
+            // thread): re-arm the trigger and let the main thread process
+            // it. Defer before consulting the handler table, since a
+            // worker's copied table may predate a handler registration.
+            trigger.store(true, Ordering::Relaxed);
+            set_triggered();
+            continue;
+        }
+
         // SAFETY: TRIGGERS has the same length as the signal_handlers
         let signum = unsafe { SignalNum::new_unchecked(signum as i32) };
 
@@ -318,6 +331,12 @@ impl Default for SignalHandlersInner {
     }
 }
 
+impl Clone for SignalHandlersInner {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 impl Index<SignalNum> for SignalHandlersInner {
     type Output = Option<PyObjectRef>;
 
@@ -340,6 +359,12 @@ impl Default for SignalHandlers {
     }
 }
 
+impl Clone for SignalHandlers {
+    fn clone(&self) -> Self {
+        Self(Box::new(RefCell::new((*self.0.borrow()).clone())))
+    }
+}
+
 impl Deref for SignalHandlers {
     type Target = Box<RefCell<SignalHandlersInner>>;
 
@@ -353,3 +378,4 @@ impl DerefMut for SignalHandlers {
         &mut self.0
     }
 }
+

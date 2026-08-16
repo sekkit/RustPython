@@ -1,25 +1,39 @@
-fix(venv): expose the interpreter under its own name; clear 12 stale test markers
+fix(signal): deliver interrupts to the main thread; seed thread VMs' handler table
 
-test_venv's helper derives the venv python path from
-sys._base_executable's basename (envpy() -> Scripts\rustpython.exe), but the
-venv only contained python.exe/pythonw.exe copies, so every venv subprocess
-test failed with FileNotFoundError and was masked by expectedFailure
-markers.
+`signal.raise_signal(SIGINT)` never raised KeyboardInterrupt synchronously:
+the default SIGINT handler registered at import time was invisible to the
+running script, so pending KeyboardInterrupts only fired at shutdown
+("Exception ignored in: <_io.TextIOWrapper>"). And `_thread.interrupt_main`
+while the main thread was recursing left it stuck in a busy loop, killing
+test_signal/test_threading runs (regrtest child exited 3 mid-suite).
 
-- Lib/venv/__init__.py (Windows setup_python): also copy the interpreter
-  under its own name (e.g. rustpython.exe) into Scripts. The C-API relay
-  (rustpythonapi.dll) is name-independent, so this exe loads extensions
-  exactly like python.exe.
-- Lib/test/test_venv.py: remove 12 @unittest.expectedFailure markers that
-  the venv/rely work now makes pass:
-  test_prefixes, test_sysconfig, test_executable, test_multiprocessing,
-  test_multiprocessing_recursion, test_defaults_with_str_path,
-  test_defaults_with_pathlike, test_special_chars_windows,
-  test_unicode_in_batch_file, test_upgrade, test_no_pip_by_default,
-  test_explicit_no_pip.
+Root causes:
 
-test_venv now runs 40 tests green (12 posix/symlink-only skips remain), up
-from 40 with 12 stale expected-failures; regression: test_importlib 1440,
-test_ctypes 328, test_sysconfig 37, pyd smoke all pass.
+1. With the capi feature the executable runs the script on a per-thread VM
+   created by `VirtualMachine::new_thread()`, which got a *fresh empty*
+   signal-handler table. sys.modules is shared with the main interpreter
+   VM, so the later `import signal` did not re-run the module exec that
+   registers the default handlers, and `getsignal` read a different table
+   than `signal()` had written.
+   Fix: `new_thread()` seeds its table with a copy of the parent VM's
+   (registered during the main interpreter's initialization).
+
+2. The eval-breaker that signals set is process-global, so whichever
+   thread hit its next bytecode safepoint consumed the interrupt —
+   `interrupt_main` from a worker raised KeyboardInterrupt in the worker
+   itself, and the main thread never saw it.
+   Fix: `trigger_signals` defers any signal encountered on a non-main
+   thread (re-arms the trigger and the eval-breaker), matching CPython,
+   which runs Python-level signal handlers on the main thread only.
+   Deferral happens before consulting the handler table, so a worker's
+   copied (possibly stale) table can never swallow a signal.
+
+Verified: `signal.getsignal(SIGINT)` returns default_int_handler,
+`signal.raise_signal(SIGINT)` raises KeyboardInterrupt at the call, and the
+test_threading interrupt_main recursion scenario no longer hangs.
+Regression: test_signal 57 run green (previously terminated the runner),
+test_threading 229, test_importlib 1,440, test_venv 40, test_ctypes 328,
+test_subprocess 353 all green; pyd smoke passes; clippy clean; capi cargo
+test 112 pass.
 
 Assisted-by: deepseek-v4-flash

@@ -1009,7 +1009,15 @@ impl VirtualMachine {
             use_tracing: Cell::new(use_tracing),
             tracing_depth: Cell::new(0),
             recursion_limit: self.recursion_limit.clone(),
-            signal_handlers: core::cell::OnceCell::new(),
+            // Seed the per-thread signal-handler table with the parent VM's
+            // (registered during the main interpreter's initialization):
+            // sys.modules is shared, so a later `import signal` does not
+            // re-run the module exec that installs the default handlers.
+            signal_handlers: self
+                .signal_handlers
+                .get()
+                .map(|h| core::cell::OnceCell::from(h.clone()))
+                .unwrap_or_else(core::cell::OnceCell::new),
             signal_rx: None,
             repr_guards: RefCell::default(),
             state: self.state.clone(),

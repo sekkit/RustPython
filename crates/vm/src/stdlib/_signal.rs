@@ -197,7 +197,7 @@ pub(crate) mod _signal {
                 let signum = unsafe { SignalNum::new_unchecked(signum) };
 
                 vm.signal_handlers
-                    .get_or_init(SignalHandlers::default)
+                    .get_or_init(crate::signal::SignalHandlers::default)
                     .borrow_mut()[signum] = py_handler;
             }
 
