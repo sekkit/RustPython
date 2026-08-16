@@ -23,7 +23,7 @@ pub(crate) mod _hashlib {
     use hmac::{Hmac, KeyInit, Mac, SimpleHmac};
     use md5::Md5;
     use sha1::Sha1;
-    use sha2::{Sha224, Sha256, Sha384, Sha512};
+    use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
     use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
     use shake::{Shake128, Shake256};
 
@@ -34,6 +34,8 @@ pub(crate) mod _hashlib {
         "sha256",
         "sha384",
         "sha512",
+        "sha512_224",
+        "sha512_256",
         "sha3_224",
         "sha3_256",
         "sha3_384",
@@ -242,6 +244,8 @@ pub(crate) mod _hashlib {
             "sha256" => Some(32),
             "sha384" => Some(48),
             "sha512" => Some(64),
+            "sha512_224" => Some(28),
+            "sha512_256" => Some(32),
             "sha3_224" => Some(28),
             "sha3_256" => Some(32),
             "sha3_384" => Some(48),
@@ -576,6 +580,12 @@ pub(crate) mod _hashlib {
             "sha512" => {
                 Ok(PyHasher::new("sha512", HashWrapper::new::<Sha512>(data)).into_pyobject(vm))
             }
+            "sha512_224" => Ok(
+                PyHasher::new("sha512_224", HashWrapper::new::<Sha512_224>(data)).into_pyobject(vm),
+            ),
+            "sha512_256" => Ok(
+                PyHasher::new("sha512_256", HashWrapper::new::<Sha512_256>(data)).into_pyobject(vm),
+            ),
             "sha3_224" => {
                 Ok(PyHasher::new("sha3_224", HashWrapper::new::<Sha3_224>(data)).into_pyobject(vm))
             }
@@ -640,6 +650,18 @@ pub(crate) mod _hashlib {
     pub(crate) fn local_sha512(args: HashArgs, vm: &VirtualMachine) -> PyResult<PyHasher> {
         let data = resolve_data(args.data, args.string, vm)?;
         Ok(PyHasher::new("sha512", HashWrapper::new::<Sha512>(data)))
+    }
+
+    #[pyfunction(name = "openssl_sha512_224")]
+    pub(crate) fn local_sha512_224(args: HashArgs, vm: &VirtualMachine) -> PyResult<PyHasher> {
+        let data = resolve_data(args.data, args.string, vm)?;
+        Ok(PyHasher::new("sha512_224", HashWrapper::new::<Sha512_224>(data)))
+    }
+
+    #[pyfunction(name = "openssl_sha512_256")]
+    pub(crate) fn local_sha512_256(args: HashArgs, vm: &VirtualMachine) -> PyResult<PyHasher> {
+        let data = resolve_data(args.data, args.string, vm)?;
+        Ok(PyHasher::new("sha512_256", HashWrapper::new::<Sha512_256>(data)))
     }
 
     #[pyfunction(name = "openssl_sha3_224")]
@@ -791,6 +813,8 @@ pub(crate) mod _hashlib {
             "sha256" => make_hmac!(Hmac<Sha256>, Sha256),
             "sha384" => make_hmac!(Hmac<Sha384>, Sha384),
             "sha512" => make_hmac!(Hmac<Sha512>, Sha512),
+            "sha512_224" => make_hmac!(Hmac<Sha512_224>, Sha512_224),
+            "sha512_256" => make_hmac!(Hmac<Sha512_256>, Sha512_256),
             "sha3_224" => make_hmac!(SimpleHmac<Sha3_224>, Sha3_224),
             "sha3_256" => make_hmac!(SimpleHmac<Sha3_256>, Sha3_256),
             "sha3_384" => make_hmac!(SimpleHmac<Sha3_384>, Sha3_384),
@@ -822,6 +846,8 @@ pub(crate) mod _hashlib {
             "sha256" => do_hmac!(Hmac<Sha256>),
             "sha384" => do_hmac!(Hmac<Sha384>),
             "sha512" => do_hmac!(Hmac<Sha512>),
+            "sha512_224" => do_hmac!(Hmac<Sha512_224>),
+            "sha512_256" => do_hmac!(Hmac<Sha512_256>),
             "sha3_224" => do_hmac!(SimpleHmac<Sha3_224>),
             "sha3_256" => do_hmac!(SimpleHmac<Sha3_256>),
             "sha3_384" => do_hmac!(SimpleHmac<Sha3_384>),
@@ -881,6 +907,8 @@ pub(crate) mod _hashlib {
             "sha256" => do_pbkdf2!(Sha256),
             "sha384" => do_pbkdf2!(Sha384),
             "sha512" => do_pbkdf2!(Sha512),
+            "sha512_224" => do_pbkdf2!(Sha512_224),
+            "sha512_256" => do_pbkdf2!(Sha512_256),
             "sha3_224" => do_pbkdf2_sha3!(Sha3_224),
             "sha3_256" => do_pbkdf2_sha3!(Sha3_256),
             "sha3_384" => do_pbkdf2_sha3!(Sha3_384),
