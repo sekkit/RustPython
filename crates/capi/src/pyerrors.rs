@@ -8,7 +8,7 @@ use core::slice;
 use rustpython_vm::builtins::{PyBaseException, PyTuple, PyType};
 use rustpython_vm::convert::IntoObject;
 use rustpython_vm::exceptions::ExceptionZoo;
-use rustpython_vm::{AsObject, PyObjectRef, PyResult};
+use rustpython_vm::{AsObject, PyObjectRef, PyRef, PyResult};
 
 macro_rules! define_exception_statics {
     ($( $(#[$meta:meta])* $export:ident => $exc:ident ),* $(,)?) => {
@@ -153,6 +153,28 @@ pub unsafe extern "C" fn PyErr_SetString(exception: *mut PyObject, message: *con
     })
 }
 
+/// PyErr_ExceptionMatches: is the pending exception (or the given exception
+/// type) an instance/subclass of `exc`?
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_ExceptionMatches(exc: *mut PyObject) -> c_int {
+    with_vm(|vm| {
+        let exc = unsafe { &*exc }.to_owned();
+        let current = vm.current_exception();
+        Ok(match current {
+            Some(current) => {
+                let current_type = current.class();
+                let matches = current_type.is_subtype(
+                    exc.downcast_ref::<PyType>().ok_or_else(|| {
+                        vm.new_type_error("PyErr_ExceptionMatches: exc is not a type")
+                    })?,
+                );
+                matches as c_int
+            }
+            None => 0,
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn PyErr_PrintEx(_set_sys_last_vars: c_int) {
     with_vm(|vm| {
@@ -204,32 +226,44 @@ pub unsafe extern "C" fn PyErr_NewException(
     base: *mut PyObject,
     dict: *mut PyObject,
 ) -> *mut PyObject {
-    with_vm(|vm| {
-        let (module, name) = unsafe { name.try_as_str(vm) }
-            .expect("Exception name is not valid UTF-8")
-            .rsplit_once('.')
-            .expect("Exception name must be of the form 'module.ExceptionName'");
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let full_name = unsafe { name.try_as_str(vm) }?;
+        let (module, name) = match full_name.rsplit_once('.') {
+            Some((module, name)) => (module, name),
+            None => ("", full_name),
+        };
 
-        let bases = unsafe { base.as_ref() }.map(|bases| {
-            if let Some(ty) = bases.downcast_ref::<PyType>() {
-                vec![ty.to_owned()]
-            } else if let Some(tuple) = bases.downcast_ref::<PyTuple>() {
-                tuple
-                    .iter()
-                    .map(|item| item.to_owned().downcast())
-                    .collect::<Result<Vec<_>, _>>()
-                    .expect("PyErr_NewException base tuple must contain only types")
-            } else {
-                panic!("PyErr_NewException base must be a type or a tuple of types");
-            }
-        });
+        let bases: Vec<PyRef<PyType>> = unsafe { base.as_ref() }
+            .map(|bases| {
+                if let Some(ty) = bases.downcast_ref::<PyType>() {
+                    Ok(vec![ty.to_owned()])
+                } else if let Some(tuple) = bases.downcast_ref::<PyTuple>() {
+                    tuple
+                        .iter()
+                        .map(|item| item.to_owned().downcast())
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|_| {
+                            vm.new_type_error(
+                                "PyErr_NewException base tuple must contain only types",
+                            )
+                        })
+                } else {
+                    Err(vm.new_type_error(
+                        "PyErr_NewException base must be a type or a tuple of types",
+                    ))
+                }
+            })
+            .transpose()?
+            // CPython: a NULL base defaults to PyExc_Exception.
+            .unwrap_or_else(|| vec![vm.ctx.exceptions.exception_type.to_owned()]);
 
-        assert!(
-            dict.is_null(),
-            "PyErr_NewException with non-null dict is not supported yet"
-        );
+        if !dict.is_null() {
+            return Err(vm.new_system_error(
+                "PyErr_NewException with non-null dict is not supported yet",
+            ));
+        }
 
-        vm.ctx.new_exception_type(module, name, bases)
+        Ok(vm.ctx.new_exception_type(module, name, Some(bases)))
     })
 }
 

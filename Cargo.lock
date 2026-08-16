@@ -3275,6 +3275,7 @@ name = "rustpython-capi"
 version = "0.5.0"
 dependencies = [
  "bitflags 2.13.1",
+ "cc",
  "itertools 0.15.0",
  "libc",
  "malachite-bigint",

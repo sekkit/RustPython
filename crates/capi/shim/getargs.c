@@ -16,6 +16,15 @@
 #include <stdarg.h>
 #include <stdint.h>
 
+/* These functions are defined in C, so rustc's #[no_mangle]-based export
+ * machinery does not apply; export them explicitly so the cdylib's export
+ * table contains them (needed for ctypes.pythonapi and .pyd loading). */
+#ifdef _WIN32
+#define RP_EXPORT __declspec(dllexport)
+#else
+#define RP_EXPORT __attribute__((visibility("default")))
+#endif
+
 /* Rust implementations (see crates/capi/src/arg.rs). */
 int rp_va_parse_tuple(void *args, const char *format, const uintptr_t *slots, int nslots);
 int rp_va_parse_tuple_and_keywords(void *args, void *kwdict, const char *format,
@@ -129,7 +138,7 @@ static int rp_count_slots(const char *format) {
     return n;
 }
 
-int PyArg_ParseTuple(void *args, const char *format, ...) {
+RP_EXPORT int PyArg_ParseTuple(void *args, const char *format, ...) {
     va_list ap;
     uintptr_t slots[RP_MAX_SLOTS];
     int n;
@@ -145,7 +154,7 @@ int PyArg_ParseTuple(void *args, const char *format, ...) {
     return rp_va_parse_tuple(args, format, slots, n);
 }
 
-int PyArg_ParseTupleAndKeywords(void *args, void *kwdict, const char *format,
+RP_EXPORT int PyArg_ParseTupleAndKeywords(void *args, void *kwdict, const char *format,
                                 const char *const *kwlist, ...) {
     va_list ap;
     uintptr_t slots[RP_MAX_SLOTS];
@@ -165,7 +174,7 @@ int PyArg_ParseTupleAndKeywords(void *args, void *kwdict, const char *format,
 /* Provided by rustpython-capi (crates/capi/src/tupleobject.rs). */
 intptr_t PyTuple_Size(void *obj);
 
-int PyArg_UnpackTuple(void *args, const char *name, intptr_t min, intptr_t max, ...) {
+RP_EXPORT int PyArg_UnpackTuple(void *args, const char *name, intptr_t min, intptr_t max, ...) {
     va_list ap;
     uintptr_t slots[RP_MAX_SLOTS];
     int n = 0;
@@ -185,7 +194,7 @@ int PyArg_UnpackTuple(void *args, const char *name, intptr_t min, intptr_t max, 
     return rp_va_unpack_tuple(args, name, min, max, slots, n);
 }
 
-void *Py_BuildValue(const char *format, ...) {
+RP_EXPORT void *Py_BuildValue(const char *format, ...) {
     va_list ap;
     uintptr_t slots[RP_MAX_SLOTS];
     int n;
@@ -201,7 +210,7 @@ void *Py_BuildValue(const char *format, ...) {
     return rp_va_build_value(format, slots, n);
 }
 
-void *PyObject_CallFunction(void *callable, const char *format, ...) {
+RP_EXPORT void *PyObject_CallFunction(void *callable, const char *format, ...) {
     va_list ap;
     uintptr_t slots[RP_MAX_SLOTS];
     int n;
@@ -217,7 +226,7 @@ void *PyObject_CallFunction(void *callable, const char *format, ...) {
     return rp_va_call_function(callable, format, slots, n);
 }
 
-void *PyObject_CallMethod(void *obj, const char *name, const char *format, ...) {
+RP_EXPORT void *PyObject_CallMethod(void *obj, const char *name, const char *format, ...) {
     va_list ap;
     uintptr_t slots[RP_MAX_SLOTS];
     int n;
@@ -233,7 +242,7 @@ void *PyObject_CallMethod(void *obj, const char *name, const char *format, ...) 
     return rp_va_call_method(obj, name, format, slots, n);
 }
 
-void *PyObject_CallFunctionObjArgs(void *callable, ...) {
+RP_EXPORT void *PyObject_CallFunctionObjArgs(void *callable, ...) {
     va_list ap;
     uintptr_t slots[RP_MAX_SLOTS];
     int n = 0;
@@ -249,7 +258,7 @@ void *PyObject_CallFunctionObjArgs(void *callable, ...) {
     return rp_va_call_function_objargs(callable, slots, n);
 }
 
-void *PyObject_CallMethodObjArgs(void *obj, const char *name, ...) {
+RP_EXPORT void *PyObject_CallMethodObjArgs(void *obj, const char *name, ...) {
     va_list ap;
     uintptr_t slots[RP_MAX_SLOTS];
     int n = 0;
@@ -265,7 +274,7 @@ void *PyObject_CallMethodObjArgs(void *obj, const char *name, ...) {
     return rp_va_call_method_objargs(obj, name, slots, n);
 }
 
-void *PyErr_Format(void *exception, const char *format, ...) {
+RP_EXPORT void *PyErr_Format(void *exception, const char *format, ...) {
     va_list ap;
     uintptr_t slots[RP_MAX_SLOTS];
     int n;

@@ -38,3 +38,9 @@ bench/labs/
 bench/reports/*.tmp
 bench/*.exe
 bench/*.pyc
+# Built C-API test extension modules (see bench\build_test_extensions.ps1)
+Lib/*.pyd
+# cl.exe /LD leaves intermediate artifacts in the invoking directory
+/*.obj
+/*.exp
+/*.lib

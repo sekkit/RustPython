@@ -11,7 +11,7 @@ license.workspace = true
 
 [features]
 capi = ["dep:rustpython-capi", "threading"]
-default = ["threading", "stdlib", "stdio", "importlib", "ssl-rustls-aws-lc", "host_env", "sqlite"]
+default = ["threading", "stdlib", "stdio", "importlib", "ssl-rustls-aws-lc", "host_env", "sqlite", "capi"]
 host_env = ["rustpython-vm/host_env", "rustpython-stdlib?/host_env"]
 importlib = ["rustpython-vm/importlib"]
 encodings = ["rustpython-vm/encodings"]
@@ -161,6 +161,11 @@ members = [
     "crates/*",
 ]
 exclude = ["pymath"]
+
+# Also build the C-API cdylib (rustpython_capi.dll) with a plain
+# `cargo build --release`, so it sits next to the interpreter for
+# ctypes.pythonapi and .pyd extension loading.
+default-members = [".", "crates/capi"]
 
 [workspace.package]
 version = "0.5.0"

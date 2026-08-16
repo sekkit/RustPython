@@ -1,11 +1,53 @@
-feat(capi): PyErr_Format via the C varargs shim
+Implement PEP 489 multi-phase extension loading; build CPython's test extension modules
 
-Add PyErr_Format (CPython Python/errors.c), the most-used variadic error
-API in real extensions. The C shim snapshots the varargs with a
-printf-style slot counter; Rust formats the message (s, d, i, u, o, x,
-X, c, p, R, S, U, T, A, V codes with l/ll/h/z/t/j length modifiers;
-width/precision accepted) and raises the exception.
+The extension-module test suite (Lib/test/test_importlib/extension) previously
+self-skipped: extension_suffixes() returned [".pyd"] but no extension modules
+existed. Now the loader genuinely supports C extensions:
 
-cargo test -p rustpython-capi --lib: 112 passed on Windows, clippy clean.
+- bench/build_test_extensions.ps1 builds _testsinglephase.pyd and
+  _testmultiphase.pyd from the CPython 3.14.7 source tree (headers, clinic
+  files and pyconfig.h assembled under bench/labs, gitignored), linked
+  against the python314 shim (bench/make_python_dll_shims.ps1 now also emits
+  python314.dll/python314.lib, matching the 3.14 pyconfig.h pragma).
+- _imp.create_dynamic implements the full PEP 489 load sequence
+  (Python/importdl.c + import.c + Objects/moduleobject.c):
+  * export-name encoding: ASCII or punycode (PyInitU) short name with
+    '-' -> '_' replacement;
+  * init-result validation (_PyImport_RunModInitFunc): NULL / unreported
+    exception / uninitialized def / non-module errors, chained as __cause__;
+  * multi-phase module construction (PyModule_FromDefAndSpec2): slot scan
+    (create/exec/multiple_interpreters/gil with the legacy 1..4 ids),
+    Py_mod_create, methods, docstring, state/exec-slot validation;
+  * single-phase global cache keyed by (origin, name) with m_copy dict
+    semantics and m_init re-run for m_size >= 0 (test_module_reuse).
+- _imp.exec_dynamic runs the Py_mod_exec slot with CPython's md_state
+  semantics: m_size >= 0 modules skip exec on reload (test_reload).
+- capi exports added: PyModule_Add/AddObjectRef/AddStringConstant/
+  AddIntConstant/GetDef/GetState/New, PyState_FindModule/AddModule/
+  RemoveModule, PyImport_ImportModule, PyType_FromSpec (legacy slots:
+  base/doc/methods; behavioral C slots are not modeled), PyType_GetModule,
+  PyType_GetModuleState, PyType_GetModuleByDef, PyType_FromModuleAndSpec,
+  _PyArg_CheckPositional, _PyArg_UnpackKeywords, _PyNamespace_New,
+  PyTime_Monotonic, PyTime_AsSecondsDouble, PyErr_ExceptionMatches,
+  _Py_Dealloc, and data symbols _Py_NoneStruct / PyUnicode_Type /
+  PyLong_Type / PyBool_Type (header copies of the real objects, marked
+  leaked so the C-visible immortal bit keeps inline INCREF/DECREF as no-ops).
+- module methods are now bound to their module as `self` (CPython's
+  PyModule_AddFunctions semantics), so METH_VARARGS module functions that
+  use the module argument work; type methods use has_self=true.
+- vm/capi share one method-definition builder (rustpython_vm::import) and the
+  extension registries (defs, module->def, executed marker, cache).
+- The module->def pointer and the exec-run marker live in the module's own
+  __dict__ instead of global registries keyed by raw object pointer. Object
+  addresses are recycled after freeing, so a stale pointer-keyed entry could
+  falsely mark a fresh module as already executed and skip its Py_mod_exec
+  slot — the intermittent
+  test_bad_modules [exec_unreported_exception] "SystemError not raised"
+  failure. Per-module storage makes the marker die with the module, matching
+  CPython's md_def/md_state semantics.
+
+With these in place, the importlib extension tests exercise real loading:
+LoaderTests, SinglePhaseExtensionModuleTests and the PEP 489
+multi-phase/bad-module/nonmodule cases.
 
 Assisted-by: deepseek-v4-flash

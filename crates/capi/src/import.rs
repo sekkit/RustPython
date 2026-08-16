@@ -16,6 +16,15 @@ pub unsafe extern "C" fn PyImport_Import(name: *mut PyObject) -> *mut PyObject {
     })
 }
 
+/// PyImport_ImportModule: import a module by C string name.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyImport_ImportModule(name: *const c_char) -> *mut PyObject {
+    with_vm(|vm| {
+        let name = unsafe { name.try_as_str(vm) }?;
+        vm.import(name, 0)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyImport_AddModuleRef(name: *const c_char) -> *mut PyObject {
     with_vm(|vm| {

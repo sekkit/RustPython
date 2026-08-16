@@ -19,6 +19,15 @@ pub unsafe extern "C" fn Py_NewRef(op: *mut PyObject) -> *mut PyObject {
     with_vm(|_vm| unsafe { (*op).to_owned() })
 }
 
+/// _Py_Dealloc: called by CPython's inline Py_DECREF when the C-visible
+/// refcount reaches zero. Our objects carry the immortal flag bit from the
+/// C side (see crates/common/src/refcount.rs), so inline decrefs are no-ops
+/// and this is normally unreachable; drop the Rust reference like _Py_DecRef.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_Dealloc(op: *mut PyObject) {
+    unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(op))) };
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_REFCNT(op: *mut PyObject) -> isize {
     with_vm(|_vm| unsafe { &*op }.strong_count())

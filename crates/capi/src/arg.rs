@@ -1600,6 +1600,64 @@ pub unsafe extern "C" fn rp_va_call_method_objargs(
 // PyErr_Format (CPython Python/errors.c)
 // ---------------------------------------------------------------------------
 
+/// The C shim's variadic entry points (shim/getargs.c). Rust never calls
+/// them, but referencing them anchors the C objects into the link so their
+/// /EXPORT directives reach the cdylib export table (needed for
+/// ctypes.pythonapi and .pyd loading).
+#[used]
+static C_SHIM_ANCHORS: (
+    unsafe extern "C" fn(*mut PyObject, *const c_char, ...) -> c_int,
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *const c_char, *const *const c_char, ...) -> c_int,
+    unsafe extern "C" fn(*mut PyObject, *const c_char, isize, isize, ...) -> c_int,
+    unsafe extern "C" fn(*const c_char, ...) -> *mut PyObject,
+    unsafe extern "C" fn(*mut PyObject, *const c_char, ...) -> *mut PyObject,
+    unsafe extern "C" fn(*mut PyObject, *const c_char, *const c_char, ...) -> *mut PyObject,
+    unsafe extern "C" fn(*mut PyObject, ...) -> *mut PyObject,
+    unsafe extern "C" fn(*mut PyObject, *const c_char, ...) -> *mut PyObject,
+    unsafe extern "C" fn(*mut PyObject, *const c_char, ...) -> *mut PyObject,
+) = (
+    PyArg_ParseTuple,
+    PyArg_ParseTupleAndKeywords,
+    PyArg_UnpackTuple,
+    Py_BuildValue,
+    PyObject_CallFunction,
+    PyObject_CallMethod,
+    PyObject_CallFunctionObjArgs,
+    PyObject_CallMethodObjArgs,
+    PyErr_Format,
+);
+
+unsafe extern "C" {
+    fn PyArg_ParseTuple(args: *mut PyObject, format: *const c_char, ...) -> c_int;
+    fn PyArg_ParseTupleAndKeywords(
+        args: *mut PyObject,
+        kwdict: *mut PyObject,
+        format: *const c_char,
+        kwlist: *const *const c_char,
+        ...,
+    ) -> c_int;
+    fn PyArg_UnpackTuple(
+        args: *mut PyObject,
+        name: *const c_char,
+        min: isize,
+        max: isize,
+        ...,
+    ) -> c_int;
+    fn Py_BuildValue(format: *const c_char, ...) -> *mut PyObject;
+    fn PyObject_CallFunction(callable: *mut PyObject, format: *const c_char, ...)
+        -> *mut PyObject;
+    fn PyObject_CallMethod(
+        obj: *mut PyObject,
+        name: *const c_char,
+        format: *const c_char,
+        ...,
+    ) -> *mut PyObject;
+    fn PyObject_CallFunctionObjArgs(callable: *mut PyObject, ...) -> *mut PyObject;
+    fn PyObject_CallMethodObjArgs(obj: *mut PyObject, name: *const c_char, ...)
+        -> *mut PyObject;
+    fn PyErr_Format(exception: *mut PyObject, format: *const c_char, ...) -> *mut PyObject;
+}
+
 fn sign_extend(v: usize, length: &str) -> i64 {
     if length.contains('l') && !length.contains("ll") {
         if core::mem::size_of::<core::ffi::c_long>() == 4 {

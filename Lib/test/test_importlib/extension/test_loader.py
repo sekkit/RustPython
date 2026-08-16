@@ -250,6 +250,7 @@ class MultiPhaseExtensionModuleTests(abc.LoaderTests):
             self.assertIs(module, sys.modules[self.name])
             self.assertIsInstance(module.__loader__, self.LoaderClass)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; C fast type checks (PyUnicode_Check via PyType_FastSubclass read tp_flags through the object header's vtable field) cannot match RustPython heap types
     def test_functionality(self):
         # Test basic functionality of stuff defined in an extension module.
         with util.uncache(self.name):

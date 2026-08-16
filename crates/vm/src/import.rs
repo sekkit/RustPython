@@ -6,9 +6,7 @@ use crate::{
     exceptions::types::PyBaseException,
     scope::Scope,
     vm::{VirtualMachine, resolve_frozen_alias, thread},
-};
-
-pub(crate) fn check_pyc_magic_number_bytes(buf: &[u8]) -> bool {
+};pub(crate) fn check_pyc_magic_number_bytes(buf: &[u8]) -> bool {
     buf.starts_with(&crate::version::PYC_MAGIC_NUMBER_BYTES)
 }
 
@@ -615,4 +613,541 @@ fn calc_package(globals: Option<&PyObjectRef>, vm: &VirtualMachine) -> PyResult<
         };
     }
     Ok(package)
+}
+
+// ============================================================================
+// Dynamic (C) extension module loading — PEP 489
+//
+// Shared with the capi crate: `_imp.create_dynamic` / `_imp.exec_dynamic`
+// (crates/vm/src/stdlib/_imp.rs) drive the loading, and the capi crate's
+// PyModule_Create2 / PyModuleDef_Init feed the registries below.
+//
+// The C-ABI structs mirror CPython's Include/cpython/moduleobject.h exactly
+// (a duplicate of crates/capi/src/moduleobject.rs, which the capi crate uses
+// as its public types; both must stay in sync with the C layout).
+// ============================================================================
+
+/// Size of the object header that C code can see (refcount, vtable, GC bits,
+/// GC pointers, type pointer) — see `crate::object::PyInner`.
+pub const PYOBJECT_HEADER_BYTES: usize = crate::object::SIZEOF_PYOBJECT_HEAD;
+
+/// PyObject_HEAD is opaque here: extensions allocate the base with CPython's
+/// header, and we only touch fields at CPython offsets.
+#[repr(C)]
+pub struct CPyModuleDefBase {
+    pub ob_head: [usize; 2], // ob_refcnt, ob_type (PyObject_HEAD)
+    pub m_init: Option<unsafe extern "C" fn() -> *mut crate::PyObject>,
+    pub m_index: isize,
+    pub m_copy: *mut crate::PyObject,
+}
+
+#[repr(C)]
+pub struct CPyModuleDefSlot {
+    pub slot: c_int,
+    pub value: *mut c_void,
+}
+
+/// The four PyMethodDef calling conventions. `ml_meth` is stored as a raw
+/// usize (the C struct field is a union of function pointers; on all
+/// supported platforms function pointers and data pointers have the same
+/// size, and CPython itself casts between them). The field matching `flags`
+/// is transmuted to the proper function type at call time.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct CPyMethodDef {
+    pub ml_name: *const c_char,
+    pub ml_meth: usize,
+    pub ml_flags: c_int,
+    pub ml_doc: *const c_char,
+}
+
+#[repr(C)]
+pub struct CPyModuleDef {
+    pub m_base: CPyModuleDefBase,
+    pub m_name: *const c_char,
+    pub m_doc: *const c_char,
+    pub m_size: isize,
+    pub m_methods: *const CPyMethodDef,
+    pub m_slots: *const CPyModuleDefSlot,
+    pub m_traverse:
+        Option<unsafe extern "C" fn(*mut crate::PyObject, *mut c_void, *mut c_void) -> c_int>,
+    pub m_clear: Option<unsafe extern "C" fn(*mut crate::PyObject) -> c_int>,
+    pub m_free: Option<unsafe extern "C" fn(*mut crate::PyObject)>,
+}
+
+/// Legacy (3.14 and earlier) module slot ids, as in Include/cpython/moduleobject.h.
+/// (CPython 3.15 / PEP 793 renumbers these into the 84..110 range.)
+#[allow(non_upper_case_globals)]
+pub mod legacy_slot_ids {
+    use core::ffi::c_int;
+
+    pub const Py_mod_create: c_int = 1;
+    pub const Py_mod_exec: c_int = 2;
+    pub const Py_mod_multiple_interpreters: c_int = 3;
+    pub const Py_mod_gil: c_int = 4;
+    pub const Py_mod_LAST_SLOT: c_int = 4;
+}
+
+use core::ffi::{c_char, c_int, c_void};
+use num_traits::ToPrimitive;
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
+
+/// PyModuleDef* values that have been through PyModuleDef_Init: the init
+/// function of a multi-phase module returns one of these.
+static EXTENSION_DEFS: LazyLock<Mutex<HashSet<usize>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Single-phase (legacy) extension cache, keyed by (origin, name) — mirrors
+/// CPython's global extension cache in Python/import.c.
+static EXTENSION_SINGLEPHASE_CACHE: LazyLock<Mutex<HashMap<(String, String), SinglePhaseCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Per-module module index counter for defs that reach us without an index
+/// (CPython's _PyImport_GetNextModuleIndex).
+static EXTENSION_MODULE_INDEX: core::sync::atomic::AtomicIsize =
+    core::sync::atomic::AtomicIsize::new(0);
+
+/// One entry of the single-phase cache.
+#[derive(Clone)]
+pub struct SinglePhaseCacheEntry {
+    pub def_ptr: usize,
+    /// For defs with m_size == -1: a raw pointer to the module's __dict__
+    /// (CPython's def->m_base.m_copy). A leaked strong reference keeps the
+    /// dict alive for the process lifetime; raw storage keeps the cache
+    /// thread-safe (PyObjectRef is not Send).
+    pub m_dict: Option<usize>,
+    /// For defs with m_size >= 0: the init function, re-run on every load
+    /// (CPython's cached m_init).
+    pub m_init: usize,
+}
+
+pub fn register_extension_def(def_ptr: usize) {
+    EXTENSION_DEFS.lock().unwrap().insert(def_ptr);
+}
+
+pub fn is_extension_def(def_ptr: usize) -> bool {
+    EXTENSION_DEFS.lock().unwrap().contains(&def_ptr)
+}
+
+// The def pointer and the executed marker are stored in the module's own
+// __dict__ (like CPython's md_def/md_state) instead of a global registry
+// keyed by raw pointer: object addresses are reused after freeing, which
+// would make a stale entry falsely apply to a new module.
+
+/// Dict key holding the PyModuleDef* a module was created from.
+pub const EXTENSION_DEF_DICT_KEY: &str = "__rustpython_extension_def__";
+/// Dict key marking that the Py_mod_exec slot already ran (m_size >= 0 defs).
+pub const EXTENSION_EXECUTED_DICT_KEY: &str = "__rustpython_extension_executed__";
+
+pub fn set_extension_module_def(
+    vm: &VirtualMachine,
+    module: &PyObjectRef,
+    def_ptr: usize,
+) -> PyResult<()> {
+    if def_ptr != 0 {
+        let dict = module
+            .downcast_ref::<crate::builtins::PyModule>()
+            .ok_or_else(|| vm.new_system_error("extension module object is not a module"))?
+            .dict();
+        dict.set_item(
+            EXTENSION_DEF_DICT_KEY,
+            vm.ctx.new_int(def_ptr).into(),
+            vm,
+        )?;
+    }
+    Ok(())
+}
+
+pub fn extension_module_def(vm: &VirtualMachine, module: &PyObjectRef) -> Option<usize> {
+    let dict = module.downcast_ref::<crate::builtins::PyModule>()?.dict();
+    let value = dict.get_item_opt(EXTENSION_DEF_DICT_KEY, vm).ok()??;
+    let int = value.downcast_ref::<crate::builtins::PyInt>()?;
+    int.as_bigint().to_usize()
+}
+
+/// Returns true the first time a module is marked, false if it was already
+/// marked (i.e. the exec slot must not run again).
+pub fn mark_extension_module_executed(
+    vm: &VirtualMachine,
+    module: &PyObjectRef,
+) -> PyResult<bool> {
+    let dict = module
+        .downcast_ref::<crate::builtins::PyModule>()
+        .ok_or_else(|| vm.new_system_error("extension module object is not a module"))?
+        .dict();
+    let already = dict
+        .get_item_opt(EXTENSION_EXECUTED_DICT_KEY, vm)?
+        .is_some();
+    if !already {
+        dict.set_item(
+            EXTENSION_EXECUTED_DICT_KEY,
+            vm.ctx.new_int(1).into(),
+            vm,
+        )?;
+    }
+    Ok(!already)
+}
+
+pub fn extension_cache_get(origin: &str, name: &str) -> Option<SinglePhaseCacheEntry> {
+    EXTENSION_SINGLEPHASE_CACHE
+        .lock()
+        .unwrap()
+        .get(&(origin.to_owned(), name.to_owned()))
+        .cloned()
+}
+
+pub fn extension_cache_put(origin: &str, name: &str, entry: SinglePhaseCacheEntry) {
+    EXTENSION_SINGLEPHASE_CACHE
+        .lock()
+        .unwrap()
+        .insert((origin.to_owned(), name.to_owned()), entry);
+}
+
+/// Assign a fresh module index to a def (PyModuleDef_Init semantics) and
+/// register it. Idempotent.
+pub fn ensure_extension_def_initialized(def_ptr: usize) {
+    let def = unsafe { &mut *(def_ptr as *mut CPyModuleDef) };
+    if def.m_base.m_index == -1 || def.m_base.m_index == 0 {
+        def.m_base.m_index =
+            EXTENSION_MODULE_INDEX.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
+    }
+    register_extension_def(def_ptr);
+}
+
+// ---------------------------------------------------------------------------
+// C method construction (ported from crates/capi/src/methodobject.rs so the
+// vm can build method objects for module/type methods defined in C).
+// ---------------------------------------------------------------------------
+
+use crate::function::{FuncArgs, HeapMethodDef, PosArgs, PyMethodFlags};
+
+fn ret_ptr_to_pyresult(vm: &VirtualMachine, ret_ptr: *mut crate::PyObject) -> PyResult {
+    // C code returning `Py_None` yields the exported `_Py_NoneStruct` symbol
+    // (a header copy), not the real None object. Translate it so identity
+    // checks (NoneType.__eq__) work.
+    if !ret_ptr.is_null() && ret_ptr as usize == NONE_STUB_ADDR.load(core::sync::atomic::Ordering::Relaxed) {
+        return Ok(vm.ctx.none());
+    }
+    match core::ptr::NonNull::new(ret_ptr) {
+        Some(ret_ptr) => Ok(unsafe { PyObjectRef::from_raw(ret_ptr) }),
+        None => Err(match vm.take_raised_exception() {
+            Some(exc) => exc,
+            None => vm.new_system_error("NULL result without error in PyObject_Call"),
+        }),
+    }
+}
+
+/// Address of the exported `_Py_NoneStruct` symbol, registered by the capi
+/// crate at init so `ret_ptr_to_pyresult` can translate it to the real None.
+static NONE_STUB_ADDR: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+pub fn register_none_stub_addr(addr: usize) {
+    NONE_STUB_ADDR.store(addr, core::sync::atomic::Ordering::Relaxed);
+}
+
+fn take_self_arg(args: &mut FuncArgs, flags: PyMethodFlags) -> Option<PyObjectRef> {
+    if flags.contains(PyMethodFlags::STATIC) {
+        None
+    } else {
+        args.take_positional()
+    }
+}
+
+unsafe fn call_c_function<A: Into<FuncArgs>>(
+    vm: &VirtualMachine,
+    method: usize,
+    flags: PyMethodFlags,
+    has_self: bool,
+    args: Option<A>,
+) -> PyResult {
+    let f: unsafe extern "C" fn(*mut crate::PyObject, *mut crate::PyObject) -> *mut crate::PyObject =
+        unsafe { core::mem::transmute(method) };
+    let (slf, arg_tuple) = if let Some(mut args) = args.map(Into::into) {
+        let slf = if has_self { take_self_arg(&mut args, flags) } else { None };
+        let arg_tuple = vm.ctx.new_tuple(args.args);
+        (slf, Some(arg_tuple))
+    } else {
+        (None, None)
+    };
+
+    let slf_ptr = slf
+        .as_ref()
+        .map(|obj| obj.as_object().as_raw().cast_mut())
+        .unwrap_or_default();
+
+    let arg_ptr = arg_tuple
+        .as_ref()
+        .map(|tuple| tuple.as_object().as_raw().cast_mut())
+        .unwrap_or_default();
+
+    let ret_ptr = unsafe { f(slf_ptr, arg_ptr) };
+    ret_ptr_to_pyresult(vm, ret_ptr)
+}
+
+unsafe fn call_c_function_with_keywords(
+    vm: &VirtualMachine,
+    method: usize,
+    flags: PyMethodFlags,
+    has_self: bool,
+    mut args: FuncArgs,
+) -> PyResult {
+    let f: unsafe extern "C" fn(
+        *mut crate::PyObject,
+        *mut crate::PyObject,
+        *mut crate::PyObject,
+    ) -> *mut crate::PyObject = unsafe { core::mem::transmute(method) };
+    let slf = if has_self { take_self_arg(&mut args, flags) } else { None };
+    let slf_ptr = slf
+        .as_ref()
+        .map(|obj| obj.as_object().as_raw().cast_mut())
+        .unwrap_or_default();
+    let arg_tuple = vm.ctx.new_tuple(args.args);
+    let kwargs = vm.ctx.new_dict();
+    for (k, v) in args.kwargs {
+        kwargs.set_item(&*k, v, vm)?;
+    }
+    let ret_ptr = unsafe {
+        f(
+            slf_ptr,
+            arg_tuple.as_object().as_raw().cast_mut(),
+            kwargs.as_object().as_raw().cast_mut(),
+        )
+    };
+    ret_ptr_to_pyresult(vm, ret_ptr)
+}
+
+unsafe fn call_c_fast_function_with_keywords(
+    vm: &VirtualMachine,
+    method: usize,
+    flags: PyMethodFlags,
+    has_self: bool,
+    mut args: FuncArgs,
+) -> PyResult {
+    let f: unsafe extern "C" fn(
+        *mut crate::PyObject,
+        *const *mut crate::PyObject,
+        isize,
+        *mut crate::PyObject,
+    ) -> *mut crate::PyObject = unsafe { core::mem::transmute(method) };
+    let slf = if has_self { take_self_arg(&mut args, flags) } else { None };
+    let slf_ptr = slf
+        .as_ref()
+        .map(|obj| obj.as_object().as_raw().cast_mut())
+        .unwrap_or_default();
+    let nargs = args.args.len();
+    let mut fastcall_args = args.args;
+    let kwnames_tuple = if !args.kwargs.is_empty() {
+        let mut kwnames = Vec::with_capacity(args.kwargs.len());
+        for (k, v) in args.kwargs {
+            kwnames.push(vm.ctx.new_str(k).into());
+            fastcall_args.push(v);
+        }
+        Some(vm.ctx.new_tuple(kwnames))
+    } else {
+        None
+    };
+    let kwnames_ptr = kwnames_tuple
+        .as_ref()
+        .map(|tuple| tuple.as_object().as_raw().cast_mut())
+        .unwrap_or_default();
+    // SAFETY: PyObjectRef is repr(transparent) over a pointer to PyObject, so a
+    // Vec<PyObjectRef> has a layout-compatible contiguous backing buffer. The
+    // vector is kept alive for the duration of the call.
+    let fastcall_arg_ptrs = fastcall_args.as_ptr().cast::<*mut crate::PyObject>();
+    let ret_ptr = unsafe { f(slf_ptr, fastcall_arg_ptrs, nargs as isize, kwnames_ptr) };
+    ret_ptr_to_pyresult(vm, ret_ptr)
+}
+
+unsafe fn call_c_fast_function(
+    vm: &VirtualMachine,
+    method: usize,
+    flags: PyMethodFlags,
+    has_self: bool,
+    args: PosArgs,
+) -> PyResult {
+    let f: unsafe extern "C" fn(
+        *mut crate::PyObject,
+        *const *mut crate::PyObject,
+        isize,
+    ) -> *mut crate::PyObject = unsafe { core::mem::transmute(method) };
+    let mut args: FuncArgs = args.into();
+    let slf = if has_self { take_self_arg(&mut args, flags) } else { None };
+    let slf_ptr = slf
+        .as_ref()
+        .map(|obj| obj.as_object().as_raw().cast_mut())
+        .unwrap_or_default();
+    // SAFETY: PyObjectRef is repr(transparent) over a pointer to PyObject, so a
+    // Vec<PyObjectRef> has a layout-compatible contiguous backing buffer. The
+    // vector is kept alive for the duration of the call.
+    let fastcall_arg_ptrs = args.args.as_mut_ptr().cast::<*mut crate::PyObject>();
+    let ret_ptr = unsafe { f(slf_ptr, fastcall_arg_ptrs, args.args.len() as isize) };
+    ret_ptr_to_pyresult(vm, ret_ptr)
+}
+
+/// Build a method object for a C `PyMethodDef` entry (CPython's
+/// PyCFunction_NewEx). `has_self` must be true for type methods and for
+/// module functions (which are bound to the module); pass false for unbound
+/// attributes on non-module objects. Names and docs come from C strings that
+/// outlive the interpreter, hence the `'static` bounds.
+pub fn build_c_method_def(
+    vm: &VirtualMachine,
+    name: &'static str,
+    method: usize,
+    flags: PyMethodFlags,
+    has_self: bool,
+    doc: Option<&'static str>,
+) -> PyResult<PyRef<HeapMethodDef>> {
+    if flags.contains(PyMethodFlags::METHOD) {
+        return Err(vm.new_system_error("METH_METHOD is not supported"));
+    }
+
+    let call_flags = flags
+        & (PyMethodFlags::VARARGS
+            | PyMethodFlags::KEYWORDS
+            | PyMethodFlags::NOARGS
+            | PyMethodFlags::O
+            | PyMethodFlags::FASTCALL);
+    let has_self = has_self && !flags.contains(PyMethodFlags::STATIC);
+
+    if call_flags == PyMethodFlags::NOARGS {
+        if has_self {
+            let callable = move |zelf: PyObjectRef, vm: &VirtualMachine| unsafe {
+                let f: unsafe extern "C" fn(
+                    *mut crate::PyObject,
+                    *mut crate::PyObject,
+                ) -> *mut crate::PyObject = core::mem::transmute(method);
+                let ret_ptr = f(zelf.as_raw().cast_mut(), core::ptr::null_mut());
+                ret_ptr_to_pyresult(vm, ret_ptr)
+            };
+            Ok(vm.ctx.new_method_def(name, callable, flags, doc))
+        } else {
+            let callable = move |vm: &VirtualMachine| unsafe {
+                let f: unsafe extern "C" fn(
+                    *mut crate::PyObject,
+                    *mut crate::PyObject,
+                ) -> *mut crate::PyObject = core::mem::transmute(method);
+                let ret_ptr = f(core::ptr::null_mut(), core::ptr::null_mut());
+                ret_ptr_to_pyresult(vm, ret_ptr)
+            };
+            Ok(vm.ctx.new_method_def(name, callable, flags, doc))
+        }
+    } else if call_flags == (PyMethodFlags::VARARGS | PyMethodFlags::KEYWORDS) {
+        let callable = move |args: FuncArgs, vm: &VirtualMachine| unsafe {
+            call_c_function_with_keywords(vm, method, flags, has_self, args)
+        };
+        Ok(vm.ctx.new_method_def(name, callable, flags, doc))
+    } else if call_flags == (PyMethodFlags::FASTCALL | PyMethodFlags::KEYWORDS) {
+        let callable = move |args: FuncArgs, vm: &VirtualMachine| unsafe {
+            call_c_fast_function_with_keywords(vm, method, flags, has_self, args)
+        };
+        Ok(vm.ctx.new_method_def(name, callable, flags, doc))
+    } else if call_flags == PyMethodFlags::FASTCALL {
+        let callable = move |args: PosArgs, vm: &VirtualMachine| unsafe {
+            call_c_fast_function(vm, method, flags, has_self, args)
+        };
+        Ok(vm.ctx.new_method_def(name, callable, flags, doc))
+    } else if call_flags == PyMethodFlags::O {
+        let f: unsafe extern "C" fn(
+            *mut crate::PyObject,
+            *mut crate::PyObject,
+        ) -> *mut crate::PyObject = unsafe { core::mem::transmute(method) };
+        if has_self {
+            let callable = move |zelf: PyObjectRef, arg: PyObjectRef, vm: &VirtualMachine| -> PyResult {
+                let ret_ptr = unsafe { f(zelf.as_raw().cast_mut(), arg.as_raw().cast_mut()) };
+                ret_ptr_to_pyresult(vm, ret_ptr)
+            };
+            Ok(vm.ctx.new_method_def(name, callable, flags, doc))
+        } else {
+            let callable = move |arg: PyObjectRef, vm: &VirtualMachine| -> PyResult {
+                let ret_ptr = unsafe { f(core::ptr::null_mut(), arg.as_raw().cast_mut()) };
+                ret_ptr_to_pyresult(vm, ret_ptr)
+            };
+            Ok(vm.ctx.new_method_def(name, callable, flags, doc))
+        }
+    } else if call_flags == PyMethodFlags::VARARGS {
+        let callable = move |args: PosArgs, vm: &VirtualMachine| unsafe {
+            call_c_function(vm, method, flags, has_self, Some(args))
+        };
+        Ok(vm.ctx.new_method_def(name, callable, flags, doc))
+    } else {
+        Err(vm.new_system_error(format!(
+            "function {name} has unsupported or invalid calling-convention flags: {flags:?}"
+        )))
+    }
+}
+
+/// Iterate a NUL-terminated C `PyMethodDef` table and add each method to
+/// `obj` (a module's dict, or setattr for non-module objects like the
+/// SimpleNamespace returned by a Py_mod_create function).
+///
+/// # Safety
+///
+/// `methods` must point to a valid, NUL-terminated PyMethodDef table that
+/// stays alive for the duration of the call.
+pub unsafe fn add_c_methods_to_object(
+    vm: &VirtualMachine,
+    obj: &PyObjectRef,
+    methods: *const CPyMethodDef,
+) -> PyResult<()> {
+    if methods.is_null() {
+        return Ok(());
+    }
+    let is_module = obj.downcast_ref::<crate::builtins::PyModule>().is_some();
+    let mut n = 0usize;
+    loop {
+        let md = unsafe { &*methods.add(n) };
+        if md.ml_name.is_null() {
+            return Ok(());
+        }
+        if n > 10_000 {
+            return Err(vm.new_system_error("PyMethodDef table is not NUL-terminated"));
+        }
+        let name = unsafe { core::ffi::CStr::from_ptr(md.ml_name) }
+            .to_str()
+            .map_err(|_| vm.new_system_error("PyMethodDef name is not valid UTF-8"))?;
+        let doc = if md.ml_doc.is_null() {
+            None
+        } else {
+            Some(
+                unsafe { core::ffi::CStr::from_ptr(md.ml_doc) }
+                    .to_str()
+                    .map_err(|_| vm.new_system_error("PyMethodDef doc is not valid UTF-8"))?,
+            )
+        };
+        let flags = PyMethodFlags::from_bits(md.ml_flags as u32)
+            .ok_or_else(|| vm.new_system_error("PyMethodDef contains unknown flags"))?;
+        // Module functions are bound to the module as their `self`, exactly
+        // like CPython's PyModule_AddFunctions (PyCFunction_NewEx with the
+        // module as self). Other objects get unbound methods set as attrs.
+        let bound_self = if is_module {
+            Some(obj.clone())
+        } else {
+            None
+        };
+        let method = build_c_method_def(vm, name, md.ml_meth, flags, is_module, doc)?
+            .build_function(vm, bound_self);
+        if is_module {
+            obj.downcast_ref::<crate::builtins::PyModule>()
+                .ok_or_else(|| vm.new_system_error("module object is not a module"))?
+                .dict()
+                .set_item(name, method.into(), vm)?;
+        } else {
+            obj.set_attr(name, method, vm)?;
+        }
+        n += 1;
+    }
+}
+
+/// Format a SystemError that chains `cause` as __cause__ (CPython's
+/// _PyErr_FormatFromCause).
+pub fn system_error_from_cause(
+    vm: &VirtualMachine,
+    message: String,
+    cause: crate::builtins::PyBaseExceptionRef,
+) -> crate::builtins::PyBaseExceptionRef {
+    let exc = vm.new_system_error(message);
+    exc.set___cause__(Some(cause));
+    exc
 }

@@ -3,10 +3,11 @@ use crate::moduleobject::{PySlot, Py_slot_end, Py_slot_invalid};
 use crate::object::define_py_check;
 use crate::pystate::with_vm;
 use crate::util::CStrExt;
-use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
+use core::ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void};
+use core::ptr::NonNull;
 use rustpython_vm::builtins::{PyStr, PyType};
 use rustpython_vm::function::FuncArgs;
-use rustpython_vm::{AsObject, Py, PyObject, PyObjectRef, VirtualMachine};
+use rustpython_vm::{AsObject, Py, PyObject, PyObjectRef, PyRef, VirtualMachine};
 
 pub type PyTypeObject = Py<PyType>;
 
@@ -49,11 +50,86 @@ pub unsafe extern "C" fn PyType_GetFlags(ptr: *const PyTypeObject) -> c_ulong {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_IsSubtype(a: *const PyTypeObject, b: *const PyTypeObject) -> c_int {
-    with_vm(move |_vm| {
-        let a = unsafe { &*a };
-        let b = unsafe { &*b };
+    with_vm(move |vm| {
+        let a = resolve_type_ptr(vm, a)?;
+        let b = resolve_type_ptr(vm, b)?;
+        let a: &Py<PyType> = &a;
+        let b: &Py<PyType> = &b;
         Ok(a.is_subtype(b))
     })
+}
+
+/// The C-visible `ob_type` of a RustPython object (offset 8 of the object
+/// header) is the payload vtable, not a type pointer. CPython's inline
+/// PyObject_TypeCheck falls back to calling the exported PyType_IsSubtype
+/// with those raw pointers, so resolve them: known payload vtables map to
+/// their real type; the exported type-stub symbols (byte copies of a type's
+/// header) carry the real type's fields and can be used directly.
+fn resolve_type_ptr(
+    vm: &VirtualMachine,
+    ptr: *const PyTypeObject,
+) -> rustpython_vm::PyResult<PyRef<PyType>> {
+    let addr = ptr as usize;
+    if addr == 0 {
+        return Err(vm.new_system_error("PyType_IsSubtype called with a NULL type"));
+    }
+    for (vtable, ty) in vtable_probes(vm) {
+        if addr == vtable {
+            let obj = unsafe {
+                rustpython_vm::PyObjectRef::from_raw(NonNull::new_unchecked(ty.cast()))
+            };
+            return obj.downcast::<PyType>().map_err(|_| {
+                vm.new_system_error("PyType_IsSubtype: vtable probe is not a type")
+            });
+        }
+    }
+    // The exported type-stub symbols only mirror a type's header; map them
+    // back to the real types so their full payload (mro, bases) is readable.
+    #[allow(static_mut_refs)]
+    unsafe {
+        let stub_str = core::ptr::addr_of!(crate::objectstatics::PyUnicode_Type) as usize;
+        if addr == stub_str {
+            return Ok(vm.ctx.types.str_type.to_owned());
+        }
+        let stub_int = core::ptr::addr_of!(crate::objectstatics::PyLong_Type) as usize;
+        if addr == stub_int {
+            return Ok(vm.ctx.types.int_type.to_owned());
+        }
+        let stub_bool = core::ptr::addr_of!(crate::objectstatics::PyBool_Type) as usize;
+        if addr == stub_bool {
+            return Ok(vm.ctx.types.bool_type.to_owned());
+        }
+    }
+    // Not a vtable: assume a real type object (possibly one of our exported
+    // header stubs, which mirror the type's header bytes).
+    let obj = unsafe { (&*(ptr as *mut PyObject)).to_owned() };
+    obj.downcast::<PyType>().map_err(|_| {
+        vm.new_system_error("PyType_IsSubtype called with a pointer that is not a type")
+    })
+}
+
+/// (payload vtable address, real type object pointer) pairs for the common
+/// builtin types, captured once from fresh instances.
+fn vtable_probes(vm: &VirtualMachine) -> Vec<(usize, *mut u8)> {
+    use rustpython_vm::builtins::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyStr, PyTuple};
+    use rustpython_vm::PyPayload;
+
+    fn probe<T: PyPayload>(obj: PyObjectRef, ty: PyRef<PyType>) -> (usize, *mut u8) {
+        let vtable = unsafe { *((obj.as_object().as_raw() as *const u8).add(8) as *const usize) };
+        (vtable, ty.as_object().as_raw().cast_mut().cast())
+    }
+
+    let mut probes = Vec::new();
+    let mut push = |obj: PyObjectRef, ty: PyRef<PyType>| probes.push(probe::<PyStr>(obj, ty));
+    push(vm.ctx.new_str("").into(), vm.ctx.types.str_type.to_owned());
+    probes.push(probe::<PyInt>(vm.ctx.new_int(0).into(), vm.ctx.types.int_type.to_owned()));
+    probes.push(probe::<PyBool>(vm.ctx.new_bool(true).into(), vm.ctx.types.bool_type.to_owned()));
+    probes.push(probe::<PyFloat>(vm.ctx.new_float(0.0).into(), vm.ctx.types.float_type.to_owned()));
+    probes.push(probe::<PyBytes>(vm.ctx.new_bytes(vec![]).into(), vm.ctx.types.bytes_type.to_owned()));
+    probes.push(probe::<PyTuple>(vm.ctx.new_tuple(vec![]).into(), vm.ctx.types.tuple_type.to_owned()));
+    probes.push(probe::<PyList>(vm.ctx.new_list(vec![]).into(), vm.ctx.types.list_type.to_owned()));
+    probes.push(probe::<PyDict>(vm.ctx.new_dict().into(), vm.ctx.types.dict_type.to_owned()));
+    probes
 }
 
 #[unsafe(no_mangle)]
@@ -111,6 +187,170 @@ pub unsafe extern "C" fn PyType_GetSlot(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Freeze(_tp: *mut PyTypeObject) -> c_int {
     0
+}
+
+// ---------------------------------------------------------------------------
+// Legacy (3.14 and earlier) type creation from a PyType_Spec (typeslots.h
+// slot ids). Behavioral C slots (getattro/setattr/finalize/traverse/...) are
+// not modeled: instances are ordinary Python objects with a __dict__, which
+// makes attribute access behave equivalently for well-behaved extensions.
+// ---------------------------------------------------------------------------
+
+/// CPython 3.14's PyType_Spec (Include/object.h): three packed ints, so the
+/// slots pointer sits at offset 24 (no padding between the ints).
+#[repr(C)]
+pub struct PyType_Spec {
+    pub name: *const c_char,
+    pub basicsize: c_int,
+    pub itemsize: c_int,
+    pub flags: c_uint,
+    pub slots: *const PyType_Slot, /* terminated by slot==0. */
+}
+
+#[repr(C)]
+pub struct PyType_Slot {
+    pub slot: c_int,
+    pub pfunc: *mut c_void,
+}
+
+const _: () = assert!(core::mem::offset_of!(PyType_Spec, slots) == 24);
+const _: () = assert!(core::mem::size_of::<PyType_Spec>() == 32);
+const _: () = assert!(core::mem::offset_of!(PyType_Slot, pfunc) == 8);
+const _: () = assert!(core::mem::size_of::<PyType_Slot>() == 16);
+
+const PY_TP_BASE: c_int = 48;
+const PY_TP_DOC: c_int = 56;
+const PY_TP_METHODS: c_int = 64;
+
+fn map_base_ptr(vm: &VirtualMachine, ptr: *mut c_void) -> rustpython_vm::PyResult<PyObjectRef> {
+    if ptr.is_null() {
+        return Ok(vm.ctx.types.object_type.to_owned().into());
+    }
+    if ptr as usize == core::ptr::addr_of!(crate::objectstatics::PyUnicode_Type) as usize {
+        // &PyUnicode_Type: map the exported stub to the real str type.
+        return Ok(vm.ctx.types.str_type.to_owned().into());
+    }
+    let obj = unsafe { (&*(ptr as *mut PyObject)).to_owned() };
+    if obj.downcast_ref::<PyType>().is_some() {
+        Ok(obj)
+    } else {
+        Err(vm.new_type_error("PyType_FromSpec: base is not a type"))
+    }
+}
+
+/// Build a heap type from a PyType_Spec (CPython's PyType_FromSpec).
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_FromSpec(spec: *mut PyType_Spec) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        if spec.is_null() {
+            return Err(vm.new_system_error("PyType_FromSpec called with NULL spec"));
+        }
+        let spec = unsafe { &*spec };
+        let name = unsafe { CStr::from_ptr(spec.name) }
+            .to_str()
+            .map_err(|_| vm.new_system_error("PyType_FromSpec: invalid type name"))?
+            .to_owned();
+        let mut base: Option<PyObjectRef> = None;
+        let mut methods: *const PyMethodDef = core::ptr::null();
+        let mut doc: Option<String> = None;
+
+        let mut i = 0usize;
+        loop {
+            let slot = unsafe { &*spec.slots.add(i) };
+            if slot.slot == 0 {
+                break;
+            }
+            match slot.slot {
+                PY_TP_BASE => {
+                    base = Some(map_base_ptr(vm, slot.pfunc)?);
+                }
+                PY_TP_METHODS => {
+                    methods = slot.pfunc.cast::<PyMethodDef>();
+                }
+                PY_TP_DOC => {
+                    doc = Some(
+                        unsafe { CStr::from_ptr(slot.pfunc.cast::<c_char>()) }
+                            .to_str()
+                            .map_err(|_| vm.new_system_error("PyType_FromSpec: invalid doc"))?
+                            .to_owned(),
+                    );
+                }
+                // Behavioral slots (getattro/setattr/finalize/traverse/...)
+                // are not modeled; the default dict-based behavior is used.
+                _ => {}
+            }
+            i += 1;
+        }
+
+        let base = base.unwrap_or_else(|| vm.ctx.types.object_type.to_owned().into());
+        let dict = vm.ctx.new_dict();
+        if !methods.is_null() {
+            let count = unsafe { method_def_count(vm, methods)? };
+            let mds = unsafe { core::slice::from_raw_parts(methods, count) };
+            for md in mds {
+                let method = build_method_def(vm, md, true)?.build_function(vm, None);
+                let mname = unsafe { md.ml_name.try_as_str(vm) }?;
+                dict.set_item(mname, method.into(), vm).map_err(|e| {
+                    vm.new_system_error(format!(
+                        "PyType_FromSpec: cannot add method {mname}: {}",
+                        e.args()
+                            .first()
+                            .and_then(|a| a.downcast_ref::<PyStr>().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "unknown error".to_string())
+                    ))
+                })?;
+            }
+        }
+        if let Some(doc) = doc {
+            dict.set_item(
+                rustpython_vm::identifier!(vm, __doc__),
+                vm.ctx.new_str(doc).into(),
+                vm,
+            )?;
+        }
+
+        let bases = vm.ctx.new_tuple(vec![base]);
+        let args = FuncArgs::from(vec![
+            vm.ctx.new_str(name).into(),
+            bases.into(),
+            dict.into(),
+        ]);
+        let metaclass: PyObjectRef = vm.ctx.types.type_type.to_owned().into();
+        metaclass.call(args, vm)
+    })
+}
+
+/// PyType_FromModuleAndSpec (3.9+): (module, spec, userdata) — the module
+/// context is not modeled, the spec is passed through to PyType_FromSpec.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_FromModuleAndSpec(
+    _module: *mut PyObject,
+    spec: *mut PyType_Spec,
+    _userdata: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { PyType_FromSpec(spec) }
+}
+
+/// PyType_GetModule / PyType_GetModuleState / PyType_GetModuleByDef: heap
+/// types are not associated with a C module context, so these return NULL
+/// (like CPython does for types without a module association).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetModule(_tp: *mut PyTypeObject) -> *mut PyObject {
+    core::ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetModuleState(_tp: *mut PyTypeObject) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetModuleByDef(
+    _tp: *mut PyTypeObject,
+    _def: *mut crate::moduleobject::PyModuleDef,
+) -> *mut PyObject {
+    core::ptr::null_mut()
 }
 
 /// PyType_FromSlots: build a heap type from a PEP 793 PySlot array (3.15).

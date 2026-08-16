@@ -1,6 +1,12 @@
 use crate::builtins::{PyCode, PyStrInterned};
 use crate::frozen::FrozenModule;
-use crate::{VirtualMachine, builtins::PyBaseExceptionRef};
+use crate::import::{
+    CPyModuleDef, SinglePhaseCacheEntry, add_c_methods_to_object,
+    ensure_extension_def_initialized, extension_cache_get, extension_cache_put,
+    extension_module_def, is_extension_def, legacy_slot_ids, mark_extension_module_executed,
+    set_extension_module_def, system_error_from_cause,
+};
+use crate::{AsObject, PyResult, VirtualMachine, builtins::PyBaseExceptionRef};
 use core::borrow::Borrow;
 
 pub(crate) use _imp::module_def;
@@ -176,7 +182,7 @@ fn find_frozen(name: &str, vm: &VirtualMachine) -> Result<FrozenModule, FrozenEr
 #[pymodule(with(lock))]
 mod _imp {
     use crate::{
-        PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
+        AsObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
         builtins::{PyBytesRef, PyCode, PyMemoryView, PyModule, PyStrRef, PyUtf8StrRef},
         convert::TryFromBorrowedObject,
         function::OptionalArg,
@@ -195,13 +201,205 @@ mod _imp {
     use version::PYC_MAGIC_NUMBER_TOKEN;
 
     #[pyfunction]
-    fn extension_suffixes() -> Vec<PyObjectRef> {
-        // Native extension modules (.pyd/.so) cannot be loaded yet
-        // (no C-extension ABI support); returning an empty list keeps
-        // extension importers from looking for them, which also lets
-        // CPython's extension test-suite modules skip themselves.
-        // Populate with platform suffixes once .pyd/.so loading lands.
-        Vec::new()
+    fn extension_suffixes(vm: &VirtualMachine) -> Vec<PyObjectRef> {
+        #[cfg(windows)]
+        {
+            // .pyd extension loading is supported through create_dynamic.
+            vec![vm.ctx.new_str(".pyd").into()]
+        }
+        #[cfg(not(windows))]
+        {
+            // .so loading is not wired up yet; an empty list keeps extension
+            // importers from looking for them (and lets CPython's extension
+            // test-suite modules skip themselves).
+            Vec::new()
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[pyfunction]
+    fn create_dynamic(spec: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        let name: PyUtf8StrRef = spec.get_attr("name", vm)?.try_into_value(vm)?;
+        let origin: PyUtf8StrRef = spec.get_attr("origin", vm)?.try_into_value(vm)?;
+
+        // PEP 489 export-name encoding: the short name (after the last dot)
+        // is ASCII-encoded, or punycode-encoded when it contains non-ASCII
+        // characters, with '-' replaced by '_' (Python/importdl.c).
+        let short = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
+        let (prefix, encoded) = if short.is_ascii() {
+            ("PyInit", short.to_owned())
+        } else {
+            let short_obj = vm.ctx.new_str(short);
+            let encoded_bytes = vm.call_method(short_obj.as_object(), "encode", ("punycode",))?;
+            let encoded: PyBytesRef = encoded_bytes.downcast().map_err(|_| {
+                vm.new_system_error("module name punycode encoding did not return bytes")
+            })?;
+            let encoded = String::from_utf8_lossy(encoded.as_bytes()).replace('-', "_");
+            ("PyInitU", encoded)
+        };
+        let symbol = format!("{prefix}_{encoded}\0");
+
+        #[cfg(windows)]
+        let handle = rustpython_host_env::ctypes::open_library(origin.as_str());
+        #[cfg(all(unix, not(target_os = "wasi")))]
+        let handle = rustpython_host_env::ctypes::open_library_with_mode(
+            origin.as_str(),
+            rustpython_host_env::ctypes::dlopen_mode(None),
+        );
+        let handle = handle.map_err(|e| {
+            vm.new_import_error(
+                format!("cannot load extension module '{}': {e}", name.as_str()),
+                name.clone().into_wtf8(),
+            )
+        })?;
+
+        let addr = rustpython_host_env::ctypes::lookup_function_symbol_addr(handle, symbol.as_bytes())
+            .map_err(|_| {
+                vm.new_import_error(
+                    format!(
+                        "dynamic module does not define module export function ({})",
+                        symbol.trim_end_matches('\0')
+                    ),
+                    name.clone().into_wtf8(),
+                )
+            })?;
+        if addr == 0 {
+            return Err(vm.new_import_error(
+                format!(
+                    "dynamic module does not define module export function ({})",
+                    symbol.trim_end_matches('\0')
+                ),
+                name.clone().into_wtf8(),
+            ));
+        }
+
+        // Single-phase (legacy) modules are cached globally by (origin, name);
+        // a second load reuses the cached module/dict (Python/import.c).
+        if let Some(entry) = super::extension_cache_get(origin.as_str(), name.as_str()) {
+            return super::reload_singlephase_extension(&entry, name.as_str(), vm);
+        }
+
+        let init_fn: unsafe extern "C" fn() -> *mut crate::PyObject =
+            unsafe { core::mem::transmute(addr) };
+        let module_ptr = unsafe { init_fn() };
+
+        // Validate the init result like CPython's _PyImport_RunModInitFunc.
+        if module_ptr.is_null() {
+            return match vm.take_raised_exception() {
+                Some(exc) => Err(exc),
+                None => Err(vm.new_system_error(format!(
+                    "initialization of {} failed without raising an exception",
+                    name.as_str()
+                ))),
+            };
+        }
+        if let Some(exc) = vm.take_raised_exception() {
+            // Non-NULL result with a pending exception: single-phase modules
+            // don't do this, so it must be a misbehaving multi-phase init.
+            return Err(super::system_error_from_cause(
+                vm,
+                format!(
+                    "initialization of {} raised unreported exception",
+                    name.as_str()
+                ),
+                exc,
+            ));
+        }
+
+        let module_ptr_usize = module_ptr as usize;
+        if super::is_extension_def(module_ptr_usize) {
+            // Multi-phase init (PEP 489): build the module from its def.
+            return super::build_multiphase_module(spec, &name, module_ptr, vm);
+        }
+        // A PyModuleDef that never went through PyModuleDef_Init has a zeroed
+        // header (m_init == NULL) and is not a valid PyObject: check the type
+        // word before wrapping the pointer, or the downcast below would
+        // dereference a NULL vtable.
+        let ob_type = unsafe { core::ptr::addr_of!((*(module_ptr as *const [usize; 2]))[1]).read() };
+        if ob_type == 0 {
+            return Err(vm.new_system_error(format!(
+                "init function of {} returned uninitialized object",
+                name.as_str()
+            )));
+        }
+        let module_ref = unsafe { (&*module_ptr).to_owned() };
+        if super::extension_module_def(vm, &module_ref).is_some() {
+            // Single-phase init: remember it in the global cache.
+            if prefix == "PyInitU" {
+                return Err(vm.new_system_error(format!(
+                    "initialization of {} did not return PyModuleDef",
+                    name.as_str()
+                )));
+            }
+            let def_ptr = super::extension_module_def(vm, &module_ref).unwrap_or(0);
+            super::register_singlephase_cache(origin.as_str(), name.as_str(), module_ptr, def_ptr, init_fn as usize, vm);
+            return Ok(module_ref);
+        }
+        Err(vm.new_system_error(format!(
+            "initialization of {} did not return an extension module",
+            name.as_str()
+        )))
+    }
+
+    #[cfg(any(unix, windows))]
+    #[pyfunction]
+    fn exec_dynamic(module: PyObjectRef, vm: &VirtualMachine) -> PyResult<i32> {
+        // A Py_mod_create function may return a non-module object; CPython's
+        // exec_builtin_or_dynamic is a no-op for those.
+        let Some(module_ref) = module.downcast_ref::<PyModule>() else {
+            return Ok(0);
+        };
+        // The def pointer and executed-marker live in the module's own
+        // __dict__, so a raw pointer recycled after a module is freed can
+        // never falsely mark a new module as already executed.
+        let Some(def_ptr) = super::extension_module_def(vm, &module) else {
+            return Ok(0);
+        };
+        let def = unsafe { &*(def_ptr as *const super::CPyModuleDef) };
+
+        // CPython skips the exec slot when per-module state is present
+        // (md_state != NULL): for m_size >= 0 that state is allocated on the
+        // first exec, so reload does not re-run it. m_size == -1 defs always
+        // re-run (PyModule_ExecDef in Objects/moduleobject.c).
+        if def.m_size >= 0 && !super::mark_extension_module_executed(vm, &module)? {
+            return Ok(0);
+        }
+
+        if !def.m_slots.is_null() {
+            let mut i = 0usize;
+            loop {
+                let slot = unsafe { &*def.m_slots.add(i) };
+                if slot.slot == 0 {
+                    break;
+                }
+                if slot.slot == super::legacy_slot_ids::Py_mod_exec {
+                    let exec: unsafe extern "C" fn(*mut crate::PyObject) -> i32 =
+                        unsafe { core::mem::transmute(slot.value) };
+                    let rc = unsafe { exec(module.as_object().as_raw().cast_mut()) };
+                    if rc != 0 {
+                        return match vm.take_raised_exception() {
+                            Some(exc) => Err(exc),
+                            None => Err(vm.new_system_error(format!(
+                                "execution of module {} failed without setting an exception",
+                                super::module_name_of(module_ref, vm)
+                            ))),
+                        };
+                    }
+                    if let Some(exc) = vm.take_raised_exception() {
+                        return Err(super::system_error_from_cause(
+                            vm,
+                            format!(
+                                "execution of module {} raised unreported exception",
+                                super::module_name_of(module_ref, vm)
+                            ),
+                            exc,
+                        ));
+                    }
+                }
+                i += 1;
+            }
+        }
+        Ok(0)
     }
 
     #[pyfunction]
@@ -392,4 +590,268 @@ fn update_code_filenames(
             update_code_filenames(inner_code, old_name, new_name);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// PEP 489 dynamic-extension helpers (shared with capi through crate::import).
+// ---------------------------------------------------------------------------
+
+fn module_name_of(module: &crate::Py<crate::builtins::PyModule>, vm: &VirtualMachine) -> String {
+    module
+        .dict()
+        .get_item_opt(rustpython_vm::identifier!(vm, __name__), vm)
+        .ok()
+        .flatten()
+        .and_then(|o| o.downcast_ref::<crate::builtins::PyStr>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "<unknown>".to_owned())
+}
+
+/// Equivalent of CPython's PyModule_FromDefAndSpec2 for the result of a
+/// multi-phase init function (PEP 489).
+#[cfg(any(unix, windows))]
+fn build_multiphase_module(
+    spec: crate::PyObjectRef,
+    name: &crate::builtins::PyUtf8StrRef,
+    def_ptr: *mut crate::PyObject,
+    vm: &VirtualMachine,
+) -> PyResult {
+    let def_ptr_usize = def_ptr as usize;
+
+    // PyModuleDef_Init(def): idempotent.
+    ensure_extension_def_initialized(def_ptr_usize);
+    let def = unsafe { &*(def_ptr as *const CPyModuleDef) };
+
+    let name_str = name.as_str();
+    if def.m_size < 0 {
+        return Err(vm.new_system_error(format!(
+            "module {name_str}: m_size may not be negative for multi-phase initialization"
+        )));
+    }
+
+    // Scan the slot array.
+    let mut create: Option<
+        unsafe extern "C" fn(
+            *mut crate::PyObject,
+            *mut CPyModuleDef,
+        ) -> *mut crate::PyObject,
+    > = None;
+    let mut has_execution_slots = false;
+    let mut has_multiple_interpreters_slot = false;
+    let mut has_gil_slot = false;
+    if !def.m_slots.is_null() {
+        let mut i = 0usize;
+        loop {
+            let slot = unsafe { &*def.m_slots.add(i) };
+            if slot.slot == 0 {
+                break;
+            }
+            match slot.slot {
+                legacy_slot_ids::Py_mod_create => {
+                    if create.is_some() {
+                        return Err(vm.new_system_error(format!(
+                            "module {name_str} has multiple create slots"
+                        )));
+                    }
+                    create = Some(unsafe {
+                        core::mem::transmute::<
+                            *mut core::ffi::c_void,
+                            unsafe extern "C" fn(
+                                *mut crate::PyObject,
+                                *mut CPyModuleDef,
+                            ) -> *mut crate::PyObject,
+                        >(slot.value)
+                    });
+                }
+                legacy_slot_ids::Py_mod_exec => {
+                    has_execution_slots = true;
+                }
+                legacy_slot_ids::Py_mod_multiple_interpreters => {
+                    if has_multiple_interpreters_slot {
+                        return Err(vm.new_system_error(format!(
+                            "module {name_str} has more than one 'multiple interpreters' slots"
+                        )));
+                    }
+                    has_multiple_interpreters_slot = true;
+                }
+                legacy_slot_ids::Py_mod_gil => {
+                    if has_gil_slot {
+                        return Err(vm.new_system_error(format!(
+                            "module {name_str} has more than one 'gil' slots"
+                        )));
+                    }
+                    has_gil_slot = true;
+                }
+                _ => {
+                    return Err(vm.new_system_error(format!(
+                        "module {name_str} uses unknown slot ID {}",
+                        slot.slot
+                    )));
+                }
+            }
+            i += 1;
+        }
+    }
+
+    // Py_mod_create slot, or a fresh module.
+    let module: crate::PyObjectRef = if let Some(create) = create {
+        let created = unsafe { create(spec.as_object().as_raw().cast_mut(), def_ptr.cast()) };
+        if created.is_null() {
+            return match vm.take_raised_exception() {
+                Some(exc) => Err(exc),
+                None => Err(vm.new_system_error(format!(
+                    "creation of module {name_str} failed without setting an exception"
+                ))),
+            };
+        }
+        let obj = unsafe { (&*created).to_owned() };
+        if let Some(exc) = vm.take_raised_exception() {
+            return Err(system_error_from_cause(
+                vm,
+                format!("creation of module {name_str} raised unreported exception"),
+                exc,
+            ));
+        }
+        obj
+    } else {
+        vm.new_module(name_str, vm.ctx.new_dict(), None).into()
+    };
+
+    if module.downcast_ref::<crate::builtins::PyModule>().is_some() {
+        set_extension_module_def(vm, &module, def_ptr_usize)?;
+    } else {
+        if def.m_size > 0 || def.m_traverse.is_some() || def.m_clear.is_some() || def.m_free.is_some() {
+            return Err(vm.new_system_error(format!(
+                "module {name_str} is not a module object, but requests module state"
+            )));
+        }
+        if has_execution_slots {
+            return Err(vm.new_system_error(format!(
+                "module {name_str} specifies execution slots, but did not create a ModuleType instance"
+            )));
+        }
+    }
+
+    if !def.m_methods.is_null() {
+        unsafe { add_c_methods_to_object(vm, &module, def.m_methods) }?;
+    }
+    if !def.m_doc.is_null() {
+        let doc = unsafe { core::ffi::CStr::from_ptr(def.m_doc) }
+            .to_str()
+            .map_err(|_| vm.new_system_error("module docstring is not valid UTF-8"))?;
+        module.set_attr(
+            rustpython_vm::identifier!(vm, __doc__),
+            vm.ctx.new_str(doc),
+            vm,
+        )?;
+    }
+    Ok(module)
+}
+
+/// Second and later loads of a single-phase extension (Python/import.c's
+/// reload_singlephase_extension).
+#[cfg(any(unix, windows))]
+fn reload_singlephase_extension(
+    entry: &SinglePhaseCacheEntry,
+    name: &str,
+    vm: &VirtualMachine,
+) -> PyResult {
+    let def = unsafe { &*(entry.def_ptr as *const CPyModuleDef) };
+    if def.m_size == -1 {
+        // The module does not support repeated initialization: reuse the
+        // module from sys.modules if still there, otherwise create a new one
+        // and copy the cached __dict__.
+        let sys_modules = vm.sys_module.get_attr("modules", vm).unwrap();
+        let sys_modules = sys_modules
+            .downcast_ref::<crate::builtins::PyDict>()
+            .ok_or_else(|| vm.new_system_error("sys.modules is not a dict"))?;
+        if let Some(existing) = sys_modules.get_item_opt(name, vm)? {
+            return Ok(existing);
+        }
+        let module: crate::PyObjectRef = vm.new_module(name, vm.ctx.new_dict(), None).into();
+        if let Some(m_dict) = entry.m_dict {
+            let cached = unsafe { &*(m_dict as *const crate::PyObject) }
+                .downcast_ref::<crate::builtins::PyDict>()
+                .ok_or_else(|| vm.new_system_error("invalid cached single-phase module dict"))?;
+            let dict = module
+                .downcast_ref::<crate::builtins::PyModule>()
+                .ok_or_else(|| vm.new_system_error("module object is not a module"))?
+                .dict();
+            // The import bootstrap re-sets the import-managed attributes from
+            // the spec; copying them would leak the previous loader/spec
+            // (visible to the Source/Frozen importlib test variants).
+            const SKIP: [&str; 5] = ["__name__", "__loader__", "__spec__", "__package__", "__file__"];
+            for (k, v) in cached {
+                let skip = match k.as_object().str_utf8(vm) {
+                    Ok(k) => SKIP.contains(&k.as_str()),
+                    Err(_) => false,
+                };
+                if !skip {
+                    dict.set_item(k.as_object(), v, vm)?;
+                }
+            }
+        }
+        set_extension_module_def(vm, &module, entry.def_ptr)?;
+        return Ok(module);
+    }
+    // m_size >= 0: re-run the init function.
+    let init_fn: unsafe extern "C" fn() -> *mut crate::PyObject =
+        unsafe { core::mem::transmute(entry.m_init) };
+    let module_ptr = unsafe { init_fn() };
+    if module_ptr.is_null() {
+        return match vm.take_raised_exception() {
+            Some(exc) => Err(exc),
+            None => Err(vm.new_system_error(format!(
+                "initialization of {name} failed without raising an exception"
+            ))),
+        };
+    }
+    if let Some(exc) = vm.take_raised_exception() {
+        return Err(system_error_from_cause(
+            vm,
+            format!("initialization of {name} raised unreported exception"),
+            exc,
+        ));
+    }
+    Ok(unsafe { (&*module_ptr).to_owned() })
+}
+
+/// Register a successfully loaded single-phase module in the global cache
+/// (Python/import.c's update_global_state_for_extension).
+#[cfg(any(unix, windows))]
+fn register_singlephase_cache(
+    origin: &str,
+    name: &str,
+    module_ptr: *mut crate::PyObject,
+    def_ptr: usize,
+    init_fn: usize,
+    vm: &VirtualMachine,
+) {
+    if def_ptr == 0 {
+        return;
+    }
+    let def = unsafe { &*(def_ptr as *const CPyModuleDef) };
+    let entry = if def.m_size == -1 {
+        let dict: crate::PyObjectRef = match unsafe { &*module_ptr }
+            .downcast_ref::<crate::builtins::PyModule>()
+        {
+            Some(m) => m.dict().into(),
+            None => vm.ctx.none(),
+        };
+        // The cache stores a raw pointer; leak a clone so the dict stays
+        // alive for the lifetime of the process (like CPython's m_copy).
+        let raw = dict.as_object().as_raw() as usize;
+        core::mem::forget(dict);
+        SinglePhaseCacheEntry {
+            def_ptr,
+            m_dict: Some(raw),
+            m_init: 0,
+        }
+    } else {
+        SinglePhaseCacheEntry {
+            def_ptr,
+            m_dict: None,
+            m_init: init_fn,
+        }
+    };
+    extension_cache_put(origin, name, entry);
 }

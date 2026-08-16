@@ -1,11 +1,11 @@
-use super::{PyStrInterned, PyStrRef, PyType, type_};
+use super::{PyBoundMethod, PyStrInterned, PyStrRef, PyType, type_};
 use crate::{
     AsObject, Context, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
     class::PyClassImpl,
     common::wtf8::Wtf8,
     convert::TryFromObject,
     function::{FuncArgs, PyComparisonValue, PyMethodDef, PyMethodFlags, PyNativeFn},
-    types::{Callable, Comparable, PyComparisonOp, Representable},
+    types::{Callable, Comparable, GetDescriptor, PyComparisonOp, Representable},
 };
 use alloc::fmt;
 
@@ -23,6 +23,37 @@ pub struct PyNativeFunction {
 impl PyPayload for PyNativeFunction {
     fn class(ctx: &Context) -> &'static Py<PyType> {
         ctx.types.builtin_function_or_method_type
+    }
+}
+
+// CPython's PyCFunction meth_get: unbound builtin functions bind the
+// accessing instance; functions already bound to a module (or static) are
+// returned as-is. Only C-extension method objects (created from a PyMethodDef
+// through the capi crate) bind: their callable consumes the instance as the
+// C `self` argument. Interpreter-level module functions (e.g. codecs.utf_8_decode)
+// take their arguments directly, so they must not bind.
+impl GetDescriptor for PyNativeFunction {
+    fn descr_get(
+        zelf: PyObjectRef,
+        obj: Option<PyObjectRef>,
+        _cls: Option<PyObjectRef>,
+        vm: &VirtualMachine,
+    ) -> PyResult {
+        let native = zelf
+            .downcast_ref::<Self>()
+            .expect("GetDescriptor for PyNativeFunction called with a non-function");
+        if native.zelf.is_some()
+            || native._method_def_owner.is_none()
+            || native.value.flags.contains(PyMethodFlags::STATIC)
+        {
+            return Ok(zelf);
+        }
+        Ok(match obj {
+            Some(obj) if !vm.is_none(&obj) => {
+                PyBoundMethod::new(obj, zelf).into_ref(&vm.ctx).into()
+            }
+            _ => zelf,
+        })
     }
 }
 
@@ -45,7 +76,6 @@ impl PyNativeFunction {
         self.module = Some(module);
         self
     }
-
     pub fn into_ref(self, ctx: &Context) -> PyRef<Self> {
         PyRef::new_ref(
             self,
@@ -128,7 +158,7 @@ impl Representable for PyNativeFunction {
 }
 
 #[pyclass(
-    with(Callable, Comparable, Representable),
+    with(GetDescriptor, Callable, Comparable, Representable),
     flags(HAS_WEAKREF, DISALLOW_INSTANTIATION)
 )]
 impl PyNativeFunction {

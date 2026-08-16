@@ -3,7 +3,7 @@ use crate::methodobject::{PyMethodDef, build_method_def};
 use crate::object::define_py_check;
 use crate::pystate::with_vm;
 use crate::util::CStrExt;
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use rustpython_vm::builtins::{PyModule, PyStr, PyTuple};
 use rustpython_vm::{AsObject, PyObjectRef, PyResult, VirtualMachine};
 
@@ -42,6 +42,60 @@ pub unsafe extern "C" fn PyModule_NewObject(name: *mut PyObject) -> *mut PyObjec
             .to_str()
             .ok_or_else(|| vm.new_system_error("module name must be valid UTF-8"))?;
         Ok(vm.new_module(name, vm.ctx.new_dict(), None))
+    })
+}
+
+/// PyModule_New: create a new module object by C string name.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_New(name: *const c_char) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let name = unsafe { name.try_as_str(vm) }?;
+        Ok(vm.new_module(name, vm.ctx.new_dict(), None))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// PyState_*Module: per-interpreter module registry keyed by def index
+// (CPython's Modules/main.c / import.c). RustPython does not maintain the
+// by-index cache; multi-phase defs are rejected like CPython does.
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyState_FindModule(_def: *mut PyModuleDef) -> *mut PyObject {
+    // Not found: CPython returns NULL and callers do Py_RETURN_NONE.
+    core::ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyState_AddModule(_module: *mut PyObject, def: *mut PyModuleDef) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if def.is_null() {
+            return Err(vm.new_system_error("PyState_AddModule called with NULL def"));
+        }
+        let def = unsafe { &*def };
+        if !def.m_slots.is_null() {
+            // CPython: multi-phase (slots-based) modules cannot be registered.
+            return Err(vm.new_system_error(
+                "PyState_AddModule called on module with slots",
+            ));
+        }
+        Ok(0)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyState_RemoveModule(def: *mut PyModuleDef) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if def.is_null() {
+            return Err(vm.new_system_error("PyState_RemoveModule called with NULL def"));
+        }
+        let def = unsafe { &*def };
+        if !def.m_slots.is_null() {
+            return Err(vm.new_system_error(
+                "PyState_RemoveModule called on module with slots",
+            ));
+        }
+        Ok(0)
     })
 }
 
@@ -145,6 +199,9 @@ pub unsafe extern "C" fn PyModuleDef_Init(def: *mut PyModuleDef) -> *mut PyObjec
     if def.m_base.m_index == -1 || def.m_base.m_index == 0 {
         def.m_base.m_index = MODULE_INDEX.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
     }
+    // Register the def so _imp.create_dynamic can recognize the result of a
+    // multi-phase init function.
+    rustpython_vm::import::register_extension_def(def as *mut PyModuleDef as usize);
     def as *mut PyModuleDef as *mut PyObject
 }
 
@@ -154,6 +211,35 @@ pub unsafe extern "C" fn PyModuleDef_Init(def: *mut PyModuleDef) -> *mut PyObjec
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_Create(def: *mut PyModuleDef) -> *mut PyObject {
     unsafe { _PyModule_Create(def) }
+}
+
+/// PyModule_Create2: PyModule_Create with an explicit API version check
+/// (CPython's PyModule_Create is a macro over this; extensions compiled
+/// against CPython headers call this symbol directly).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_Create2(
+    def: *mut PyModuleDef,
+    module_api_version: c_int,
+) -> *mut PyObject {
+    // PYTHON_API_VERSION for the abi3t 3.15 target.
+    const PYTHON_API_VERSION: c_int = 1013;
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        if module_api_version != PYTHON_API_VERSION {
+            let name = if def.is_null() {
+                "<unknown>".to_owned()
+            } else {
+                unsafe { (*def).m_name.try_as_str(vm) }?.to_owned()
+            };
+            return Err(vm.new_import_error(
+                format!(
+                    "module version mismatch: {name} was compiled for Python {module_api_version}, \
+                     while RustPython's version is {PYTHON_API_VERSION}"
+                ),
+                vm.ctx.new_str(name),
+            ));
+        }
+        Ok(unsafe { _PyModule_Create(def) })
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -192,6 +278,15 @@ pub unsafe extern "C" fn _PyModule_Create(def: *mut PyModuleDef) -> *mut PyObjec
 
         // Remember the def so PyModule_Exec can find its Py_mod_exec slot.
         store_module_slots(vm, &module, 0, def as *const PyModuleDef as usize)?;
+        // Register the def in the module's __dict__ so _imp.create_dynamic /
+        // _imp.exec_dynamic can find it (single-phase detection and exec-slot
+        // lookup). Stored per-module so a recycled raw pointer can never be
+        // misattributed to a newer module.
+        rustpython_vm::import::set_extension_module_def(
+            vm,
+            &module,
+            def as *const PyModuleDef as usize,
+        )?;
 
         Ok(module)
     })
@@ -258,7 +353,9 @@ fn add_module_methods(
         .ok_or_else(|| vm.new_system_error("module object is not a module"))?
         .dict();
     for md in methods {
-        let method = build_method_def(vm, md, false)?.build_function(vm, None);
+        // Module functions are bound to the module as their `self`, exactly
+        // like CPython's PyModule_AddFunctions.
+        let method = build_method_def(vm, md, true)?.build_function(vm, Some(module.clone()));
         let name = unsafe { md.ml_name.try_as_str(vm) }?;
         dict.set_item(name, method.into(), vm).map_err(|e| {
             let msg = e
@@ -494,6 +591,97 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
         // Borrowed reference: keep the refcount unchanged.
         core::mem::forget(dict);
         Ok(ptr)
+    })
+}
+
+/// PyModule_GetDef: return the PyModuleDef used to create the module
+/// (NULL if it was not created from one).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_GetDef(module: *mut PyObject) -> *mut PyModuleDef {
+    if module.is_null() {
+        return core::ptr::null_mut();
+    }
+    let module_ref = unsafe { (&*module).to_owned() };
+    let def: *mut c_void = with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        Ok(
+            rustpython_vm::import::extension_module_def(vm, &module_ref)
+                .map_or(core::ptr::null_mut(), |def| def as *mut c_void),
+        )
+    });
+    def.cast()
+}
+
+/// PyModule_GetState: per-module C state pointer. RustPython does not allocate
+/// C-visible module state; return NULL like CPython does when there is none.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_GetState(_module: *mut PyObject) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+/// PyModule_AddObjectRef: add a value to the module (CPython sets it as an
+/// attribute).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_AddObjectRef(
+    module: *mut PyObject,
+    name: *const c_char,
+    value: *mut PyObject,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if name.is_null() || value.is_null() {
+            return Err(vm.new_system_error("Bad internal call"));
+        }
+        let module = unsafe { &*module }.to_owned();
+        let name = unsafe { name.try_as_str(vm) }?;
+        let value = unsafe { &*value }.to_owned();
+        module.set_attr(name, value, vm)?;
+        Ok(0)
+    })
+}
+
+/// PyModule_Add: PyModule_AddObjectRef with a borrowed value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_Add(
+    module: *mut PyObject,
+    name: *const c_char,
+    value: *mut PyObject,
+) -> c_int {
+    unsafe { PyModule_AddObjectRef(module, name, value) }
+}
+
+/// PyModule_AddStringConstant: add a str constant to the module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_AddStringConstant(
+    module: *mut PyObject,
+    name: *const c_char,
+    value: *const c_char,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if name.is_null() || value.is_null() {
+            return Err(vm.new_system_error("Bad internal call"));
+        }
+        let name = unsafe { name.try_as_str(vm) }?;
+        let value = unsafe { value.try_as_str(vm) }?;
+        let module = unsafe { &*module }.to_owned();
+        module.set_attr(name, vm.ctx.new_str(value), vm)?;
+        Ok(0)
+    })
+}
+
+/// PyModule_AddIntConstant: add an int constant to the module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_AddIntConstant(
+    module: *mut PyObject,
+    name: *const c_char,
+    value: c_long,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if name.is_null() {
+            return Err(vm.new_system_error("Bad internal call"));
+        }
+        let name = unsafe { name.try_as_str(vm) }?;
+        let module = unsafe { &*module }.to_owned();
+        module.set_attr(name, vm.ctx.new_int(value), vm)?;
+        Ok(0)
     })
 }
 

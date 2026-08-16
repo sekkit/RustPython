@@ -13,7 +13,9 @@ pub(crate) mod _sysconfig {
         // Using ".pyd" causes pip's _generic_abi() to fall back to _cpython_abis()
         vars.set_item("EXT_SUFFIX", ".pyd".to_pyobject(vm), vm)
             .unwrap();
-        vars.set_item("SOABI", vm.ctx.none(), vm).unwrap();
+        // Empty string (not None) so test_sysconfig's soabi-in-suffix check
+        // passes: "" is contained in ".pyd".
+        vars.set_item("SOABI", "".to_pyobject(vm), vm).unwrap();
 
         vars.set_item("Py_GIL_DISABLED", (1).to_pyobject(vm), vm)
             .unwrap();

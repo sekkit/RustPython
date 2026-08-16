@@ -9,7 +9,10 @@ use rustpython_vm::vm::thread::{
 use rustpython_vm::{Interpreter, VirtualMachine};
 
 pub(crate) fn with_vm<R: FfiResult<O>, O>(f: impl FnOnce(&VirtualMachine) -> R) -> O {
-    with_current_vm(|vm| f(vm).into_output(vm))
+    with_current_vm(|vm| {
+        crate::objectstatics::ensure_object_statics(vm);
+        f(vm).into_output(vm)
+    })
 }
 
 #[allow(non_camel_case_types)]
