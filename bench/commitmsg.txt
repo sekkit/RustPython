@@ -1,34 +1,49 @@
-feat: CPython-exact SOABI extension suffix; pip binary wheels install and import
+feat: venv support + name-independent C-API relay (rustpythonapi.dll)
 
-Extensions were named "<name>.pyd" with sysconfig SOABI="" and
-EXT_SUFFIX=".pyd", so pip's ABI tag derivation and the FileFinder's suffix
-list could never agree with a real wheel layout: a wheel whose .pyd carries
-the SOABI suffix would not be importable, and "cp314"-tagged wheels did not
-match the interpreter's supported tags at all.
+`python -m venv` failed on Windows: venv.py tried to copy CPython's
+venvlaunchert.exe (the free-threaded launcher, chosen because we advertise
+Py_GIL_DISABLED=1), which doesn't exist here. And even the regular launcher
+is a CPython binary that cannot run RustPython.
 
-Now everything is CPython-exact:
+Two problems were solved:
 
-- version.rs: SOABI = "cp" + major + minor + "-win_amd64" ("cp314-win_amd64"),
-  mirroring CPython's PC/pyconfig.h definition.
-- _imp.extension_suffixes() returns [".cp314-win_amd64.pyd"] so the FileFinder
-  only matches SOABI-named extensions (CPython 3.14 behavior; the importlib
-  extension test util scans sys.path with these suffixes).
-- _sysconfig: SOABI="cp314-win_amd64", EXT_SUFFIX=".cp314-win_amd64.pyd"
-  (test_sysconfig asserts EXT_SUFFIX == extension_suffixes()[0] and
-  SOABI in extension_suffixes()[0]).
-- bench/build_test_extensions.ps1 emits Lib\_testsinglephase.cp314-win_amd64.pyd
-  and Lib\_testmultiphase.cp314-win_amd64.pyd.
-- bench/wheel_demo/: reproducible binary-wheel demo (spam.c, wheel builder,
-  README). The wheel tag is "rustpython314-cp314-win_amd64": packaging.tags
-  derives the interpreter part from sys.implementation.name ("rustpython314")
-  and the ABI part from SOABI ("cp314"). Real CPython cp314 wheels are
-  rejected by pip, which is deliberate — only extensions built against the
-  python314 shim ABI can load.
+1. venv creation now produces a working venv python:
+   - Lib/venv/__init__.py (Windows setup_python) copies the running
+     executable under the conventional names (python.exe, pythonw.exe,
+     python3.14.exe) instead of the CPython launcher. The interpreter
+     already reads pyvenv.cfg (crates/vm/src/getpath.rs), so the copy is a
+     real venv python.
+   - getpath.rs: in a venv, module search paths (Lib, DLLs, stdlib dir)
+     are now built from the *base* prefix (pyvenv.cfg home); a venv has no
+     stdlib of its own. sys.prefix stays the venv dir, sys.base_prefix the
+     base install.
+   - venv.py also copies the C-API shims (python311/314/3.dll) and the
+     relay (rustpythonapi.dll) next to the venv python so extensions load.
 
-Verified end to end: pip install of the demo wheel into site-packages and
-import of the installed .pyd (spam.hello/add, importlib.metadata.version),
-pip uninstall/reinstall, and pip install six from PyPI. Regression:
-test_importlib 1440 run green, test_ctypes 328 green, test_sysconfig 37
-green, pyd smoke all pass, capi cargo test 112 pass, clippy clean.
+2. Extensions must load regardless of the executable's file name: a venv
+   python is a copy named python.exe, but the shims forwarded to
+   "rustpython.exe.<sym>", which cannot resolve in that process. The shims
+   now forward to a name-independent relay, rustpythonapi.dll
+   (bench/make_python_dll_shims.ps1):
+   - 624 jmp thunks (one per function export) jumping through slots filled
+     by rustpythonapi_init() with the address of the process image's own
+     export (GetProcAddress(GetModuleHandle(NULL))), so all calls still run
+     in the exe's module and share its thread-local VM;
+   - real storage for the data exports (66 PyExc_* pointer slots and the
+     128-byte header stubs _Py_NoneStruct/PyUnicode_Type/PyLong_Type/
+     PyBool_Type), copied from the process image;
+   - self-initializing DllMain, plus a re-init from
+     crates/capi/src/objectstatics.rs after the exe's statics are filled;
+   - crates/capi: register the relay's data addresses with the vm so
+     Py_RETURN_NONE / PyType_IsSubtype style checks translate them
+     (import.rs NONE_STUB_ADDRS, objectstatics is_type_stub_addr, pytype.rs).
+
+Verified end to end: `-m venv` creates a venv whose Scripts contain
+python.exe + shims + relay; the venv python reports prefix=venv,
+base_prefix=base; `pip install` of the binary wheel inside the venv works
+and the installed .cp314-win_amd64.pyd imports and runs through the relay.
+Regression: test_venv 40 run green (previously failed to create anything),
+test_importlib 1440 run green, test_ctypes 328, test_sysconfig 37, pyd
+smoke all pass, capi cargo test 112 pass, clippy clean.
 
 Assisted-by: deepseek-v4-flash

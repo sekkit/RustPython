@@ -823,10 +823,15 @@ pub fn ensure_extension_def_initialized(def_ptr: usize) {
 use crate::function::{FuncArgs, HeapMethodDef, PosArgs, PyMethodFlags};
 
 fn ret_ptr_to_pyresult(vm: &VirtualMachine, ret_ptr: *mut crate::PyObject) -> PyResult {
-    // C code returning `Py_None` yields the exported `_Py_NoneStruct` symbol
+    // C code returning `Py_None` yields an exported `_Py_NoneStruct` symbol
     // (a header copy), not the real None object. Translate it so identity
-    // checks (NoneType.__eq__) work.
-    if !ret_ptr.is_null() && ret_ptr as usize == NONE_STUB_ADDR.load(core::sync::atomic::Ordering::Relaxed) {
+    // checks (NoneType.__eq__) work. Two addresses may be registered: the
+    // exe's own stub and the relay's copy, whichever the caller resolved.
+    if !ret_ptr.is_null()
+        && NONE_STUB_ADDRS
+            .iter()
+            .any(|a| a.load(core::sync::atomic::Ordering::Relaxed) == ret_ptr as usize)
+    {
         return Ok(vm.ctx.none());
     }
     match core::ptr::NonNull::new(ret_ptr) {
@@ -838,13 +843,18 @@ fn ret_ptr_to_pyresult(vm: &VirtualMachine, ret_ptr: *mut crate::PyObject) -> Py
     }
 }
 
-/// Address of the exported `_Py_NoneStruct` symbol, registered by the capi
-/// crate at init so `ret_ptr_to_pyresult` can translate it to the real None.
-static NONE_STUB_ADDR: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
+/// Addresses of the exported `_Py_NoneStruct` symbols (the exe's own stub and
+/// the relay's copy), registered by the capi crate at init so
+/// `ret_ptr_to_pyresult` can translate them to the real None.
+static NONE_STUB_ADDRS: [core::sync::atomic::AtomicUsize; 2] = [
+    core::sync::atomic::AtomicUsize::new(0),
+    core::sync::atomic::AtomicUsize::new(0),
+];
 
 pub fn register_none_stub_addr(addr: usize) {
-    NONE_STUB_ADDR.store(addr, core::sync::atomic::Ordering::Relaxed);
+    let first = NONE_STUB_ADDRS[0].load(core::sync::atomic::Ordering::Relaxed);
+    let slot = usize::from(first != 0);
+    NONE_STUB_ADDRS[slot].store(addr, core::sync::atomic::Ordering::Relaxed);
 }
 
 fn take_self_arg(args: &mut FuncArgs, flags: PyMethodFlags) -> Option<PyObjectRef> {

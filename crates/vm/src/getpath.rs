@@ -171,11 +171,21 @@ pub fn init_path_config(settings: &Settings) -> Paths {
     }
 
     // Step 8: Build module_search_paths
+    // A venv has no stdlib of its own: the Lib/DLLs live in the base
+    // installation (pyvenv.cfg home). CPython's getpath.py therefore builds
+    // the search paths from the base prefix when in a venv, so the venv
+    // python can import the base stdlib while site.py adds the venv's own
+    // site-packages.
+    let (stdlib_prefix, stdlib_exec_prefix) = if venv_prefix.is_some() {
+        (&paths.base_prefix, &paths.base_exec_prefix)
+    } else {
+        (&paths.prefix, &paths.exec_prefix)
+    };
     paths.module_search_paths =
-        build_module_search_paths(settings, &paths.prefix, &paths.exec_prefix);
+        build_module_search_paths(settings, stdlib_prefix, stdlib_exec_prefix);
 
-    // Step 9: Calculate stdlib_dir
-    paths.stdlib_dir = calculate_stdlib_dir(&paths.prefix);
+    // Step 9: Calculate stdlib_dir (from the base installation in a venv)
+    paths.stdlib_dir = calculate_stdlib_dir(stdlib_prefix);
 
     paths
 }

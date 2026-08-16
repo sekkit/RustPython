@@ -339,54 +339,21 @@ class EnvBuilder:
             exename = os.path.basename(context.env_exe)
             exe_stem = os.path.splitext(exename)[0]
             exe_d = '_d' if os.path.normcase(exe_stem).endswith('_d') else ''
-            if sysconfig.is_python_build():
-                scripts = dirname
-            else:
-                scripts = os.path.join(os.path.dirname(__file__),
-                                       'scripts', 'nt')
-            if not sysconfig.get_config_var("Py_GIL_DISABLED"):
-                python_exe = os.path.join(dirname, f'python{exe_d}.exe')
-                pythonw_exe = os.path.join(dirname, f'pythonw{exe_d}.exe')
-                link_sources = {
-                    'python.exe': python_exe,
-                    f'python{exe_d}.exe': python_exe,
-                    'pythonw.exe': pythonw_exe,
-                    f'pythonw{exe_d}.exe': pythonw_exe,
-                }
-                python_exe = os.path.join(scripts, f'venvlauncher{exe_d}.exe')
-                pythonw_exe = os.path.join(scripts, f'venvwlauncher{exe_d}.exe')
-                copy_sources = {
-                    'python.exe': python_exe,
-                    f'python{exe_d}.exe': python_exe,
-                    'pythonw.exe': pythonw_exe,
-                    f'pythonw{exe_d}.exe': pythonw_exe,
-                }
-            else:
-                exe_t = f'3.{sys.version_info[1]}t'
-                python_exe = os.path.join(dirname, f'python{exe_t}{exe_d}.exe')
-                pythonw_exe = os.path.join(dirname, f'pythonw{exe_t}{exe_d}.exe')
-                link_sources = {
-                    'python.exe': python_exe,
-                    f'python{exe_d}.exe': python_exe,
-                    f'python{exe_t}.exe': python_exe,
-                    f'python{exe_t}{exe_d}.exe': python_exe,
-                    'pythonw.exe': pythonw_exe,
-                    f'pythonw{exe_d}.exe': pythonw_exe,
-                    f'pythonw{exe_t}.exe': pythonw_exe,
-                    f'pythonw{exe_t}{exe_d}.exe': pythonw_exe,
-                }
-                python_exe = os.path.join(scripts, f'venvlaunchert{exe_d}.exe')
-                pythonw_exe = os.path.join(scripts, f'venvwlaunchert{exe_d}.exe')
-                copy_sources = {
-                    'python.exe': python_exe,
-                    f'python{exe_d}.exe': python_exe,
-                    f'python{exe_t}.exe': python_exe,
-                    f'python{exe_t}{exe_d}.exe': python_exe,
-                    'pythonw.exe': pythonw_exe,
-                    f'pythonw{exe_d}.exe': pythonw_exe,
-                    f'pythonw{exe_t}.exe': pythonw_exe,
-                    f'pythonw{exe_t}{exe_d}.exe': pythonw_exe,
-                }
+            # TODO: RUSTPYTHON; CPython copies venvlauncher*.exe, a launcher
+            # that locates the base install through pyvenv.cfg. RustPython
+            # has no such launcher: the interpreter reads pyvenv.cfg itself
+            # (crates/vm/src/getpath.rs), so the venv python is a copy of
+            # the running executable under the conventional names. The exe
+            # is self-contained (no DLLs to copy alongside).
+            python_exe = context.executable
+            pythonw_exe = context.executable
+            link_sources = {
+                'python.exe': python_exe,
+                f'python{exe_d}.exe': python_exe,
+                'pythonw.exe': pythonw_exe,
+                f'pythonw{exe_d}.exe': pythonw_exe,
+            }
+            copy_sources = dict(link_sources)
 
             do_copies = True
             if self.symlinks:
@@ -424,6 +391,18 @@ class EnvBuilder:
                         shutil.copy2(src, dest)
                     except OSError:
                         logger.warning('Unable to copy %r to %r', src, dest)
+                # TODO: RUSTPYTHON; extensions (.pyd) import python314.dll (the
+                # C-API shim), which forwards every symbol to
+                # rustpythonapi.dll. Both live next to the interpreter and
+                # must be copied so the venv python can load extensions.
+                for dll in ('python311.dll', 'python314.dll', 'python3.dll',
+                            'rustpythonapi.dll'):
+                    src = os.path.join(dirname, dll)
+                    if os.path.exists(src):
+                        try:
+                            shutil.copy2(src, os.path.join(binpath, dll))
+                        except OSError:
+                            logger.warning('Unable to copy %r', src)
 
             if sysconfig.is_python_build():
                 # copy init.tcl

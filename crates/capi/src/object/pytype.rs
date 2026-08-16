@@ -85,20 +85,17 @@ fn resolve_type_ptr(
     }
     // The exported type-stub symbols only mirror a type's header; map them
     // back to the real types so their full payload (mro, bases) is readable.
-    #[allow(static_mut_refs)]
-    unsafe {
-        let stub_str = core::ptr::addr_of!(crate::objectstatics::PyUnicode_Type) as usize;
-        if addr == stub_str {
-            return Ok(vm.ctx.types.str_type.to_owned());
-        }
-        let stub_int = core::ptr::addr_of!(crate::objectstatics::PyLong_Type) as usize;
-        if addr == stub_int {
-            return Ok(vm.ctx.types.int_type.to_owned());
-        }
-        let stub_bool = core::ptr::addr_of!(crate::objectstatics::PyBool_Type) as usize;
-        if addr == stub_bool {
-            return Ok(vm.ctx.types.bool_type.to_owned());
-        }
+    // Accept both the exe's own stubs and the relay's copies (the addresses
+    // extensions actually resolve).
+    use crate::objectstatics::{StubKind, is_type_stub_addr};
+    if is_type_stub_addr(addr, StubKind::Str) {
+        return Ok(vm.ctx.types.str_type.to_owned());
+    }
+    if is_type_stub_addr(addr, StubKind::Int) {
+        return Ok(vm.ctx.types.int_type.to_owned());
+    }
+    if is_type_stub_addr(addr, StubKind::Bool) {
+        return Ok(vm.ctx.types.bool_type.to_owned());
     }
     // Not a vtable: assume a real type object (possibly one of our exported
     // header stubs, which mirror the type's header bytes).
@@ -226,8 +223,9 @@ fn map_base_ptr(vm: &VirtualMachine, ptr: *mut c_void) -> rustpython_vm::PyResul
     if ptr.is_null() {
         return Ok(vm.ctx.types.object_type.to_owned().into());
     }
-    if ptr as usize == core::ptr::addr_of!(crate::objectstatics::PyUnicode_Type) as usize {
-        // &PyUnicode_Type: map the exported stub to the real str type.
+    if crate::objectstatics::is_type_stub_addr(ptr as usize, crate::objectstatics::StubKind::Str) {
+        // &PyUnicode_Type: map the exported stub (exe's or relay's) to the
+        // real str type.
         return Ok(vm.ctx.types.str_type.to_owned().into());
     }
     let obj = unsafe { (&*(ptr as *mut PyObject)).to_owned() };
