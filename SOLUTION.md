@@ -430,3 +430,38 @@ python bench\imports.py
 
 | `crates/vm/src/frame.rs` | 执行引擎(vectorcall 现状) |
 | `crates/vm/src/vm/thread.rs` | 无 GIL 线程模型 |
+
+---
+
+## 10. Round 14:unicodedata 全面重写(与 CPython 3.14 / UCD 16.0.0 逐字节一致)
+
+> 状态:现代视图 + `ucd_3_2_0` 视图全部 **0 diff**(全量 1,114,112 个码点 × 11 个字段 vs CPython 3.14.6 实测);test_unicodedata **56 run 全绿**(此前挂死 900s+),5 处过时 expectedFailure 标记清除;clippy clean。
+
+### 10.1 背景与目标
+
+- RustPython 的 `unicodedata` 数据来自 **Unicode 17.0.0**(2025),而 CPython 3.14 内置 **16.0.0** → 版本错位导致 `name`/`category`/`numeric` 等与 CPython 不一致。
+- `lookup`/`name` 原依赖第三方 `unicode_names2`,行为与 CPython 的 DAWG + 算法名(CJK/Hangul/Tangut)语义不同(大小写不敏感、`<control>` 排除、`lookup('CJK UNIFIED IDEOGRAPH-4e00')` 等)。
+- 3.2.0 视图(`ucd_3_2_0`)使用 icu4x 数据,缺失 CPython 的 change-record 语义(3.2.0 未分配字符、Unihan 数值、reserved-CJK 宽度等)。
+
+### 10.2 改动
+
+| 文件 | 改动 |
+|---|---|
+| `crates/unicode/build.rs` | 从 UCD 16.0.0 derived 文件重新生成全部表格(category/bidi/combining/eaw/bidi-mirrored/numeric-type/numeric-value);`UnicodeData.txt` 直接生成 canonical+compat 分解表与名字表(过滤 `<...>` 名);名字按码点与按名排序双表(二进制查找);**Unihan-3.2.0 数值**(`UnihanNumericValues-3.2.0.txt` 45 条)并入 3.2.0 数值表;删除未用的 `DECOMP_UPDATES`/`unicode_names_32` 生成 |
+| `crates/unicode/src/data.rs` | 手写 CPython 等价实现:`derived_name_ranges`/`find_syllable`/`parse_hex_code`(Hangul 音节、CJK/Tangut 算法名)、Hangul LVT 分解;3.2.0 视图按 change-record 语义(未分配→默认、未变→现代值、已变→旧值);`numeric()` 3.2.0 视图不再 gate 类型(Unihan 值无类型);`east_asian_width` 3.2.0 视图三态(3.2.0 已分配→旧值、3.2.0 未分配现代已分配→默认 N、均未分配→现代值) |
+| `crates/stdlib/src/unicodedata.rs` | `lookup`/`name` 走 `self.inner`(UCD 视图),不再用全局 `unicode_core` |
+| UCD 数据 | `latest/` 全部换成 16.0.0 derived 文件;`EastAsianWidth.txt`(原始文件,含 reserved-CJK 'W' 区间,Derived 文件缺失);`ucd32/UnicodeData-3.2.0.txt` + `UnihanNumericValues-3.2.0.txt` |
+| 依赖 | 移除 `unicode_names2`(workspace + crate) |
+| `Lib/test/test_unicodedata.py` | 清除 5 处过时 expectedFailure:test_bidirectional、test_lookup_nonexistant、test_function_checksum、test_decomposition、test_name(3.2.0) |
+| `bench/dump_ucd.py` | 全量 UCD 字段导出脚本(跨解释器 diff 验证) |
+
+### 10.3 验证(全量逐字节)
+
+- **现代视图 0 diff**:`bench/dump_ucd.py` 导出 1,114,112 码点 × 11 字段(category/bidi/combining/decimal/digit/numeric/mirrored/eaw/decomposition/name)vs CPython 3.14.6(uv 安装,Unicode 16.0.0)→ **diff 0 行**。
+- **3.2.0 视图 0 diff**:同前 vs `ucd_3_2_0` → **diff 0 行**。修复的差异类别:
+  - eaw 60,482 处:均未分配码点(如 FA6E reserved-CJK)→ 现代值 W;3.2.0 未分配现代已分配 → 默认 N;3.2.0 已分配且旧值=默认 → 旧值(24 个 emoji 231A 等)。
+  - name 27,473 处:3.2.0 未分配现代已分配(CJK 扩展 A/B 如 4DB6)→ `name()` None;`lookup()` 不受版本门控(CPython 相同)。
+  - decomp 770 处:同上门控 → ""。
+  - numeric 45 处:Unihan-3.2.0 数值(4E00=1.0、5793=1e20);numeric_changed=-1 字符(9F8 等)仍 None。
+- **回归**:test_unicodedata 56 / test_str 138 / test_codecs 287 / test_builtin 138 / test_float 54 / test_int 52 / test_bytes 317 / test_unicode_identifiers 3 全绿;`cargo test -p rustpython-unicode` 12/12;clippy 无告警。
+- **数据迁移**:`latest/` 数据从 17.0.0 回退到 16.0.0(与 CPython 3.14 一致);此前 17.0.0 独有的字符(088F、1ACF 等)在 16.0.0 为保留未分配,`name()` 返回 ValueError(与 CPython 3.14 一致,3.15 才有)。

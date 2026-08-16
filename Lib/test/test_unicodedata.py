@@ -94,7 +94,6 @@ class UnicodeFunctionsTest(unittest.TestCase):
                         if quicktest else
                         '46ca89d9fe34881d0be3a4a4b29f5aa8c019640c')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: module 'unicodedata' has no attribute 'digit'
     def test_function_checksum(self):
         db = self.db
         data = []
@@ -182,7 +181,6 @@ class UnicodeFunctionsTest(unittest.TestCase):
             char = chr(i)
             self.assertRaises(ValueError, self.db.name, char)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AssertionError: KeyError not raised by lookup
     def test_lookup_nonexistant(self):
         # just make sure that lookup can fail
         for nonexistent in [
@@ -306,7 +304,6 @@ class UnicodeFunctionsTest(unittest.TestCase):
         self.assertRaises(TypeError, self.db.category)
         self.assertRaises(TypeError, self.db.category, 'xx')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; - 'BN' != ''
     def test_bidirectional(self):
         self.assertEqual(self.db.bidirectional('\uFFFE'), '')
         self.assertEqual(self.db.bidirectional(' '), 'WS')
@@ -333,7 +330,6 @@ class UnicodeFunctionsTest(unittest.TestCase):
         self.assertRaises(TypeError, self.db.bidirectional)
         self.assertRaises(TypeError, self.db.bidirectional, 'xx')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AssertionError: 'D4CC 11B6' != '1111 1171 11B6'
     def test_decomposition(self):
         self.assertEqual(self.db.decomposition('\uFFFE'),'')
         self.assertEqual(self.db.decomposition('\u00bc'), '<fraction> 0031 2044 0034')
@@ -678,7 +674,6 @@ class Unicode_3_2_0_FunctionsTest(UnicodeFunctionsTest):
     def test_combining(self):
         return super().test_combining()
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AssertionError: 'LATIN SMALL LETTER D WITH CURL' != None
     def test_name(self):
         return super().test_name()
 

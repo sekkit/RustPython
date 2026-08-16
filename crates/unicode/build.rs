@@ -212,38 +212,77 @@ fn generate_numeric_value() {
         .join("ucd32");
     let mut ucd32_diffs = BTreeMap::new();
     let mut ucd32_member = BTreeSet::new();
-    let numeric_32 =
-        BufReader::new(File::open(ucd32.join("DerivedNumericValues-3.2.0.txt")).unwrap());
+    // The 3.2.0 membership comes from the derived file (it includes the Unihan-derived
+    // values), while the values themselves come from UnicodeData-3.2.0.txt field 8 (the
+    // rational, like "1/3"); the derived 3.2.0 file only stores truncated decimals. CPython
+    // parses the rational the same way in makeunicodedata.py.
+    {
+        let numeric_32 =
+            BufReader::new(File::open(ucd32.join("DerivedNumericValues-3.2.0.txt")).unwrap());
+        parse_unicode_3_2(
+            numeric_32,
+            NonZeroUsize::new(1).unwrap(),
+            &mut io::empty(),
+            |start, end, value, _| {
+                if !value.trim().is_empty() {
+                    ucd32_member.insert((start, end));
+                }
+                Option::<()>::None
+            },
+            |_writer, _values| {},
+        );
+    }
+    let numeric_32 = BufReader::new(File::open(ucd32.join("UnicodeData-3.2.0.txt")).unwrap());
     parse_unicode_3_2(
         numeric_32,
-        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(8).unwrap(),
         &mut io::empty(),
         |start, end, value, _| {
-            let value: f64 = value
-                .parse()
-                .expect("Unicode data contains valid properties");
-            ucd32_diffs.insert((start, end), value);
-            ucd32_member.insert((start, end));
+            if !value.trim().is_empty() {
+                let value = parse_rational(value);
+                ucd32_diffs.insert((start, end), value);
+            }
             Option::<()>::None
         },
         |_writer, _values| {},
     );
 
+    // Unihan-3.2.0 numeric values (kAccountingNumeric / kPrimaryNumeric /
+    // kOtherNumeric), which CPython's makeunicodedata.py patches onto the
+    // 3.2.0 numeric field. The UCD-derived 3.2.0 files don't carry them, but
+    // `ucd_3_2_0.numeric()` returns them (e.g. CJK UNIFIED IDEOGRAPH-4E00 = 1.0).
+    {
+        let unihan = BufReader::new(File::open(ucd32.join("UnihanNumericValues-3.2.0.txt")).unwrap());
+        for line in unihan.lines().map(Result::unwrap) {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut fields = line.split_whitespace();
+            let cp = u32::from_str_radix(fields.next().unwrap().trim_start_matches("U+"), 16).unwrap();
+            let _tag = fields.next().unwrap();
+            let value = parse_rational(fields.next().unwrap().replace(',', "").as_str());
+            ucd32_diffs.insert((cp, cp), value);
+            ucd32_member.insert((cp, cp));
+        }
+    }
+
     let ucd_latest = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("unicode")
         .join("latest");
 
+    // The latest DerivedNumericValues.txt stores each value twice: field 1 is a truncated
+    // decimal approximation and field 3 is the exact rational (e.g. "1/7"). Parse the
+    // rational like CPython does so that numeric() returns the exact double.
     write_derived(
         &ucd_latest,
         "DerivedNumericValues.txt",
         "NUMERIC_VALUES",
         "(u32, u32, f64)",
-        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(3).unwrap(),
         &mut writer,
         |start, end, value, _| {
-            let value: f64 = value
-                .parse()
-                .expect("Unicode data contains valid properties");
+            let value = parse_rational(value);
 
             if ucd32_diffs
                 .get(&(start, end))
@@ -292,6 +331,21 @@ fn generate_numeric_value() {
     write!(writer, "{membership:?};").unwrap();
 }
 
+/// Parse a UCD numeric value: an integer, or a fraction like "1/7".
+fn parse_rational(value: &str) -> f64 {
+    match value.split_once('/') {
+        Some((num, den)) => {
+            let num: f64 = num.trim().parse().expect("Unicode data contains valid properties");
+            let den: f64 = den.trim().parse().expect("Unicode data contains valid properties");
+            num / den
+        }
+        None => value
+            .trim()
+            .parse()
+            .expect("Unicode data contains valid properties"),
+    }
+}
+
 fn generate_unicode_latest() {
     let path = PathBuf::from(env::var("OUT_DIR").unwrap())
         .join("generated")
@@ -303,15 +357,165 @@ fn generate_unicode_latest() {
         .join("unicode")
         .join("latest");
 
+    // Unicode 16.0.0 (the version bundled by CPython 3.14) tables generated
+    // from the UCD derived files, so the modern view matches CPython's
+    // unicodedata exactly. Unassigned / default-valued code points are left
+    // out and resolved by the lookup fallbacks in data.rs.
+
+    write_derived(
+        &base,
+        "DerivedGeneralCategory.txt",
+        "GENERAL_CATEGORY_LATEST",
+        "(u32, u32, GeneralCategory)",
+        NonZeroUsize::new(1).unwrap(),
+        &mut writer,
+        |start, end, id, _| {
+            let id = parse_general(id);
+            if id != GeneralCategory::Unassigned {
+                Some((start, end, id))
+            } else {
+                None
+            }
+        },
+        |writer, mut values| {
+            values.sort_unstable_by_key(|(start, _, _)| *start);
+            write!(writer, "[").unwrap();
+            for (start, end, id) in values {
+                write!(writer, "({start}, {end}, GeneralCategory::{id:?}),").unwrap();
+            }
+            write!(writer, "];").unwrap();
+        },
+    );
+
+    write_derived(
+        &base,
+        "DerivedBidiClass.txt",
+        "BIDI_CLASS_LATEST",
+        "(u32, u32, BidiClass)",
+        NonZeroUsize::new(1).unwrap(),
+        &mut writer,
+        |start, end, id, _| {
+            let id = parse_bidi(id);
+            if id != "BidiClass::LeftToRight" {
+                Some((start, end, id))
+            } else {
+                None
+            }
+        },
+        |writer, mut values| {
+            values.sort_unstable_by_key(|(start, _, _)| *start);
+            write!(writer, "[").unwrap();
+            for (start, end, id) in values {
+                write!(writer, "({start}, {end}, {id}),").unwrap();
+            }
+            write!(writer, "];").unwrap();
+        },
+    );
+
+    write_derived(
+        &base,
+        "DerivedCombiningClass.txt",
+        "COMBINING_CLASS_LATEST",
+        "(u32, u32, u8)",
+        NonZeroUsize::new(1).unwrap(),
+        &mut writer,
+        |start, end, id, _| {
+            let id: u8 = id.parse().unwrap();
+            if id == 0 {
+                return None;
+            }
+            Some((start, end, id))
+        },
+        |writer, mut values| {
+            values.sort_unstable_by_key(|(start, _, _)| *start);
+            write!(writer, "[").unwrap();
+            for (start, end, id) in values {
+                write!(writer, "({start}, {end}, {id}),").unwrap();
+            }
+            writeln!(writer, "];").unwrap();
+        },
+    );
+
+    write_derived(
+        &base,
+        "EastAsianWidth.txt",
+        "EAST_ASIAN_WIDTH_LATEST",
+        "(u32, u32, EastAsianWidth)",
+        NonZeroUsize::new(1).unwrap(),
+        &mut writer,
+        |start, end, id, _| {
+            let id = parse_eaw(id);
+            if id != "EastAsianWidth::Neutral" {
+                Some((start, end, id))
+            } else {
+                None
+            }
+        },
+        |writer, mut values| {
+            values.sort_unstable_by_key(|(start, _, _)| *start);
+            write!(writer, "[").unwrap();
+            for (start, end, id) in values {
+                write!(writer, "({start}, {end}, {id}),").unwrap();
+            }
+            write!(writer, "];").unwrap();
+        },
+    );
+
+    write_derived(
+        &base,
+        "DerivedBinaryProperties.txt",
+        "BIDI_MIRRORED_LATEST",
+        "(u32, u32)",
+        NonZeroUsize::new(1).unwrap(),
+        &mut writer,
+        |start, end, id, _| {
+            assert_eq!(
+                "Bidi_Mirrored",
+                id.trim(),
+                "DerivedBinaryProperties.txt only has Bidi_Mirrored"
+            );
+            Some((start, end))
+        },
+        |writer, mut values| {
+            values.sort_unstable_by_key(|(start, _)| *start);
+            writeln!(writer, "{values:?};").unwrap();
+        },
+    );
+
+    write_derived(
+        &base,
+        "DerivedNumericType.txt",
+        "NUMERIC_TYPE_LATEST",
+        "(u32, u32, NumericType)",
+        NonZeroUsize::new(1).unwrap(),
+        &mut writer,
+        |start, end, id, _| {
+            let id = parse_numeric_type_str(id);
+            if id != "NumericType::None" {
+                Some((start, end, id))
+            } else {
+                None
+            }
+        },
+        |writer, mut values| {
+            values.sort_unstable_by_key(|(start, _, _)| *start);
+            write!(writer, "[").unwrap();
+            for (start, end, id) in values {
+                write!(writer, "({start}, {end}, {id}),").unwrap();
+            }
+            writeln!(writer, "];").unwrap();
+        },
+    );
+
     // NOTE:
-    // This ONLY parses compatibility decomposition because Python exposes the tags. The tags are
-    // the "<square>", "<circle>", et cetera bits before the decomposition. Thus, we can save space
-    // by using icu4x's CanonicalDecomposer for non-compatibility decomposition.
+    // The decomposition table mirrors CPython's: canonical entries carry no
+    // tag, compatibility entries carry the "<tag>". Hangul syllables are not
+    // listed in UnicodeData.txt and are decomposed algorithmically in data.rs.
     let mut decomp_ranges = Vec::new();
     write_derived(
         &base,
         "UnicodeData.txt",
-        "DECOMP_COMPAT",
+        "DECOMP",
         "(u32, DecompositionType, usize)",
         NonZeroUsize::new(5).unwrap(),
         &mut writer,
@@ -322,17 +526,24 @@ fn generate_unicode_latest() {
                 return None;
             }
 
-            let (dtype, decomp) = value.split_once('>').map(|(dtype, decomp)| {
-                let dtype = dtype.strip_prefix('<').unwrap_or_else(|| {
-                    panic!("Compatibility decomp; expected <tag>\n\tgot: {value}")
-                });
+            let (dtype, decomp): (DecompositionType, Vec<u32>) = if value.starts_with('<') {
+                let (dtype, decomp) = value.split_once('>').unwrap();
                 (
-                    parse_decomp_type(dtype),
+                    parse_decomp_type(dtype.strip_prefix('<').unwrap()),
                     decomp
                         .split_whitespace()
-                        .map(|s| u32::from_str_radix(s, 16).unwrap()),
+                        .map(|s| u32::from_str_radix(s, 16).unwrap())
+                        .collect(),
                 )
-            })?;
+            } else {
+                (
+                    DecompositionType::Canonical,
+                    value
+                        .split_whitespace()
+                        .map(|s| u32::from_str_radix(s, 16).unwrap())
+                        .collect(),
+                )
+            };
 
             decomp_ranges.extend(decomp);
             let end = decomp_ranges.len();
@@ -351,42 +562,43 @@ fn generate_unicode_latest() {
 
     writeln!(writer, "static DECOMP_RANGE: &[u32] = &{decomp_ranges:?};").unwrap();
 
-    // Normalization corrections is super small - only a handful chars at the time of writing.
-    write_derived(
-        &base,
-        "NormalizationCorrections.txt",
-        "DECOMP_UPDATES",
-        "(u32, u32)",
-        NonZeroUsize::new(1).unwrap(),
-        &mut writer,
-        |start, _end, value, line| {
-            let original = u32::from_str_radix(value.trim(), 16).unwrap_or_else(|e| {
-                panic!("field 2 of decomp corrections should be a char in hex: {value} {e}")
-            });
-            let version = line
-                .rsplit(';')
-                .next()
-                .unwrap_or_else(|| {
-                    panic!("field 4 of decomp corrections should be a UCD version: {line}")
-                })
-                .split_once('#')
-                .unwrap()
-                .0
-                .trim();
-
-            // `version` = when the char was updated. Therefore, we use the incorrect chars past
-            // 3.2.0 but skip the chars fixed in 3.2.0 because they'll already be right.
-            if version != "3.2.0" {
-                Some((start, original))
-            } else {
-                None
+    // Names from UnicodeData.txt field 1. Algorithmic names (Hangul
+    // syllables, CJK unified ideographs, Tangut) are not listed and are
+    // computed in data.rs, mirroring CPython's derived_name_ranges.
+    let mut names = Vec::new();
+    let mut names_by_name = Vec::new();
+    {
+        let reader = BufReader::new(File::open(base.join("UnicodeData.txt")).unwrap());
+        for line in reader.lines().map(Result::unwrap) {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
             }
-        },
-        |writer, mut values| {
-            values.sort_unstable_by_key(|(c, _)| *c);
-            write!(writer, "{values:?};").unwrap();
-        },
-    );
+            let mut fields = line.split(';');
+            let cp = u32::from_str_radix(fields.next().unwrap().trim(), 16).unwrap();
+            let name = fields.next().unwrap().trim().to_owned();
+            // CPython's makeunicodedata.py skips `<...>` names ("<control>",
+            // "<private-use>", "<not a character>"), so name() raises
+            // ValueError for them.
+            if !name.is_empty() && !name.starts_with('<') {
+                names.push((cp, name.clone()));
+                names_by_name.push((name, cp));
+            }
+        }
+    }
+    names.sort_unstable_by_key(|&(cp, _)| cp);
+    names_by_name.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    write!(writer, "static NAMES: &[(u32, &str)] = &[").unwrap();
+    for (cp, name) in &names {
+        write!(writer, "(0x{cp:X}, {name:?}),").unwrap();
+    }
+    writeln!(writer, "];").unwrap();
+    write!(writer, "static NAMES_BY_NAME: &[(&str, u32)] = &[").unwrap();
+    for (name, cp) in &names_by_name {
+        write!(writer, "({name:?}, 0x{cp:X}),").unwrap();
+    }
+    writeln!(writer, "];").unwrap();
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -543,7 +755,7 @@ fn parse_numeric_type_val(val: NumericType) -> &'static str {
 }
 
 fn parse_numeric_type_str(id: &str) -> &'static str {
-    match id {
+    match id.trim().to_ascii_lowercase().as_str() {
         "none" => "NumericType::None",
         "decimal" => "NumericType::Decimal",
         "digit" => "NumericType::Digit",

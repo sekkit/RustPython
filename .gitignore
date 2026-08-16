@@ -38,6 +38,9 @@ bench/labs/
 bench/reports/*.tmp
 bench/*.exe
 bench/*.pyc
+# Sweep test runner logs (see bench\sweep*.ps1)
+bench/*.log
+bench/*.log.err
 # Built C-API test extension modules (see bench\build_test_extensions.ps1)
 Lib/*.pyd
 # cl.exe /LD leaves intermediate artifacts in the invoking directory
