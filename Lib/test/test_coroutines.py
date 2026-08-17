@@ -931,7 +931,6 @@ class CoroutineTest(unittest.TestCase):
         self.assertIsInstance(result[1], StopIteration)
         self.assertEqual(result[1].value, 10)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'coroutine' object has no attribute 'cr_suspended'
     def test_cr_await(self):
         @types.coroutine
         def a():

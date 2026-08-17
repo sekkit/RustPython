@@ -2860,16 +2860,13 @@ class TestGetCoroutineState(unittest.TestCase):
     def _coroutinestate(self):
         return inspect.getcoroutinestate(self.coroutine)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'coroutine' object has no attribute 'cr_suspended'
     def test_created(self):
         self.assertEqual(self._coroutinestate(), inspect.CORO_CREATED)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'coroutine' object has no attribute 'cr_suspended'
     def test_suspended(self):
         self.coroutine.send(None)
         self.assertEqual(self._coroutinestate(), inspect.CORO_SUSPENDED)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'coroutine' object has no attribute 'cr_suspended'
     def test_closed_after_exhaustion(self):
         while True:
             try:
@@ -2879,13 +2876,11 @@ class TestGetCoroutineState(unittest.TestCase):
 
         self.assertEqual(self._coroutinestate(), inspect.CORO_CLOSED)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'coroutine' object has no attribute 'cr_suspended'
     def test_closed_after_immediate_exception(self):
         with self.assertRaises(RuntimeError):
             self.coroutine.throw(RuntimeError)
         self.assertEqual(self._coroutinestate(), inspect.CORO_CLOSED)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'coroutine' object has no attribute 'cr_suspended'
     def test_closed_after_close(self):
         self.coroutine.close()
         self.assertEqual(self._coroutinestate(), inspect.CORO_CLOSED)
@@ -2935,17 +2930,14 @@ class TestGetAsyncGenState(unittest.IsolatedAsyncioTestCase):
     def _asyncgenstate(self):
         return inspect.getasyncgenstate(self.asyncgen)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'async_generator' object has no attribute 'ag_suspended'
     def test_created(self):
         self.assertEqual(self._asyncgenstate(), inspect.AGEN_CREATED)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'async_generator' object has no attribute 'ag_suspended'
     async def test_suspended(self):
         value = await anext(self.asyncgen)
         self.assertEqual(self._asyncgenstate(), inspect.AGEN_SUSPENDED)
         self.assertEqual(value, 0)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'async_generator' object has no attribute 'ag_suspended'
     async def test_closed_after_exhaustion(self):
         countdown = 7
         with self.assertRaises(StopAsyncIteration):
@@ -2954,13 +2946,11 @@ class TestGetAsyncGenState(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(countdown, 1)
         self.assertEqual(self._asyncgenstate(), inspect.AGEN_CLOSED)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'async_generator' object has no attribute 'ag_suspended'
     async def test_closed_after_immediate_exception(self):
         with self.assertRaises(RuntimeError):
             await self.asyncgen.athrow(RuntimeError)
         self.assertEqual(self._asyncgenstate(), inspect.AGEN_CLOSED)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'async_generator' object has no attribute 'ag_suspended'
     async def test_running(self):
         async def running_check_asyncgen():
             for number in range(5):

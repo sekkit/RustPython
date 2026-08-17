@@ -139,6 +139,10 @@ impl PyAsyncGen {
         self.inner.running()
     }
     #[pygetset]
+    fn ag_suspended(&self, _vm: &VirtualMachine) -> bool {
+        self.inner.suspended()
+    }
+    #[pygetset]
     fn ag_code(&self, _vm: &VirtualMachine) -> PyRef<PyCode> {
         self.inner.frame().iframe().code().to_owned()
     }

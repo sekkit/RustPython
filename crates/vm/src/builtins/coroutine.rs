@@ -92,6 +92,10 @@ impl PyCoroutine {
         self.inner.running()
     }
     #[pygetset]
+    fn cr_suspended(&self, _vm: &VirtualMachine) -> bool {
+        self.inner.suspended()
+    }
+    #[pygetset]
     fn cr_code(&self, _vm: &VirtualMachine) -> PyRef<PyCode> {
         self.inner.frame().iframe().code().to_owned()
     }
