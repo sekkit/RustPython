@@ -419,6 +419,18 @@ mod _pyexpat {
             *self.reparse_deferral_enabled.write() = enabled;
         }
 
+        #[pymethod(name = "ExternalEntityParserCreate")]
+        fn external_entity_parser_create(
+            &self,
+            _context: OptionalArg<PyObjectRef>,
+            vm: &VirtualMachine,
+        ) -> PyExpatLikeXmlParserRef {
+            // xml-rs has no Expat parent-parser handle to retain. A new parser
+            // with the same namespace configuration is independent and keeps
+            // the Python-level lifetime semantics safe.
+            PyExpatLikeXmlParser::new(self.namespace_separator.clone(), None, vm)
+        }
+
         #[pymethod(name = "SetBase")]
         fn set_base(&self, base: PyStrRef) {
             // Store-only compatibility state for xml.sax locator APIs. The
