@@ -631,7 +631,27 @@ mod _sqlite3 {
             let (callable, vm) = unsafe { (*data.cast::<Self>()).retrieve() };
             let expanded = unsafe { sqlite3_expanded_sql(stmt.cast()) };
             let f = || -> PyResult<()> {
-                let stmt = ptr_to_str(expanded, vm).or_else(|_| ptr_to_str(sql.cast(), vm))?;
+                let stmt = if expanded.is_null() {
+                    let db = unsafe { sqlite3_db_handle(stmt.cast()) };
+                    let exc = if !db.is_null() && unsafe { sqlite3_errcode(db) } == SQLITE_NOMEM {
+                        vm.new_memory_error("sqlite3_expanded_sql failed")
+                    } else {
+                        new_data_error(
+                            vm,
+                            "Expanded SQL string exceeds the maximum string length".to_owned(),
+                        )
+                    };
+                    if enable_traceback().load(Ordering::Relaxed) {
+                        vm.run_unraisable(
+                            exc,
+                            Some(format!("Exception ignored in sqlite3 trace callback {callable:?}")),
+                            vm.ctx.none(),
+                        );
+                    }
+                    ptr_to_str(sql.cast(), vm)?
+                } else {
+                    ptr_to_str(expanded, vm)?
+                };
                 callable.call((stmt,), vm)?;
                 Ok(())
             };
