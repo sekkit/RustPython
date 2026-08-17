@@ -2008,7 +2008,6 @@ class AsyncGenAsyncioTest(unittest.TestCase):
 
 
 class TestUnawaitedWarnings(unittest.TestCase):
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AssertionError: RuntimeWarning not triggered
     def test_asend(self):
         async def gen():
             yield 1
@@ -2027,7 +2026,6 @@ class TestUnawaitedWarnings(unittest.TestCase):
             g.asend(None)
             gc_collect()
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AssertionError: RuntimeWarning not triggered
     def test_athrow(self):
         async def gen():
             yield 1
@@ -2038,7 +2036,6 @@ class TestUnawaitedWarnings(unittest.TestCase):
             g.athrow(RuntimeError)
             gc_collect()
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AssertionError: RuntimeWarning not triggered
     def test_aclose(self):
         async def gen():
             yield 1
