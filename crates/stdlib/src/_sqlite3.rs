@@ -403,6 +403,26 @@ mod _sqlite3 {
     }
 
     #[derive(FromArgs)]
+    struct AuthorizerArgs {
+        #[pyarg(any, name = "authorizer_callback")]
+        callback: PyObjectRef,
+    }
+
+    #[derive(FromArgs)]
+    struct TraceCallbackArgs {
+        #[pyarg(any, name = "trace_callback")]
+        callback: PyObjectRef,
+    }
+
+    #[derive(FromArgs)]
+    struct ProgressHandlerArgs {
+        #[pyarg(any, name = "progress_handler")]
+        callback: PyObjectRef,
+        #[pyarg(any)]
+        n: c_int,
+    }
+
+    #[derive(FromArgs)]
     struct CreateFunctionArgs {
         #[pyarg(any)]
         name: PyStrRef,
@@ -1491,7 +1511,8 @@ mod _sqlite3 {
         }
 
         #[pymethod]
-        fn set_authorizer(&self, callable: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+        fn set_authorizer(&self, args: AuthorizerArgs, vm: &VirtualMachine) -> PyResult<()> {
+            let callable = args.callback;
             let db = self.db_lock(vm)?;
             let Some(data) = CallbackData::new(callable, vm) else {
                 unsafe { sqlite3_set_authorizer(db.db, None, null_mut()) };
@@ -1511,7 +1532,8 @@ mod _sqlite3 {
         }
 
         #[pymethod]
-        fn set_trace_callback(&self, callable: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+        fn set_trace_callback(&self, args: TraceCallbackArgs, vm: &VirtualMachine) -> PyResult<()> {
+            let callable = args.callback;
             let db = self.db_lock(vm)?;
             let Some(data) = CallbackData::new(callable, vm) else {
                 unsafe { sqlite3_trace_v2(db.db, SQLITE_TRACE_STMT, None, null_mut()) };
@@ -1533,10 +1555,11 @@ mod _sqlite3 {
         #[pymethod]
         fn set_progress_handler(
             &self,
-            callable: PyObjectRef,
-            n: c_int,
+            args: ProgressHandlerArgs,
             vm: &VirtualMachine,
         ) -> PyResult<()> {
+            let callable = args.callback;
+            let n = args.n;
             let db = self.db_lock(vm)?;
             let Some(data) = CallbackData::new(callable, vm) else {
                 unsafe { sqlite3_progress_handler(db.db, n, None, null_mut()) };
