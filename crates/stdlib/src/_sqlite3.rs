@@ -71,6 +71,7 @@ mod _sqlite3 {
             PySequenceMethods,
         },
         sliceable::{SaturatedSliceIter, SliceableSequenceOp},
+        stdlib::_warnings,
         types::{
             AsMapping, AsNumber, AsSequence, Callable, Comparable, Constructor, Hashable,
             Initializer, IterNext, Iterable, PyComparisonOp, SelfIter,
@@ -1511,8 +1512,21 @@ mod _sqlite3 {
         }
 
         #[pymethod]
-        fn set_authorizer(&self, args: AuthorizerArgs, vm: &VirtualMachine) -> PyResult<()> {
-            let callable = args.callback;
+        fn set_authorizer(&self, mut args: FuncArgs, vm: &VirtualMachine) -> PyResult<()> {
+            let callable = if let Some(value) = args.kwargs.shift_remove("authorizer_callback") {
+                _warnings::warn(
+                    vm.ctx.exceptions.deprecation_warning,
+                    "Passing keyword argument 'authorizer_callback' to _sqlite3.Connection.set_authorizer() is deprecated. Parameter 'authorizer_callback' will become positional-only in Python 3.15.".to_owned(),
+                    1,
+                    vm,
+                )?;
+                value
+            } else {
+                args.args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| vm.new_type_error("set_authorizer() missing required argument 'authorizer_callback'"))?
+            };
             let db = self.db_lock(vm)?;
             let Some(data) = CallbackData::new(callable, vm) else {
                 unsafe { sqlite3_set_authorizer(db.db, None, null_mut()) };
@@ -1532,8 +1546,21 @@ mod _sqlite3 {
         }
 
         #[pymethod]
-        fn set_trace_callback(&self, args: TraceCallbackArgs, vm: &VirtualMachine) -> PyResult<()> {
-            let callable = args.callback;
+        fn set_trace_callback(&self, mut args: FuncArgs, vm: &VirtualMachine) -> PyResult<()> {
+            let callable = if let Some(value) = args.kwargs.shift_remove("trace_callback") {
+                _warnings::warn(
+                    vm.ctx.exceptions.deprecation_warning,
+                    "Passing keyword argument 'trace_callback' to _sqlite3.Connection.set_trace_callback() is deprecated. Parameter 'trace_callback' will become positional-only in Python 3.15.".to_owned(),
+                    1,
+                    vm,
+                )?;
+                value
+            } else {
+                args.args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| vm.new_type_error("set_trace_callback() missing required argument 'trace_callback'"))?
+            };
             let db = self.db_lock(vm)?;
             let Some(data) = CallbackData::new(callable, vm) else {
                 unsafe { sqlite3_trace_v2(db.db, SQLITE_TRACE_STMT, None, null_mut()) };
@@ -1553,13 +1580,33 @@ mod _sqlite3 {
         }
 
         #[pymethod]
-        fn set_progress_handler(
-            &self,
-            args: ProgressHandlerArgs,
-            vm: &VirtualMachine,
-        ) -> PyResult<()> {
-            let callable = args.callback;
-            let n = args.n;
+        fn set_progress_handler(&self, mut args: FuncArgs, vm: &VirtualMachine) -> PyResult<()> {
+            let callable = if let Some(value) = args.kwargs.shift_remove("progress_handler") {
+                _warnings::warn(
+                    vm.ctx.exceptions.deprecation_warning,
+                    "Passing keyword argument 'progress_handler' to _sqlite3.Connection.set_progress_handler() is deprecated. Parameter 'progress_handler' will become positional-only in Python 3.15.".to_owned(),
+                    1,
+                    vm,
+                )?;
+                value
+            } else {
+                args.args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| vm.new_type_error("set_progress_handler() missing required argument 'progress_handler'"))?
+            };
+            let n = if let Some(value) = args.kwargs.shift_remove("n") {
+                value.downcast_ref::<PyInt>()
+                    .ok_or_else(|| vm.new_type_error("n must be int"))?
+                    .try_to_primitive::<c_int>(vm)?
+            } else {
+                args.args
+                    .get(1)
+                    .ok_or_else(|| vm.new_type_error("set_progress_handler() missing required argument 'n'"))?
+                    .downcast_ref::<PyInt>()
+                    .ok_or_else(|| vm.new_type_error("n must be int"))?
+                    .try_to_primitive::<c_int>(vm)?
+            };
             let db = self.db_lock(vm)?;
             let Some(data) = CallbackData::new(callable, vm) else {
                 unsafe { sqlite3_progress_handler(db.db, n, None, null_mut()) };

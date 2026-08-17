@@ -801,7 +801,6 @@ class AuthorizerTests(unittest.TestCase):
         self.con.execute("select * from t2")
         self.con.execute("select c2 from t1")
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; keyword-only arguments not supported for set_authorizer
     def test_authorizer_keyword_args(self):
         regex = (
             r"Passing keyword argument 'authorizer_callback' to "
