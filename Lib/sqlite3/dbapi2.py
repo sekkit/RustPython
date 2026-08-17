@@ -25,6 +25,7 @@ import time
 import collections.abc
 
 from _sqlite3 import *
+from sqlite3.dump import _iterdump
 
 paramstyle = "qmark"
 

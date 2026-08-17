@@ -9,7 +9,6 @@ from .util import requires_virtual_table
 
 class DumpTests(MemoryDatabaseMixin, unittest.TestCase):
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_table_dump(self):
         expected_sqls = [
                 "PRAGMA foreign_keys=OFF;",
@@ -128,7 +127,6 @@ class DumpTests(MemoryDatabaseMixin, unittest.TestCase):
             ["BEGIN TRANSACTION;", *all_table_sqls, *all_views_sqls, "COMMIT;"],
         )
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; _iterdump not implemented
     def test_dump_autoincrement(self):
         expected = [
             'CREATE TABLE "t1" (id integer primary key autoincrement);',
@@ -149,7 +147,6 @@ class DumpTests(MemoryDatabaseMixin, unittest.TestCase):
         actual = [stmt for stmt in self.cx.iterdump()]
         self.assertEqual(expected, actual)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; _iterdump not implemented
     def test_dump_autoincrement_create_new_db(self):
         self.cu.execute("BEGIN TRANSACTION")
         self.cu.execute("CREATE TABLE t1 (id integer primary key autoincrement)")
@@ -175,7 +172,6 @@ class DumpTests(MemoryDatabaseMixin, unittest.TestCase):
                     rows = res.fetchall()
                     self.assertEqual(rows[0][0], seq)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; _iterdump not implemented
     def test_unorderable_row(self):
         # iterdump() should be able to cope with unorderable row types (issue #15545)
         class UnorderableRow:
@@ -197,7 +193,6 @@ class DumpTests(MemoryDatabaseMixin, unittest.TestCase):
         got = list(self.cx.iterdump())
         self.assertEqual(expected, got)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; _iterdump not implemented
     def test_dump_custom_row_factory(self):
         # gh-118221: iterdump should be able to cope with custom row factories.
         def dict_factory(cu, row):
@@ -213,7 +208,6 @@ class DumpTests(MemoryDatabaseMixin, unittest.TestCase):
         self.assertEqual(expected, actual)
         self.assertEqual(self.cx.row_factory, dict_factory)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; _iterdump not implemented
     @requires_virtual_table("fts4")
     def test_dump_virtual_tables(self):
         # gh-64662
