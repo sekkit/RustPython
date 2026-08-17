@@ -62,7 +62,7 @@ mod _sqlite3 {
         },
         convert::IntoObject,
         function::{
-            ArgCallable, ArgIterable, FsPath, FuncArgs, OptionalArg, PyComparisonValue,
+            ArgCallable, ArgIterable, FsPath, FuncArgs, KwArgs, OptionalArg, PyComparisonValue,
             PySetterValue, TimeoutSeconds,
         },
         object::{Traverse, TraverseFn},
@@ -77,6 +77,7 @@ mod _sqlite3 {
         },
         utils::ToCString,
     };
+    use rustpython_common::wtf8::Wtf8Buf;
     use std::thread::ThreadId;
 
     macro_rules! exceptions {
@@ -393,6 +394,12 @@ mod _sqlite3 {
             self.progress.traverse(tracer_fn);
             self.name.traverse(tracer_fn);
         }
+    }
+
+    #[derive(FromArgs)]
+    struct IterdumpArgs {
+        #[pyarg(named, optional)]
+        filter: OptionalArg<PyObjectRef>,
     }
 
     #[derive(FromArgs)]
@@ -1502,10 +1509,21 @@ mod _sqlite3 {
         }
 
         #[pymethod]
-        fn iterdump(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
+        fn iterdump(zelf: PyRef<Self>, args: IterdumpArgs, vm: &VirtualMachine) -> PyResult {
             let module = vm.import("sqlite3.dump", 0)?;
             let func = module.get_attr("_iterdump", vm)?;
-            func.call((zelf,), vm)
+            match args.filter {
+                OptionalArg::Missing => func.call((zelf,), vm),
+                OptionalArg::Present(filter) => func.call(
+                    FuncArgs::new(
+                        vec![zelf.into()],
+                        KwArgs::new(
+                            core::iter::once((Wtf8Buf::from("filter"), filter)).collect(),
+                        ),
+                    ),
+                    vm,
+                ),
+            }
         }
 
         #[pymethod]

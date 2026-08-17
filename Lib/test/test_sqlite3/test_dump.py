@@ -56,7 +56,6 @@ class DumpTests(MemoryDatabaseMixin, unittest.TestCase):
         [self.assertEqual(expected_sqls[i], actual_sqls[i])
             for i in range(len(expected_sqls))]
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; iterdump filter parameter not implemented
     def test_table_dump_filter(self):
         all_table_sqls = [
             """CREATE TABLE "some_table_2" ("id_1" INTEGER);""",
