@@ -175,6 +175,8 @@ mod _pyexpat {
         buffer_size: PyRwLock<usize>,
         #[pytraverse(skip)]
         reparse_deferral_enabled: PyRwLock<bool>,
+        #[pytraverse(skip)]
+        pending_input: PyRwLock<Vec<u8>>,
         namespace_prefixes: MutableObject,
         ordered_attributes: MutableObject,
         specified_attributes: MutableObject,
@@ -230,6 +232,7 @@ mod _pyexpat {
                 text_buffer: PyRwLock::new(String::new()),
                 buffer_size: PyRwLock::new(1024),
                 reparse_deferral_enabled: PyRwLock::new(true),
+                pending_input: PyRwLock::new(Vec::new()),
                 namespace_prefixes: MutableObject::new(vm.ctx.new_bool(false).into()),
                 ordered_attributes: MutableObject::new(vm.ctx.new_bool(false).into()),
                 specified_attributes: MutableObject::new(vm.ctx.new_bool(false).into()),
@@ -563,26 +566,73 @@ mod _pyexpat {
             }
         }
 
+        fn input_is_incomplete(&self, bytes: &[u8]) -> bool {
+            let reader = Cursor::new(normalize_encoding_decl(bytes));
+            let parser = self.create_config().create_reader(reader);
+            let mut saw_top_level_markup = false;
+            let mut saw_element = false;
+            for event in parser {
+                match event {
+                    Ok(xml::reader::XmlEvent::StartElement { .. }) => saw_element = true,
+                    Ok(xml::reader::XmlEvent::ProcessingInstruction { .. })
+                    | Ok(xml::reader::XmlEvent::Comment(_)) => saw_top_level_markup = true,
+                    Ok(_) => {}
+                    Err(err) => {
+                        let unexpected_eof = match err.kind() {
+                            xml::reader::ErrorKind::UnexpectedEof => true,
+                            xml::reader::ErrorKind::Syntax(msg) => {
+                                msg.contains("Unexpected end of stream")
+                            }
+                            _ => false,
+                        };
+                        // A top-level PI/comment is a complete SAX event even
+                        // though xml-rs reports EOF because no root element
+                        // followed it. Replay it now instead of waiting for a
+                        // later feed() call.
+                        return unexpected_eof && !(saw_top_level_markup && !saw_element);
+                    }
+                }
+            }
+            false
+        }
+
         #[pymethod(name = "Parse")]
         fn parse(
             &self,
             data: Either<PyStrRef, PyBytesRef>,
-            _isfinal: OptionalArg<bool>,
+            isfinal: OptionalArg<bool>,
             vm: &VirtualMachine,
         ) -> i32 {
             let bytes = match data {
                 Either::A(s) => s.as_bytes().to_vec(),
                 Either::B(b) => b.as_bytes().to_vec(),
             };
-            // Empty data is valid - used to finalize parsing
-            if bytes.is_empty() {
+            let isfinal = isfinal.unwrap_or(false);
+
+            let mut pending = self.pending_input.write();
+            let was_pending = !pending.is_empty();
+            pending.extend_from_slice(&bytes);
+
+            if pending.is_empty() {
                 return 1;
             }
+
+            if !isfinal {
+                let incomplete = self.input_is_incomplete(&pending);
+                if incomplete
+                    || (was_pending && *self.reparse_deferral_enabled.read())
+                {
+                    return 1;
+                }
+            }
+
+            let bytes = core::mem::take(&mut *pending);
+            drop(pending);
             let bytes = normalize_encoding_decl(&bytes);
             let reader = Cursor::<Vec<u8>>::new(bytes);
             let parser = self.create_config().create_reader(reader);
             // Note: xml-rs is stricter than libexpat; some errors are silently ignored
-            // to maintain compatibility with existing Python code
+            // to maintain compatibility with existing Python code.
             let _ = self.do_parse(vm, parser);
             1
         }

@@ -770,7 +770,6 @@ class ChardataBufferTest(unittest.TestCase):
         parser.Parse(xml)
         return self.n
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_change_size_1(self):
         xml1 = b"<?xml version='1.0' encoding='iso8859'?><a><s>" + b'a' * 1024
         xml2 = b'aaa</s><s>' + b'a' * 1025 + b'</s></a>'
@@ -787,7 +786,6 @@ class ChardataBufferTest(unittest.TestCase):
         parser.Parse(xml2, True)
         self.assertEqual(self.n, 2)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_change_size_2(self):
         xml1 = b"<?xml version='1.0' encoding='iso8859'?><a>a<s>" + b'a' * 1023
         xml2 = b'aaa</s><s>' + b'a' * 1025 + b'</s></a>'
@@ -1038,7 +1036,6 @@ class ReparseDeferralTest(unittest.TestCase):
         parser.SetReparseDeferralEnabled(True)
         self.assertIs(parser.GetReparseDeferralEnabled(), enabled)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'xmlparser' object has no attribute 'GetReparseDeferralEnabled'
     def test_reparse_deferral_enabled(self):
         if expat.version_info < (2, 6, 0):
             self.skipTest(f'Expat {expat.version_info} does not '
@@ -1063,7 +1060,6 @@ class ReparseDeferralTest(unittest.TestCase):
 
         self.assertEqual(started, ['doc'])
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'xmlparser' object has no attribute 'SetReparseDeferralEnabled'
     def test_reparse_deferral_disabled(self):
         started = []
 

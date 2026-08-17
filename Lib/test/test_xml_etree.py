@@ -552,7 +552,6 @@ class ElementTreeTest(unittest.TestCase):
                 '   <empty-element />\n'
                 '</root>')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_parseliteral(self):
         element = ET.XML("<html><body>text</body></html>")
         self.assertEqual(ET.tostring(element, encoding='unicode'),
