@@ -607,7 +607,19 @@ mod _sqlite3 {
                 val.try_to_primitive::<c_int>(vm)
             };
 
-            f().unwrap_or(SQLITE_DENY)
+            match f() {
+                Ok(value) => value,
+                Err(exc) => {
+                    if enable_traceback().load(Ordering::Relaxed) {
+                        vm.run_unraisable(
+                            exc,
+                            Some(format!("Exception ignored in sqlite3 authorizer callback {callable:?}")),
+                            vm.ctx.none(),
+                        );
+                    }
+                    SQLITE_DENY
+                }
+            }
         }
 
         unsafe extern "C" fn trace_callback(
@@ -623,18 +635,33 @@ mod _sqlite3 {
                 callable.call((stmt,), vm)?;
                 Ok(())
             };
-            let _ = f();
+            if let Err(exc) = f()
+                && enable_traceback().load(Ordering::Relaxed)
+            {
+                vm.run_unraisable(
+                    exc,
+                    Some(format!("Exception ignored in sqlite3 trace callback {callable:?}")),
+                    vm.ctx.none(),
+                );
+            }
             0
         }
 
         unsafe extern "C" fn progress_callback(data: *mut c_void) -> c_int {
             let (callable, vm) = unsafe { (*data.cast::<Self>()).retrieve() };
-            if let Ok(val) = callable.call((), vm)
-                && let Ok(val) = val.is_true(vm)
-            {
-                return val as c_int;
+            match callable.call((), vm).and_then(|value| value.is_true(vm)) {
+                Ok(value) => value as c_int,
+                Err(exc) => {
+                    if enable_traceback().load(Ordering::Relaxed) {
+                        vm.run_unraisable(
+                            exc,
+                            Some(format!("Exception ignored in sqlite3 progress callback {callable:?}")),
+                            vm.ctx.none(),
+                        );
+                    }
+                    -1
+                }
             }
-            -1
         }
 
         fn callback_result_from_method(
