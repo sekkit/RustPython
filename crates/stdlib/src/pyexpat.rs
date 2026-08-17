@@ -112,9 +112,13 @@ mod _pyexpat {
         };
         let val_end = val_start + close;
         let mapped = match s[val_start..val_end].to_ascii_lowercase().as_str() {
-            "iso8859" | "iso8859-1" | "iso-8859_1" | "iso_8859_1" | "latin1" => "iso-8859-1",
-            "utf8" => "utf-8",
-            "ascii" | "usascii" | "us_ascii" => "us-ascii",
+            // xml-rs routes any declared encoding through a byte-decoder that
+            // buffers text runs, so trailing text is lost when the stream ends
+            // mid-document (incremental Parse). Bytes are passed through as
+            // UTF-8 regardless, so map ASCII-compatible aliases to utf-8 to
+            // keep the fast no-decoder path.
+            "iso8859" | "iso8859-1" | "iso-8859_1" | "iso_8859_1" | "latin1" | "ascii"
+            | "usascii" | "us_ascii" | "utf8" => "utf-8",
             _ => return bytes.to_vec(),
         };
         let mut out = bytes.to_vec();
@@ -469,7 +473,14 @@ mod _pyexpat {
                     }
                     XmlEvent::Characters(chars) => {
                         if self.buffering(vm) {
-                            self.text_buffer.write().push_str(&chars);
+                            let mut buf = self.text_buffer.write();
+                            buf.push_str(&chars);
+                            // Expat flushes the buffer as soon as it reaches
+                            // buffer_size, even mid-open-element.
+                            if buf.len() >= *self.buffer_size.read() {
+                                drop(buf);
+                                self.flush_text_buffer(vm);
+                            }
                         } else {
                             let str = PyStr::from(chars).into_ref(&vm.ctx);
                             invoke_handler(vm, &self.character_data, (str,));

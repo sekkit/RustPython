@@ -3,20 +3,21 @@ pub(crate) use _functools::module_def;
 #[pymodule]
 mod _functools {
     use crate::{
-        Py, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
+        Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
         builtins::{
             PyBoundMethod, PyDict, PyDictRef, PyGenericAlias, PyTuple, PyType, PyTypeRef, object,
         },
         common::lock::PyRwLock,
-        function::{FuncArgs, KwArgs, OptionalOption, PySetterValue},
+        function::{FuncArgs, KwArgs, OptionalOption, PyComparisonValue, PySetterValue},
         object::AsObject,
         protocol::PyIter,
         pyclass,
         recursion::ReprGuard,
-        types::{Callable, Constructor, GetDescriptor, Representable},
+        types::{Callable, Comparable, Constructor, GetDescriptor, PyComparisonOp, Representable},
     };
     use indexmap::IndexMap;
     use rustpython_common::wtf8::Wtf8Buf;
+    use std::cmp::Ordering;
 
     #[derive(FromArgs)]
     struct ReduceArgs {
@@ -53,6 +54,117 @@ mod _functools {
             accumulator = function.call((accumulator, next_obj?), vm)?
         }
         Ok(accumulator)
+    }
+
+    #[pyattr]
+    #[pyclass(module = "functools", name = "KeyWrapper", unhashable = true)]
+    #[derive(Debug, PyPayload)]
+    pub(super) struct PyKeyWrapper {
+        cmp: PyObjectRef,
+        object: Option<PyObjectRef>,
+    }
+
+    impl Comparable for PyKeyWrapper {
+        fn cmp(
+            zelf: &Py<Self>,
+            other: &PyObject,
+            op: PyComparisonOp,
+            vm: &VirtualMachine,
+        ) -> PyResult<PyComparisonValue> {
+            let r = &*zelf;
+            let Some(other_w) = other.downcast_ref::<PyKeyWrapper>() else {
+                return Err(vm.new_type_error("other argument must be K instance"));
+            };
+            let (Some(self_obj), Some(other_obj)) = (r.object.as_ref(), other_w.object.as_ref())
+            else {
+                return Err(vm.new_attribute_error("object".to_owned()));
+            };
+            let res = r.cmp.call((self_obj.clone(), other_obj.clone()), vm)?;
+            let zero = vm.ctx.new_int(0);
+            let ord = if res.rich_compare_bool(zero.as_object(), PyComparisonOp::Lt, vm)? {
+                Ordering::Less
+            } else if res.rich_compare_bool(zero.as_object(), PyComparisonOp::Gt, vm)? {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            };
+            Ok(PyComparisonValue::from_option(Some(op.eval_ord(ord))))
+        }
+    }
+
+    #[pyclass(with(Callable, Comparable, Representable), flags(IMMUTABLETYPE))]
+    impl PyKeyWrapper {
+        #[pyslot]
+        fn slot_new(_cls: PyTypeRef, _args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            Err(vm.new_type_error(
+                "cannot create 'functools.KeyWrapper' instances".to_owned(),
+            ))
+        }
+
+        #[pygetset]
+        fn obj(&self) -> Option<PyObjectRef> {
+            self.object.clone()
+        }
+
+        #[pygetset]
+        fn __text_signature__(&self) -> &'static str {
+            "(obj)"
+        }
+    }
+
+    impl Callable for PyKeyWrapper {
+        type Args = FuncArgs;
+
+        fn call(zelf: &Py<Self>, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let cmp = (&*zelf).cmp.clone();
+            let obj = if let Some(obj) = args.get_optional_kwarg("obj") {
+                if !args.args.is_empty() {
+                    return Err(vm.new_type_error("K() got multiple values for argument 'obj'"));
+                }
+                obj
+            } else {
+                let mut it = args.args.iter();
+                let obj = it
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| {
+                        vm.new_type_error("K() missing required argument 'obj' (pos 1)")
+                    })?;
+                if it.next().is_some() {
+                    return Err(vm.new_type_error(
+                        "K() takes 1 positional argument but more were given",
+                    ));
+                }
+                obj
+            };
+            let wrapped = PyKeyWrapper {
+                cmp,
+                object: Some(obj),
+            };
+            Ok(wrapped.into_pyobject(vm))
+        }
+    }
+
+    impl Representable for PyKeyWrapper {
+        #[inline]
+        fn repr_str(zelf: &Py<Self>, _vm: &VirtualMachine) -> PyResult<String> {
+            Ok("<functools.KeyWrapper object>".to_owned())
+        }
+    }
+
+    #[derive(FromArgs)]
+    struct CmpToKeyArgs {
+        #[pyarg(any)]
+        mycmp: PyObjectRef,
+    }
+
+    #[pyfunction]
+    fn cmp_to_key(mycmp: CmpToKeyArgs, vm: &VirtualMachine) -> PyObjectRef {
+        PyKeyWrapper {
+            cmp: mycmp.mycmp,
+            object: None,
+        }
+        .into_pyobject(vm)
     }
 
     // Placeholder singleton for partial arguments

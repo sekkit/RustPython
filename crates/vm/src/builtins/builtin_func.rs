@@ -199,10 +199,21 @@ impl PyNativeFunction {
         zelf.0.value.doc
     }
 
-    // meth_get__self__ in CPython
+    // meth_get__self__ in CPython: module-level functions expose the module
+    // as `__self__` (PyCFunction's m_self), which inspect uses to strip the
+    // `$module` parameter from text signatures.
     #[pygetset]
     fn __self__(zelf: NativeFunctionOrMethod, vm: &VirtualMachine) -> PyObjectRef {
-        zelf.0.zelf.clone().unwrap_or_else(|| vm.ctx.none())
+        let zelf = zelf.0;
+        if let Some(z) = &zelf.zelf {
+            return z.clone();
+        }
+        if let Some(module) = zelf.module
+            && let Ok(module) = vm.import(module.as_str(), 0)
+        {
+            return module;
+        }
+        vm.ctx.none()
     }
 
     // meth_reduce in CPython
