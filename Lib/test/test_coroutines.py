@@ -563,7 +563,6 @@ class CoroutineTest(unittest.TestCase):
         self.assertRegex(repr(coro), '^<coroutine object.* at 0x.*>$')
         coro.close()
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; RuntimeError: coroutine raised StopIteration
     def test_func_4(self):
         async def foo():
             raise StopIteration
@@ -593,7 +592,6 @@ class CoroutineTest(unittest.TestCase):
 
         coro.close()
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AssertionError: TypeError not raised
     def test_func_5(self):
         @types.coroutine
         def bar():
@@ -661,7 +659,6 @@ class CoroutineTest(unittest.TestCase):
         self.assertEqual(run_async(bar()), ([], 'spam'))
         coro.close()
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AssertionError: RuntimeWarning not triggered
     def test_func_9(self):
         async def foo():
             pass
@@ -2229,7 +2226,6 @@ class CoroutineTest(unittest.TestCase):
             return 'end'
         self.assertEqual(run_async(run_gen()), ([], 'end'))
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; This would crash the interpreter in 3.11a2
     def test_bpo_45813_1(self):
         'This would crash the interpreter in 3.11a2'
         async def f():

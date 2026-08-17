@@ -33,7 +33,7 @@ impl PyPayload for PyCoroutine {
 
 #[pyclass(
     flags(DISALLOW_INSTANTIATION, HAS_WEAKREF),
-    with(Py, IterNext, Representable, Destructor)
+    with(Py, Representable, Destructor)
 )]
 impl PyCoroutine {
     pub const fn as_coro(&self) -> &Coro {
@@ -154,19 +154,21 @@ impl Representable for PyCoroutine {
     }
 }
 
-impl SelfIter for PyCoroutine {}
-impl IterNext for PyCoroutine {
-    fn next(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyIterReturn> {
-        zelf.send(vm.ctx.none(), vm)
-    }
-}
-
 impl Destructor for PyCoroutine {
     fn del(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<()> {
         if zelf.inner.closed() || zelf.inner.running() {
             return Ok(());
         }
         if zelf.inner.frame().lasti() == 0 {
+            let name = zelf.inner.qualname();
+            if let Err(e) = crate::stdlib::_warnings::warn(
+                vm.ctx.exceptions.runtime_warning,
+                format!("coroutine '{}' was never awaited", name.expect_str()),
+                1,
+                vm,
+            ) {
+                vm.run_unraisable(e, None, zelf.as_object().to_owned());
+            }
             zelf.inner.closed.store(true);
             return Ok(());
         }
