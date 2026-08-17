@@ -1028,7 +1028,6 @@ class ExternalEntityParserCreateErrorTest(unittest.TestCase):
 
 
 class ReparseDeferralTest(unittest.TestCase):
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'xmlparser' object has no attribute 'GetReparseDeferralEnabled'
     def test_getter_setter_round_trip(self):
         parser = expat.ParserCreate()
         enabled = (expat.version_info >= (2, 6, 0))

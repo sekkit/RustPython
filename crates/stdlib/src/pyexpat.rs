@@ -173,6 +173,8 @@ mod _pyexpat {
         text_buffer: PyRwLock<String>,
         #[pytraverse(skip)]
         buffer_size: PyRwLock<usize>,
+        #[pytraverse(skip)]
+        reparse_deferral_enabled: PyRwLock<bool>,
         namespace_prefixes: MutableObject,
         ordered_attributes: MutableObject,
         specified_attributes: MutableObject,
@@ -227,6 +229,7 @@ mod _pyexpat {
                 buffer_text: MutableObject::new(vm.ctx.new_bool(false).into()),
                 text_buffer: PyRwLock::new(String::new()),
                 buffer_size: PyRwLock::new(1024),
+                reparse_deferral_enabled: PyRwLock::new(true),
                 namespace_prefixes: MutableObject::new(vm.ctx.new_bool(false).into()),
                 ordered_attributes: MutableObject::new(vm.ctx.new_bool(false).into()),
                 specified_attributes: MutableObject::new(vm.ctx.new_bool(false).into()),
@@ -398,6 +401,19 @@ mod _pyexpat {
             // Compatibility shim: xml.sax requires this setup API, but xml-rs
             // does not expose Expat parameter entity parsing configuration.
             1
+        }
+
+        #[pymethod(name = "GetReparseDeferralEnabled")]
+        fn get_reparse_deferral_enabled(&self) -> bool {
+            *self.reparse_deferral_enabled.read()
+        }
+
+        #[pymethod(name = "SetReparseDeferralEnabled")]
+        fn set_reparse_deferral_enabled(&self, enabled: bool) {
+            // Expat >= 2.6 exposes this switch. xml-rs does not have the
+            // reparse-deferral algorithm, but preserving the state makes the
+            // public API round-trip correctly and lets callers configure it.
+            *self.reparse_deferral_enabled.write() = enabled;
         }
 
         #[pymethod(name = "SetBase")]
