@@ -43,7 +43,14 @@ try:
     __all__.append("PickleBuffer")
     _HAVE_PICKLE_BUFFER = True
 except ImportError:
-    _HAVE_PICKLE_BUFFER = False
+    # TODO: RUSTPYTHON; no _pickle C accelerator, so PickleBuffer is exposed
+    # as a builtin (as in CPython 3.14) instead.
+    try:
+        from builtins import PickleBuffer
+        __all__.append("PickleBuffer")
+        _HAVE_PICKLE_BUFFER = True
+    except ImportError:
+        _HAVE_PICKLE_BUFFER = False
 
 
 # Shortcut for use in isinstance testing

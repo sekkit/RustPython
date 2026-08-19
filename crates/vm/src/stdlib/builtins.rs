@@ -1447,6 +1447,7 @@ pub fn init_module(vm: &VirtualMachine, module: &Py<PyModule>) {
         "list" => ctx.types.list_type.to_owned(),
         "map" => ctx.types.map_type.to_owned(),
         "memoryview" => ctx.types.memoryview_type.to_owned(),
+        "PickleBuffer" => ctx.types.pickle_buffer_type.to_owned(),
         "object" => ctx.types.object_type.to_owned(),
         "property" => ctx.types.property_type.to_owned(),
         "range" => ctx.types.range_type.to_owned(),

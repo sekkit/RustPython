@@ -489,3 +489,40 @@ python bench\imports.py
 - `sys.flags.utf8_mode` 0、`locale.getpreferredencoding(True)` cp936、`subprocess.getoutput("type NUL 2>&1")` 正常——与 CPython 3.14.6 逐项一致。
 - test_subprocess **353 run 全绿**(此前 1 error);回归 40+ 模块全绿(print/io/codecs/sys/str/bytes/unicodedata/builtin/venv/signal/threading/os/…)。
 - 附带:test_urllib 2 项与 test_shutil 1 项为**环境/CPython 测试缺陷**(在本机 CPython 3.14.6 同样失败:HTTPS 隧道控制字符抛 ValueError 而非 InvalidURL;`NeedCurrentDirectoryForExePathW` 本机返回 False),按规范标记 expectedFailure 并注释原因。
+
+---
+
+## 12. Round 16:原生 PickleBuffer 实现(协议 5 带外缓冲)
+
+> 状态:`PickleBuffer` 原生落地并暴露为内置类型(与 CPython 3.14 一致);test_pickle **464 run 全绿**、test_picklebuffer **9 run(3 项仅缺 `_testbuffer` C 测试助手而 skip)**、test_pickletools **190 run 全绿**;26 处过时 expectedFailure 标记清除;clippy 无新告警。
+
+### 12.1 背景
+
+- RustPython 此前完全没有 `_pickle` C 加速器(纯 Python `pickle.py`),也没有 `PickleBuffer`——协议 5 的带外缓冲(out-of-band buffers)不可用,相关 26 个测试全部被 `@unittest.expectedFailure` 掩盖(原因注明 "no attribute 'PickleBuffer'")。
+- 一次性实现整个 `_pickle` C 加速器(Pickler/Unpickler/dump/loads)不在本轮范围;本轮落地 `PickleBuffer` 原生类型 + 以 CPython 3.14 的**内置类型**方式暴露,同时保持纯 Python pickle 全功能。
+
+### 12.2 改动
+
+| 文件 | 改动 |
+|---|---|
+| `crates/vm/src/stdlib/pickle.rs`(新) | `PyPickleBuffer` 原生类:`release()`/`raw()`/`__bytes__`/`__buffer__`(AsBuffer)/repr;`Constructor`(取任意 buffer 对象,含已释放 memoryview 报 ValueError);`#[pyclass(traverse)]` + `flags(HAS_WEAKREF, MANAGED_WEAKREF)` 使弱引用与 GC 环回收可用;`module = "builtins"`(见下) |
+| `crates/vm/src/types/zoo.rs` | `pickle_buffer_type` 类型槽 + `TypeZoo::extend` 调用 `pickle::init`(此前缺失导致 getattro 空槽 panic) |
+| `crates/vm/src/stdlib/builtins.rs` | 暴露 `builtins.PickleBuffer`(CPython 3.14 同款) |
+| `crates/vm/src/stdlib/mod.rs` | **不**注册 `_pickle` 模块——RustPython 无 C 加速器,若注册仅含 `PickleBuffer` 的模块会让 `test_pickle.py` 的 `has_c_implementation` 误判为 True,从而跑 C 专属测试并崩溃 |
+| `crates/vm/src/protocol/buffer.rs` | `PyBuffer` 改为手动 `Clone`(clone 时 `retain()`,drop 时 `release()` 配对);旧 `#[derive(Clone)]` 不 retain 导致克隆即欠释放(use-after-free 隐患) |
+| `crates/vm/src/builtins/memory.rs` | `new_view()` 移除克隆后的冗余 `retain()`(Clone 现已 retain;双 retain 导致 bytearray 残留导出,`_pyio.readall` 的 `resize` 报 `BufferError: Existing exports of data`) |
+| `Lib/pickle.py` | `_pickle` 不可用时回退 `from builtins import PickleBuffer`(`# TODO: RUSTPYTHON`) |
+| `Lib/test/*` | 清除 26 处过时 expectedFailure:test_pickle(14)/pickletester(5)/test_pickletools(6)/test_picklebuffer(已清 5+留 3 缺 `_testbuffer`)/test_memoryview(1) |
+
+### 12.3 关键设计决策
+
+- **为什么 `module = "builtins"` 而非 `_pickle`**:CPython 3.14 同时暴露 `_pickle.PickleBuffer` 与 `builtins.PickleBuffer`;RustPython 无 `_pickle`,若 `__module__ = "_pickle"`,`pickle.dumps(PickleBuffer)`(test_builtin_types 会遍历所有内置类型)报 `PicklingError: No module named '_pickle'`。暴露为 `builtins` 后类型可 pickle 往返;实例 repr 仍为 `<pickle.PickleBuffer object at ...>`(与 CPython 一致)。
+- **弱引用 + GC**:`PyPickleBuffer` 静态类型不自动继承 `HAS_WEAKREF`(RustPython 的 `object` 也不支持弱引用),须在 `#[pyclass(flags(HAS_WEAKREF, MANAGED_WEAKREF))]` 显式声明;配合 `traverse` 使 `test_cycle`(weakref+gc.collect 回收环)通过。
+
+### 12.4 验证
+
+- test_picklebuffer **9 run 全绿**(6 项跑过 + 3 项因缺 `_testbuffer` C 测试助手 skip:`test_ndarray_2d`/`test_raw_ndarray`/`test_raw_non_contiguous`——该模块是 CPython 的 C 测试扩展,非标准库 API)。
+- test_pickle **464 run 全绿**(回到第 2 轮基线,且多出全部 PickleBuffer 相关测试转正);test_pickletools **190 run 全绿**;test_memoryview 171 / test_buffer 95 / test_weakref 137 / test_io(含 `_pyio` readall resize)全绿。
+- 运行时验证:`builtins.PickleBuffer is pickle.PickleBuffer`;`pickle.dump(PickleBuffer, protocol=5, buffer_callback=...)` 带外缓冲不内联、`load(buffers=...)` 正确还原;弱引用可创建、GC 可回收;类型本身可 pickle 往返。
+- 回归:test_marshal/zlib/hashlib/hmac/bz2/zipfile/tarfile/shelve/copy/configparser/bytes/array/struct 全绿;clippy 无新告警。
+- 已知限制:`_testbuffer`(CPython 测试 C 扩展)未构建,3 项 ndarray 测试保持 skip;纯 Python pickle 无 C 加速(性能非本轮目标)。

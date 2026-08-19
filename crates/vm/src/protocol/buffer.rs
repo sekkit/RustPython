@@ -32,7 +32,7 @@ impl Debug for BufferMethods {
     }
 }
 
-#[derive(Debug, Clone, Traverse)]
+#[derive(Debug, Traverse)]
 pub struct PyBuffer {
     pub obj: PyObjectRef,
     #[pytraverse(skip)]
@@ -144,6 +144,17 @@ impl PyBuffer {
         unsafe {
             core::ptr::drop_in_place(&mut self.obj);
             core::ptr::drop_in_place(&mut self.desc);
+        }
+    }
+}
+
+impl Clone for PyBuffer {
+    fn clone(&self) -> Self {
+        self.retain();
+        Self {
+            obj: self.obj.clone(),
+            desc: self.desc.clone(),
+            methods: self.methods,
         }
     }
 }

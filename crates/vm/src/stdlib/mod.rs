@@ -24,6 +24,7 @@ pub mod errno;
 mod gc;
 mod itertools;
 mod marshal;
+pub(crate) mod pickle;
 pub mod time;
 mod typevar;
 

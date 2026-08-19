@@ -51,14 +51,6 @@ class PyPickleTests(AbstractPickleModuleTests, unittest.TestCase):
     Pickler = pickle._Pickler
     Unpickler = pickle._Unpickler
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_dump_load_oob_buffers(self):
-        return super().test_dump_load_oob_buffers()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_dumps_loads_oob_buffers(self):
-        return super().test_dumps_loads_oob_buffers()
-
 
 class PyUnpicklerTests(AbstractUnpickleTests, unittest.TestCase):
 
@@ -85,18 +77,6 @@ class PyPicklingErrorTests(AbstractPicklingErrorTests, unittest.TestCase):
         f.seek(0)
         return bytes(f.read())
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_buffer_callback_error(self):
-        return super().test_buffer_callback_error()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_non_continuous_buffer(self):
-        return super().test_non_continuous_buffer()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_picklebuffer_error(self):
-        return super().test_picklebuffer_error()
-
 
 class PyPicklerTests(AbstractPickleTests, unittest.TestCase):
 
@@ -116,32 +96,8 @@ class PyPicklerTests(AbstractPickleTests, unittest.TestCase):
         return u.load()
 
     @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_buffers_error(self):
-        return super().test_buffers_error()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_bytearray_memoization(self):
-        return super().test_bytearray_memoization()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_bytes_memoization(self):
-        return super().test_bytes_memoization()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_c_methods(self):
         return super().test_c_methods()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_in_band_buffers(self):
-        return super().test_in_band_buffers()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_oob_buffers(self):
-        return super().test_oob_buffers()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_oob_buffers_writable_to_readonly(self):
-        return super().test_oob_buffers_writable_to_readonly()
 
 
 class InMemoryPickleTests(AbstractPickleTests, AbstractUnpickleTests,
@@ -163,32 +119,8 @@ class InMemoryPickleTests(AbstractPickleTests, AbstractUnpickleTests,
     test_custom_find_class = None
 
     @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_buffers_error(self):
-        return super().test_buffers_error()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_bytearray_memoization(self):
-        return super().test_bytearray_memoization()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_bytes_memoization(self):
-        return super().test_bytes_memoization()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_c_methods(self):
         return super().test_c_methods()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_in_band_buffers(self):
-        return super().test_in_band_buffers()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_oob_buffers(self):
-        return super().test_oob_buffers()
-
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
-    def test_oob_buffers_writable_to_readonly(self):
-        return super().test_oob_buffers_writable_to_readonly()
 
 
 class PersistentPicklerUnpicklerMixin(object):

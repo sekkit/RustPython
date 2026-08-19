@@ -61,6 +61,7 @@ pub struct TypeZoo {
     pub dict_items_type: &'static Py<PyType>,
     pub map_type: &'static Py<PyType>,
     pub memoryview_type: &'static Py<PyType>,
+    pub pickle_buffer_type: &'static Py<PyType>,
     pub memoryviewiterator_type: &'static Py<PyType>,
     pub tuple_type: &'static Py<PyType>,
     pub tuple_iterator_type: &'static Py<PyType>,
@@ -140,6 +141,7 @@ impl TypeZoo {
             list_type: list::PyList::init_builtin_type(),
             map_type: map::PyMap::init_builtin_type(),
             memoryview_type: memory::PyMemoryView::init_builtin_type(),
+            pickle_buffer_type: crate::stdlib::pickle::PyPickleBuffer::init_builtin_type(),
             property_type: property::PyProperty::init_builtin_type(),
             range_type: range::PyRange::init_builtin_type(),
             set_type: set::PySet::init_builtin_type(),
@@ -269,6 +271,7 @@ impl TypeZoo {
         template::init(context);
         descriptor::init(context);
         crate::stdlib::_typing::init(context);
+        crate::stdlib::pickle::init(context);
 
         // RustPython specific
         crate::function::method::init(context);

@@ -120,16 +120,16 @@ impl PyMemoryView {
     /// this should be the only way to create a memoryview from another memoryview.
     #[must_use]
     pub fn new_view(&self) -> Self {
-        let zelf = Self {
+        // `PyBuffer::clone` retains the underlying buffer, so no extra
+        // `retain()` is needed here.
+        Self {
             buffer: self.buffer.clone(),
             released: AtomicCell::new(false),
             start: self.start,
             format_spec: self.format_spec.clone(),
             desc: self.desc.clone(),
             hash: OnceCell::new(),
-        };
-        zelf.buffer.retain();
-        zelf
+        }
     }
 
     fn try_not_released(&self, vm: &VirtualMachine) -> PyResult<()> {
