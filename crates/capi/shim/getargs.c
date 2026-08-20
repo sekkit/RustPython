@@ -743,6 +743,13 @@ RP_EXPORT void *PyErr_SetFromErrnoWithFilename(void *exception, const char *file
     return rp_va_err_set_from_errno_with_filename(exception, filename);
 }
 
+/* PyErr_ProgramText (Python/errors.c) — read a line from a file. */
+extern void *rp_va_err_program_text(const char *filename, int lineno);
+
+RP_EXPORT void *PyErr_ProgramText(const char *filename, int lineno) {
+    return rp_va_err_program_text(filename, lineno);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

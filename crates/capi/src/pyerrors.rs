@@ -505,6 +505,36 @@ pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename(
         Ok(core::ptr::null_mut())
     })
 }
+
+/// Rust impl of PyErr_ProgramText: read a line from a file for error display.
+/// Returns a UTF-8 string or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_program_text(
+    filename: *const c_char,
+    lineno: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        if filename.is_null() || lineno < 1 {
+            return Ok(core::ptr::null_mut());
+        }
+        let fname = unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or("");
+        // Try to read the file and extract the line.
+        match std::fs::read_to_string(fname) {
+            Ok(content) => {
+                let line = content.lines().nth((lineno - 1) as usize);
+                match line {
+                    Some(line) => {
+                        let obj: rustpython_vm::PyObjectRef = vm.ctx.new_str(line.to_string()).into();
+                        Ok(obj.into_raw().as_ptr())
+                    }
+                    None => Ok(core::ptr::null_mut()),
+                }
+            }
+            Err(_) => Ok(core::ptr::null_mut()),
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rp_va_err_warn_format(
     exception: *mut PyObject,
