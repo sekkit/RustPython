@@ -45,6 +45,25 @@ pub unsafe extern "C" fn PyBytes_AsString(bytes: *mut PyObject) -> *mut c_char {
     })
 }
 
+/// PyBytes_FromString: create a bytes object from a NULL-terminated C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyBytes_FromString(bytes: *const c_char) -> *mut PyObject {
+    with_vm(|vm| {
+        let len = unsafe { core::ffi::CStr::from_ptr(bytes) }.to_bytes().len();
+        let data = unsafe { core::slice::from_raw_parts(bytes as *const u8, len) }.to_vec();
+        Ok(vm.ctx.new_bytes(data))
+    })
+}
+
+/// PyBytes_GET_SIZE: macro/inline alternative to PyBytes_Size.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyBytes_GET_SIZE(bytes: *mut PyObject) -> isize {
+    with_vm(|vm| {
+        let bytes = unsafe { &*bytes }.try_downcast_ref::<PyBytes>(vm)?;
+        Ok(bytes.as_bytes().len())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;

@@ -3,9 +3,16 @@ use crate::methodobject::{PyMethodDef, build_method_def};
 use crate::object::define_py_check;
 use crate::pystate::with_vm;
 use crate::util::CStrExt;
+use alloc::ffi::CString;
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+use std::cell::RefCell;
 use rustpython_vm::builtins::{PyModule, PyStr, PyTuple, PyType};
 use rustpython_vm::{AsObject, PyObjectRef, PyResult, VirtualMachine};
+
+/// Thread-local cache for PyModule_GetName's NULL-terminated return value.
+std::thread_local! {
+    static MODULE_NAME_CACHE: RefCell<CString> = RefCell::new(CString::new("").unwrap());
+}
 
 define_py_check!(fn PyModule_Check, types.module_type);
 define_py_check!(exact fn PyModule_CheckExact, types.module_type);
@@ -31,6 +38,31 @@ pub unsafe extern "C" fn PyModule_GetFilenameObject(module: *mut PyObject) -> *m
             .get_item_opt(rustpython_vm::identifier!(vm, __file__), vm)?
             .and_then(|obj| obj.downcast_ref::<PyStr>().map(ToOwned::to_owned));
         filename.ok_or_else(|| vm.new_system_error("module filename missing"))
+    })
+}
+
+/// PyModule_GetName: return the module's __name__ as a NULL-terminated C string.
+/// Uses a thread-local cache (same pattern as PyUnicode_AsUTF8).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_GetName(module: *mut PyObject) -> *const c_char {
+    with_vm(|vm| -> rustpython_vm::PyResult<*const c_char> {
+        let module = unsafe { &*module }.try_downcast_ref::<PyModule>(vm)?;
+        let dict = module.dict();
+        let name = dict
+            .get_item_opt(rustpython_vm::identifier!(vm, __name__), vm)?
+            .and_then(|obj| obj.downcast_ref::<PyStr>().map(ToOwned::to_owned))
+            .ok_or_else(|| vm.new_system_error("nameless module"))?;
+        let s = name.to_str().ok_or_else(|| {
+            vm.new_system_error("module name is not valid UTF-8")
+        })?;
+        let cstr = alloc::ffi::CString::new(s).map_err(|_| {
+            vm.new_system_error("module name contains null byte")
+        })?;
+        let ptr = MODULE_NAME_CACHE.with(|cache| {
+            *cache.borrow_mut() = cstr;
+            cache.borrow().as_ptr()
+        });
+        Ok(ptr)
     })
 }
 
@@ -711,6 +743,43 @@ pub unsafe extern "C" fn PyModule_AddIntConstant(
         let module = unsafe { &*module }.to_owned();
         module.set_attr(name, vm.ctx.new_int(value), vm)?;
         Ok(0)
+    })
+}
+
+/// PyImport_GetModuleDict: return sys.modules dict.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyImport_GetModuleDict() -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let sysmodule = vm.sys_module.clone();
+        let dict = sysmodule.dict();
+        let modules = dict
+            .get_item_opt(rustpython_vm::identifier!(vm, modules), vm)?
+            .ok_or_else(|| vm.new_system_error("sys.modules not found"))?;
+        Ok(modules.into_raw().as_ptr())
+    })
+}
+
+/// PyImport_AddModule: add a module to sys.modules, or return the existing one.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyImport_AddModule(name: *const c_char) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let name = unsafe { name.try_as_str(vm) }?;
+        let sysmodule = vm.sys_module.clone();
+        let dict = sysmodule.dict();
+        let modules = dict
+            .get_item_opt(rustpython_vm::identifier!(vm, modules), vm)?
+            .ok_or_else(|| vm.new_system_error("sys.modules not found"))?;
+        let modules_dict = modules
+            .downcast_ref::<rustpython_vm::builtins::PyDict>()
+            .ok_or_else(|| vm.new_system_error("sys.modules is not a dict"))?;
+        if let Some(existing) = modules_dict.get_item_opt(name, vm)? {
+            Ok(existing.into_raw().as_ptr())
+        } else {
+            let new_module = vm.new_module(name, vm.ctx.new_dict(), None);
+            let obj: PyObjectRef = new_module.into();
+            modules_dict.set_item(name, obj.clone(), vm)?;
+            Ok(obj.into_raw().as_ptr())
+        }
     })
 }
 
