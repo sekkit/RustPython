@@ -1,6 +1,7 @@
 use crate::buffer::Py_buffer;
 use crate::object::define_py_check;
 use crate::{PyObject, pystate::with_vm};
+use core::ffi::{c_char, c_int};
 use rustpython_vm::PyPayload;
 use rustpython_vm::builtins::PyMemoryView;
 use rustpython_vm::protocol::{CPyBuffer, pybuffer_from_c_view};
@@ -35,6 +36,28 @@ pub unsafe extern "C" fn PyMemoryView_FromBuffer(view: *mut Py_buffer) -> *mut P
 #[used]
 static PY_MEMORYVIEW_FROM_BUFFER_ANCHOR: unsafe extern "C" fn(*mut Py_buffer) -> *mut PyObject =
     PyMemoryView_FromBuffer;
+
+/// PyMemoryView_GetContiguous: return a contiguous memoryview for the given
+/// object. Matches CPython's memoryview_get_contiguous.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMemoryView_GetContiguous(
+    obj: *mut PyObject,
+    _buffertype: c_int,
+    _order: c_char,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let obj = unsafe { &*obj };
+        // Create a memoryview from the object.
+        let mv = PyMemoryView::from_object(obj, vm)?;
+        // Get a contiguous buffer (copies if needed via to_contiguous).
+        let buf = mv.to_contiguous(vm);
+        // Wrap the contiguous buffer in a new memoryview.
+        let result = PyMemoryView::from_buffer(buf, vm)?;
+        let result_ref = result.into_ref(&vm.ctx);
+        let result_obj: rustpython_vm::PyObjectRef = result_ref.into();
+        Ok(result_obj)
+    })
+}
 
 #[cfg(test)]
 mod tests {
