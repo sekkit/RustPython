@@ -75,6 +75,20 @@ pub unsafe extern "C" fn PyObject_CallObject(
     })
 }
 
+/// PyObject_CallOneArg: call a callable with exactly one positional
+/// argument (CPython 3.9+).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_CallOneArg(
+    callable: *mut PyObject,
+    arg: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let callable = unsafe { &*callable };
+        let arg_obj = unsafe { &*arg }.to_owned();
+        callable.call(vec![arg_obj], vm)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Vectorcall(
     callable: *mut PyObject,

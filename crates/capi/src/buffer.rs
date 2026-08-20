@@ -6,7 +6,7 @@
 
 use crate::PyObject;
 use crate::pystate::with_vm;
-use crate::refcount::_Py_DecRef;
+use crate::refcount::{_Py_DecRef, _Py_IncRef};
 use alloc::ffi::CString;
 use core::ffi::{c_char, c_int, c_void};
 use rustpython_vm::protocol::PyBuffer;
@@ -329,5 +329,41 @@ pub unsafe extern "C" fn PyBuffer_ToContiguous(
             d = (d as isize + step) as usize;
         }
     }
+    0
+}
+
+/// PyBuffer_FillInfo: fill a Py_buffer from a simple contiguous buffer.
+/// This is a helper for C extensions that want to export a 1-D contiguous
+/// buffer without implementing getbufferproc themselves.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyBuffer_FillInfo(
+    view: *mut Py_buffer,
+    exporter: *mut PyObject,
+    buf: *mut c_void,
+    len: isize,
+    readonly: c_int,
+    infoflags: c_int,
+) -> c_int {
+    // If the exporter is non-NULL, incref it (the view will hold a reference).
+    if !exporter.is_null() {
+        unsafe { _Py_IncRef(exporter) };
+    }
+    let view = unsafe { &mut *view };
+    view.buf = buf;
+    view.obj = exporter;
+    view.len = len;
+    view.itemsize = 1;
+    view.readonly = readonly;
+    view.ndim = 1;
+    view.format = if infoflags & PyBUF_FORMAT != 0 {
+        // CPython returns "B" for bytes-like format.
+        c"B".as_ptr() as *mut c_char
+    } else {
+        core::ptr::null_mut()
+    };
+    view.shape = core::ptr::null_mut();
+    view.strides = core::ptr::null_mut();
+    view.suboffsets = core::ptr::null_mut();
+    view.internal = core::ptr::null_mut();
     0
 }
