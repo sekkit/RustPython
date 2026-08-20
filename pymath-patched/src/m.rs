@@ -196,7 +196,17 @@ pub fn nextafter(x: f64, y: f64) -> f64 {
 
 #[inline(always)]
 pub fn remainder(x: f64, y: f64) -> f64 {
-    unsafe { m_sys::remainder(x, y) }
+    #[cfg(target_os = "windows")]
+    {
+        // Use the pure-Rust libm implementation on Windows; MSVC's
+        // remainder() has a precision issue with tiny subnormal values
+        // (see CPython test_math.testRemainder).
+        libm::remainder(x, y)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        unsafe { m_sys::remainder(x, y) }
+    }
 }
 
 #[inline(always)]
