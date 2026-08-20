@@ -313,6 +313,21 @@ RP_EXPORT void *PyUnicode_FromFormat(const char *format, ...) {
     return rp_va_unicode_from_format(format, slots, n);
 }
 
+/* PyRun_SimpleString (Python/pythonrun.c): execute a C string as Python
+ * code. Defined in C (dllexport) and delegates to the Rust implementation. */
+extern int rp_va_run_simple_string(const char *code);
+
+RP_EXPORT int PyRun_SimpleString(const char *code) {
+    return rp_va_run_simple_string(code);
+}
+
+/* PyRun_String (Python/pythonrun.c): execute code with scope. */
+extern void *rp_va_run_string(const char *code, int start, void *globals, void *locals);
+
+RP_EXPORT void *PyRun_String(const char *code, int start, void *globals, void *locals) {
+    return rp_va_run_string(code, start, globals, locals);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

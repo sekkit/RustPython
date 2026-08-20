@@ -1,6 +1,7 @@
 use crate::get_main_interpreter;
 use crate::pyerrors::init_exception_statics;
-use crate::pystate::ensure_thread_has_vm_attached;
+use crate::pystate::{ensure_thread_has_vm_attached, with_vm};
+use crate::PyObject;
 use alloc::ffi::CString;
 use core::ffi::{c_char, c_int, c_ulong};
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -8,7 +9,7 @@ use rustpython_vm::common::rc::PyRc;
 use rustpython_vm::stdlib::sys;
 use rustpython_vm::version::{MAJOR, MICRO, MINOR, RUSTPYTHON_BUILD_INFO, VERSION_HEX};
 use rustpython_vm::vm::thread::ThreadedVirtualMachine;
-use rustpython_vm::{Context, Interpreter};
+use rustpython_vm::{Context, Interpreter, PyResult};
 use std::sync::{LazyLock, Mutex};
 
 pub(crate) static MAIN_INTERP: Mutex<Option<Interpreter>> = Mutex::new(None);
@@ -108,6 +109,48 @@ pub extern "C" fn Py_GetCopyright() -> *const c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn Py_GetPlatform() -> *const c_char {
     sys::PLATFORM.as_ptr()
+}
+
+/// Rust implementation of the C shim's PyRun_SimpleString.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_run_simple_string(code: *const c_char) -> c_int {
+    with_vm(|vm| -> PyResult<c_int> {
+        if code.is_null() {
+            return Err(vm.new_system_error("PyRun_SimpleString: NULL code"));
+        }
+        let code_str = unsafe { core::ffi::CStr::from_ptr(code) }
+            .to_str()
+            .map_err(|_| vm.new_system_error("PyRun_SimpleString: not valid UTF-8"))?;
+        let scope = vm.new_scope_with_builtins();
+        let res = vm.run_code_string(scope, code_str, "<string>");
+        match res {
+            Ok(_) => Ok(0),
+            Err(exc) => {
+                vm.set_exception(Some(exc));
+                Ok(-1)
+            }
+        }
+    })
+}
+
+/// Rust implementation of the C shim's PyRun_String.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_run_string(
+    code: *const c_char,
+    _start: c_int,
+    _globals: *mut PyObject,
+    _locals: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        if code.is_null() {
+            return Err(vm.new_system_error("PyRun_String: NULL code"));
+        }
+        let code_str = unsafe { core::ffi::CStr::from_ptr(code) }
+            .to_str()
+            .map_err(|_| vm.new_system_error("PyRun_String: not valid UTF-8"))?;
+        let scope = vm.new_scope_with_builtins();
+        vm.run_code_string(scope, code_str, "<string>")
+    })
 }
 
 #[cfg(test)]
