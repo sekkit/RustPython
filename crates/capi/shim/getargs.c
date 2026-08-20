@@ -492,6 +492,13 @@ RP_EXPORT void *PyBytes_FromFormat(const char *format, ...) {
     return rp_va_bytes_from_format(format, slots, n);
 }
 
+/* PyBytes_AsStringAndSize (Objects/bytesobject.c) */
+extern int rp_va_bytes_as_string_and_size(void *obj, char **s, intptr_t *len);
+
+RP_EXPORT int PyBytes_AsStringAndSize(void *obj, char **s, intptr_t *len) {
+    return rp_va_bytes_as_string_and_size(obj, s, len);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

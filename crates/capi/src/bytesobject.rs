@@ -46,6 +46,32 @@ pub unsafe extern "C" fn PyBytes_AsString(bytes: *mut PyObject) -> *mut c_char {
     })
 }
 
+/// Rust implementation of the C shim's PyBytes_AsStringAndSize.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_bytes_as_string_and_size(
+    obj: *mut PyObject,
+    s: *mut *mut c_char,
+    len: *mut isize,
+) -> c_int {
+    with_vm(|vm| {
+        let bytes = if obj.is_null() {
+            // Null pointer means "empty bytes" for checking purposes.
+            if let Some(s) = unsafe { s.as_mut() } { *s = core::ptr::null_mut(); }
+            if let Some(len) = unsafe { len.as_mut() } { *len = 0; }
+            return Ok(0);
+        } else {
+            unsafe { &*obj }.try_downcast_ref::<PyBytes>(vm)?
+        };
+        if let Some(s) = unsafe { s.as_mut() } {
+            *s = bytes.as_bytes().as_ptr() as *mut c_char;
+        }
+        if let Some(len) = unsafe { len.as_mut() } {
+            *len = bytes.as_bytes().len() as isize;
+        }
+        Ok(0)
+    })
+}
+
 /// PyBytes_FromString: create a bytes object from a NULL-terminated C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBytes_FromString(bytes: *const c_char) -> *mut PyObject {
