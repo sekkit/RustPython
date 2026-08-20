@@ -7,8 +7,8 @@
 use crate::PyObject;
 use crate::pystate::with_vm;
 use crate::refcount::_Py_DecRef;
-use core::ffi::{CStr, c_char, c_int, c_void};
-use std::ffi::CString;
+use alloc::ffi::CString;
+use core::ffi::{c_char, c_int, c_void};
 use rustpython_vm::protocol::PyBuffer;
 use rustpython_vm::{AsObject, PyResult, TryFromBorrowedObject};
 
