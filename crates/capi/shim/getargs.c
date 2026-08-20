@@ -289,3 +289,20 @@ RP_EXPORT void *PyErr_Format(void *exception, const char *format, ...) {
     va_end(ap);
     return rp_va_err_format(exception, format, slots, n);
 }
+
+/* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
+ * The Rust implementation transfers ownership of the item references. */
+void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
+
+RP_EXPORT void *PyTuple_Pack(intptr_t n, ...) {
+    va_list ap;
+    uintptr_t slots[RP_MAX_SLOTS];
+    int i;
+    int count = (int)n;
+    va_start(ap, n);
+    for (i = 0; i < count && i < RP_MAX_SLOTS; i++) {
+        slots[i] = va_arg(ap, uintptr_t);
+    }
+    va_end(ap);
+    return rp_va_tuple_pack(slots, count);
+}

@@ -2,6 +2,7 @@ use crate::PyObject;
 use crate::object::define_py_check;
 use crate::pystate::with_vm;
 use core::ffi::c_int;
+use core::ptr::NonNull;
 use core::slice;
 use rustpython_vm::PyResult;
 use rustpython_vm::builtins::PyTuple;
@@ -87,6 +88,31 @@ pub unsafe extern "C" fn PyTuple_GetSlice(
         let high = high.clamp(low, len);
         let slice = tuple.do_slice(low as usize..high as usize);
         Ok(vm.ctx.new_tuple(slice))
+    })
+}
+
+/// Rust implementation of the C shim's `PyTuple_Pack` (called via
+/// `rp_va_tuple_pack`). Takes ownership of the `nslots` item references.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_tuple_pack(
+    slots: *const usize,
+    nslots: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| -> PyResult<*mut PyObject> {
+        let n = nslots.max(0) as usize;
+        let items: Vec<rustpython_vm::PyObjectRef> = if n > 0 {
+            let raw = unsafe { slice::from_raw_parts(slots, n) };
+            raw.iter()
+                .map(|&p| unsafe {
+                    rustpython_vm::PyObjectRef::from_raw(NonNull::new_unchecked(p as *mut _))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let tuple = vm.ctx.new_tuple(items);
+        let obj_ref: rustpython_vm::PyObjectRef = tuple.into();
+        Ok(obj_ref.into_raw().as_ptr())
     })
 }
 
