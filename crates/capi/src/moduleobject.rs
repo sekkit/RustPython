@@ -58,10 +58,10 @@ pub unsafe extern "C" fn PyModule_GetName(module: *mut PyObject) -> *const c_cha
         let cstr = alloc::ffi::CString::new(s).map_err(|_| {
             vm.new_system_error("module name contains null byte")
         })?;
-        let ptr = MODULE_NAME_CACHE.with(|cache| {
+        let ptr = MODULE_NAME_CACHE.try_with(|cache| {
             *cache.borrow_mut() = cstr;
             cache.borrow().as_ptr()
-        });
+        }).unwrap_or(core::ptr::null());
         Ok(ptr)
     })
 }

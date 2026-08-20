@@ -112,10 +112,10 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8(obj: *mut PyObject) -> *const c_char {
         let cstr = alloc::ffi::CString::new(unicode).map_err(|_| {
             vm.new_system_error("PyUnicode_AsUTF8: string contains null byte")
         })?;
-        let ptr = UNICODE_UTF8_CACHE.with(|cache| {
+        let ptr = UNICODE_UTF8_CACHE.try_with(|cache| {
             *cache.borrow_mut() = cstr;
             cache.borrow().as_ptr()
-        });
+        }).unwrap_or(core::ptr::null());
         Ok(ptr)
     })
 }
