@@ -65,6 +65,26 @@ pub extern "C" fn Py_InitializeEx(_initsigs: c_int) {
     }
 }
 
+/// Storage for Py_AtExit callbacks.
+static ATEXIT_CALLBACKS: Mutex<Vec<unsafe extern "C" fn()>> = Mutex::new(Vec::new());
+
+/// Rust implementation of the C shim's Py_AtExit.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_atexit(func: unsafe extern "C" fn()) -> c_int {
+    if ATEXIT_CALLBACKS
+        .lock()
+        .map(|mut cbs| {
+            cbs.push(func);
+            0
+        })
+        .unwrap_or(-1)
+        != 0
+    {
+        return -1;
+    }
+    0
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Py_Finalize() {
     let _ = Py_FinalizeEx();
@@ -72,6 +92,15 @@ pub extern "C" fn Py_Finalize() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Py_FinalizeEx() -> c_int {
+    // Run any registered Py_AtExit callbacks (in LIFO order, like CPython).
+    let callbacks = ATEXIT_CALLBACKS.lock().map(|mut cbs| cbs.drain(..).collect::<Vec<_>>());
+    if let Ok(mut callbacks) = callbacks {
+        callbacks.reverse();
+        for cb in callbacks {
+            // Safety: the callback is a C function pointer registered by the caller.
+            unsafe { cb() };
+        }
+    }
     0
 }
 

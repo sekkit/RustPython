@@ -451,6 +451,13 @@ RP_EXPORT const char *Py_GetPath(void) {
     return rp_va_get_path();
 }
 
+/* Py_AtExit (Python/pylifecycle.c) — register a cleanup callback. */
+extern int rp_va_atexit(void (*func)(void));
+
+RP_EXPORT int Py_AtExit(void (*func)(void)) {
+    return rp_va_atexit(func);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
