@@ -1,6 +1,7 @@
 use crate::object::define_py_check;
 use crate::{PyObject, pystate::with_vm};
 use core::ffi::{c_char, c_int};
+use core::ptr::NonNull;
 use rustpython_vm::builtins::PyBytes;
 use rustpython_vm::PyObjectRef;
 
@@ -141,6 +142,51 @@ pub unsafe extern "C" fn rp_va_bytes_from_format(
         let mut va = crate::arg::VaSlots::new(unsafe { core::slice::from_raw_parts(slots, nslots as usize) });
         let message = crate::arg::format_message(vm, format, &mut va)?;
         Ok(vm.ctx.new_bytes(message.into_bytes()).into())
+    })
+}
+
+/// Rust impl of PyBytes_Concat: concatenate a + b, store result in *bytes.
+/// Decrefs the old *bytes value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_bytes_concat(
+    bytes: *mut *mut PyObject,
+    a: *mut PyObject,
+    b: *mut PyObject,
+) {
+    with_vm(|vm| -> rustpython_vm::PyResult<()> {
+        if bytes.is_null() {
+            return Ok(());
+        }
+        let a = unsafe { &*a }.to_owned();
+        let b = unsafe { &*b }.to_owned();
+        let result = vm._add(&a, &b)?;
+        let old = if unsafe { *bytes }.is_null() {
+            None
+        } else {
+            Some(unsafe { PyObjectRef::from_raw(NonNull::new_unchecked(*bytes)) })
+        };
+        if let Some(old) = old {
+            let _ = old;
+        }
+        unsafe { *bytes = result.into_raw().as_ptr() };
+        Ok(())
+    })
+}
+
+/// Rust impl of PyBytes_ConcatAndDel: concatenate a + b, decref both,
+/// return the result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_bytes_concat_and_del(
+    a: *mut PyObject,
+    b: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let a_obj = unsafe { &*a }.to_owned();
+        let b_obj = unsafe { &*b }.to_owned();
+        let _ = unsafe { PyObjectRef::from_raw(NonNull::new_unchecked(a)) };
+        let _ = unsafe { PyObjectRef::from_raw(NonNull::new_unchecked(b)) };
+        let result = vm._add(&a_obj, &b_obj)?;
+        Ok(result.into_raw().as_ptr())
     })
 }
 

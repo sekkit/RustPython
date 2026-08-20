@@ -528,6 +528,18 @@ RP_EXPORT void PyErr_SetExcInfo(void *type, void *value, void *traceback) {
     rp_va_err_set_exc_info(type, value, traceback);
 }
 
+/* PyBytes_Concat / PyBytes_ConcatAndDel (Objects/bytesobject.c) */
+extern void rp_va_bytes_concat(void **bytes, void *a, void *b);
+extern void *rp_va_bytes_concat_and_del(void *a, void *b);
+
+RP_EXPORT void PyBytes_Concat(void **bytes, void *a, void *b) {
+    rp_va_bytes_concat(bytes, a, b);
+}
+
+RP_EXPORT void *PyBytes_ConcatAndDel(void *a, void *b) {
+    return rp_va_bytes_concat_and_del(a, b);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
