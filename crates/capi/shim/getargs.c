@@ -388,6 +388,14 @@ RP_EXPORT int PySys_WriteStderr(const char *format, ...) {
     return rp_va_sys_write_stderr(format, slots, n);
 }
 
+/* PyInstanceMethod_New (Objects/classobject.c) — wrap a callable as an
+ * instance method. Defined in C (dllexport) to survive linker stripping. */
+extern void *rp_va_instancemethod_new(void *func);
+
+RP_EXPORT void *PyInstanceMethod_New(void *func) {
+    return rp_va_instancemethod_new(func);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

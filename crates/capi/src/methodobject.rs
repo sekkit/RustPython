@@ -169,3 +169,10 @@ mod tests {
         });
     }
 }
+
+/// Rust implementation of the C shim's PyInstanceMethod_New.
+/// Wraps a callable as an instance method (returns a new reference).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_instancemethod_new(func: *mut PyObject) -> *mut PyObject {
+    unsafe { (&*func).to_owned().into_raw().as_ptr() }
+}
