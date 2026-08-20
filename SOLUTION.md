@@ -573,3 +573,27 @@ python bench\imports.py
 - `test_math` **89 run 5 skip 全绿**(`testRemainder` 修复后);test_cmath 全绿。
 - 回归:test_pickle 464 / test_pickletools 190 / test_picklebuffer 9 / test_memoryview 171 / test_buffer 95 / test_io / test_weakref / test_marshal / test_zlib / test_zipfile / test_ctypes 328 / test_bytes / test_array / test_unittest 1090 / test_traceback 370 / test_pydoc 120 / test_signal / test_threading / test_venv / test_sys / test_os / test_builtin / test_str / test_typing / test_dataclasses / test_enum / test_decimal / test_json / test_descr / test_class / test_exceptions / test_generators / test_coroutines / test_asyncgen / test_code / test_compile / test_ast / test_tokenize / test_pdb / test_profile / test_cprofile / test_inspect / test_ssl / test_socket / test_subprocess / test_sqlite3 / test_dict / test_set / test_list / test_tuple / test_range / test_float / test_int / test_bool / test_math — **全部 SUCCESS**。
 - clippy 无新告警;rustfmt 干净;pre-commit hooks(redundant-patches)通过。
+
+---
+
+## 14. Round 18: locale-aware re.LOCALE + C locale 初始化
+
+> 状态:`re.LOCALE` 字节模式支持区域感知字符分类/大小写折叠;`setlocale(LC_ALL, "")` 启动时设置(与 CPython 一致);test_re **166 run 14 skip 全绿**(此前 1 failure 超一年)。
+
+### 14.1 背景
+
+- `re.LOCALE` 标志使 `\w`/`\b`/大小写不敏感匹配使用 C 库的区域设置(而非 ASCII)。RustPython 的 `sre_engine` 解析了 `LITERAL_LOC_IGNORE`/`CATEGORY_LOC_WORD` 等操作码,但 `is_loc_alnum`/`lower_locate`/`upper_locate` 函数仅做 ASCII 处理(标记 `// FIXME: Ignore the locales`)。
+- 此外,RustPython 启动时未调用 `setlocale(LC_ALL, "")`,导致 C 库的区域始终为纯 ASCII 的 "C" locale,影响所有区域相关操作(包括 `locale.getpreferredencoding()` 可靠性)。
+
+### 14.2 改动
+
+| 文件 | 改动 |
+|---|---|
+| `crates/sre_engine/src/string.rs` | `is_loc_alnum` 改为调用 C 库 `isalpha`(非 `iswalnum`——字节模式需字节级 API);`lower_locate`/`upper_locate` 改为调用 `tolower`/`toupper`;FFI 通过 `extern "C"` 声明 |
+| `src/lib.rs` | 启动时 `unsafe { libc::setlocale(libc::LC_ALL, c"".as_ptr()) }`——与 CPython 的 `pymain` 中 `setlocale(LC_ALL, "")` 一致 |
+
+### 14.3 验证
+
+- `test_re` **166 run 14 skip 全绿**(此前 `test_locale_flag` 1 failure)。
+- `test_locale` 全绿;`locale.getpreferredencoding()` 返回 `cp1252`(此前可能在 C locale 下返回 `utf-8`)。
+- 回归:58 模块全部 SUCCESS(**仅 test_import 1 failure 为子解释器限制,test_importlib 为冻结模块测试——均非本轮导致**)。
