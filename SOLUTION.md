@@ -526,3 +526,50 @@ python bench\imports.py
 - 运行时验证:`builtins.PickleBuffer is pickle.PickleBuffer`;`pickle.dump(PickleBuffer, protocol=5, buffer_callback=...)` 带外缓冲不内联、`load(buffers=...)` 正确还原;弱引用可创建、GC 可回收;类型本身可 pickle 往返。
 - 回归:test_marshal/zlib/hashlib/hmac/bz2/zipfile/tarfile/shelve/copy/configparser/bytes/array/struct 全绿;clippy 无新告警。
 - 已知限制:`_testbuffer`(CPython 测试 C 扩展)未构建,3 项 ndarray 测试保持 skip;纯 Python pickle 无 C 加速(性能非本轮目标)。
+
+---
+
+## 13. Round 17:C-API 缓冲协议基础设施(CBufferSlots + 通用 PyObject_GetBuffer)
+
+> 状态:CBufferSlots 类型数据槽 + CExportedBuffer 包装器 + PyType_FromSpec 缓冲槽接线 + PyModule_AddType + PyMemoryView_FromBuffer + 通用 PyObject_GetBuffer 全部实现并运行时验证;test_pickle 464 / test_buffer 95 / test_memoryview 171 / test_ctypes 328 全绿;clippy 无新告警;shim 703 导出。
+
+### 13.1 背景
+
+- RustPython 的 C-API 缓冲协议此前仅支持 `bytes`/`bytearray`(`PyObject_GetBuffer` 硬编码类型检查),且缺乏 `PyModule_AddType`、`PyMemoryView_FromBuffer` 等常用导出。
+- C 扩展无法通过 `PyType_FromSpec` 的 `Py_bf_getbuffer`/`Py_bf_releasebuffer` 槽附着缓冲回调——`PyType_FromSpec` 忽略这些槽。
+- 这是 numpy/PIL/lxml 等重度使用缓冲协议扩展的障碍。
+
+### 13.2 改动
+
+| 文件 | 改动 |
+|---|---|
+| `crates/vm/src/protocol/buffer.rs` | `CPyBuffer`(Py_buffer 镜像)、`CBufferSlots`(C getbuffer/releasebuffer 回调,存储在 `TypeDataSlot`)、`CExportedBuffer`(包装器,保持 C 导出者内存活跃,refcount 配对 retain/release)、`C_BUFFER_METHODS`(原始指针读写)、`CExportedBuffer::into_pybuffer`(CPyBuffer→PyBuffer 转换)、`try_c_buffer`(VM 缓冲协议 C 分发)、`pybuffer_from_c_view`(公开辅助函数) |
+| `crates/vm/src/protocol/mod.rs` | 导出 `CPyBuffer`、`CBufferSlots`、`pybuffer_from_c_view` |
+| `crates/vm/src/stdlib/builtins.rs` | `CExportedBuffer::make_static_type()` 初始化(修复"static type not initialized"崩溃) |
+| `crates/capi/src/object/pytype.rs` | `PyType_FromSpec` 处理 `Py_bf_getbuffer`/`Py_bf_releasebuffer` 槽→创建 `CBufferSlots` 并附着 |
+| `crates/capi/src/moduleobject.rs` | `PyModule_AddType`(按 `strrchr('.')` 剥离模块前缀)+ `#[used]` 锚点防 LTO 剥离 |
+| `crates/capi/src/memoryobject.rs` | `PyMemoryView_FromBuffer`(Py_buffer→PyMemoryView)+ `#[used]` 锚点 |
+| `crates/capi/src/buffer.rs` | `PyObject_GetBuffer` 改为通过 VM 缓冲协议分发(`PyBuffer::try_from_borrowed_object`),支持所有缓冲对象(原生+C 扩展) |
+| `crates/capi/src/objectstatics.rs` | 新增 6 个数据符号:`_Py_FalseStruct`、`_Py_TrueStruct`、`_Py_EllipsisObject`、`PyFloat_Type`、`PySlice_Type`、`PyType_Type` |
+| `bench/make_python_dll_shims.ps1` | `$data128` 列表扩展至 10 项 |
+| `bench/labs/extsrc/_testcbuffer.c`(新) | 最小 C 扩展测试——`PyType_FromSpec` + `Py_bf_getbuffer` + `PyMemoryView_FromBuffer` + 通用 `PyObject_GetBuffer` |
+| `pymath-patched/src/m.rs` | Windows 上 `remainder` 改用 `libm::remainder`(MSVC 子规格精度问题) |
+| `Lib/test/test_unittest/testmock/testasync.py` | 清除 9 处过时 expectedFailure(AsyncMock 断言测试已修复) |
+| `Lib/test/test_traceback.py` | 清除 1 处过时 expectedFailure(test_encoded_file) |
+| `Lib/test/test_pydoc/test_pydoc.py` | 清除 1 处过时 expectedFailure(test_module_level_callable_noargs) |
+
+### 13.3 关键设计决策
+
+- **C 导出者生命周期**:`CExportedBuffer` 包装器通过 `refs: AtomicUsize` 计数 + `release` 中查找 `CBufferSlots.releasebuffer` 调用 C `releasebufferproc`(与 CPython 的 `PyBuffer_Release` 相同——从 `view.obj` 的类型查找 `bf_releasebuffer`)。
+- **PyObject_GetBuffer 通用化**:获取 VM `PyBuffer` → 瞬态读取 `obj_bytes()` 指针 → 设置 `view.obj` 强引用(保持导出者活跃) → 丢弃 Rust `PyBuffer`(其 release 递减 VM 导出计数,与 C 视图的 `view.obj` 引用独立)。
+- **`#[used]` 锚点**:`PyModule_AddType` 和 `PyMemoryView_FromBuffer` 在 LTO 链接时被剥离(无引用者),通过 `#[used] static` 引用函数指针强制保留在导出表。
+- **`math.remainder` Windows 修复**:MSVC 的 `remainder()` 在极小子规格浮点数上产生 1-ulp 误差;改用纯 Rust `libm::remainder`(IEEE 754 精确)。
+
+### 13.4 验证
+
+- 运行时用 `_testcbuffer.c` 验证全链路:CBuffer → `memoryview()` → CBufferSlots → C getbufferproc → CExportedBuffer → PyBuffer → memoryview ✓;CBuffer → `PickleBuffer()` → bytes/raw ✓;可写缓冲变异 ✓;导出者提前释放后视图仍存活 ✓;2000+1000 次迭代释放无泄漏 ✓。
+- `PyMemoryView_FromBuffer`:bytes 和 CBuffer 均通过 C-API 创建 memoryview 成功 ✓。
+- 通用 `PyObject_GetBuffer`:**bytes**、**bytearray**、**CBuffer**(C 扩展)均通过 ✓。
+- `test_math` **89 run 5 skip 全绿**(`testRemainder` 修复后);test_cmath 全绿。
+- 回归:test_pickle 464 / test_pickletools 190 / test_picklebuffer 9 / test_memoryview 171 / test_buffer 95 / test_io / test_weakref / test_marshal / test_zlib / test_zipfile / test_ctypes 328 / test_bytes / test_array / test_unittest 1090 / test_traceback 370 / test_pydoc 120 / test_signal / test_threading / test_venv / test_sys / test_os / test_builtin / test_str / test_typing / test_dataclasses / test_enum / test_decimal / test_json / test_descr / test_class / test_exceptions / test_generators / test_coroutines / test_asyncgen / test_code / test_compile / test_ast / test_tokenize / test_pdb / test_profile / test_cprofile / test_inspect / test_ssl / test_socket / test_subprocess / test_sqlite3 / test_dict / test_set / test_list / test_tuple / test_range / test_float / test_int / test_bool / test_math — **全部 SUCCESS**。
+- clippy 无新告警;rustfmt 干净;pre-commit hooks(redundant-patches)通过。
