@@ -299,6 +299,50 @@ pub unsafe extern "C" fn rp_va_err_set_exc_info(
     })
 }
 
+/// Rust impl of PyErr_NormalizeException: normalize the exception tuple
+/// so that `*pvalue` is an instance of `*ptype`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_normalize_exception(
+    ptype: *mut *mut PyObject,
+    pvalue: *mut *mut PyObject,
+    ptraceback: *mut *mut PyObject,
+) {
+    with_vm(|vm| {
+        if ptype.is_null() || pvalue.is_null() || ptraceback.is_null() {
+            return;
+        }
+        let type_ = unsafe { *ptype };
+        let value = unsafe { *pvalue };
+        if type_.is_null() || value.is_null() {
+            return;
+        }
+        let type_obj = unsafe { &*type_ }.to_owned();
+        let value_obj = unsafe { &*value }.to_owned();
+        let tb_obj = if unsafe { !ptraceback.is_null() && !(*ptraceback).is_null() } {
+            Some(unsafe { &*(*ptraceback) }.to_owned())
+        } else {
+            None
+        };
+        let tb = tb_obj.unwrap_or_else(|| vm.ctx.none().to_owned());
+        match vm.normalize_exception(type_obj, value_obj, tb) {
+            Ok(normalized) => {
+                let n_type = normalized.class().as_object().to_owned();
+                let n_value: PyObjectRef = normalized.into_object();
+                // Drop the old references.
+                unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(type_))) };
+                unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(value))) };
+                // Set the normalized values.
+                unsafe { *ptype = n_type.into_raw().as_ptr() };
+                unsafe { *pvalue = n_value.into_raw().as_ptr() };
+                // ptraceback stays the same (or we could set it to None).
+            }
+            Err(_) => {
+                // Normalization failed; leave the exception as-is.
+            }
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn PyErr_GetRaisedException() -> *mut PyObject {
     with_vm(|vm| {

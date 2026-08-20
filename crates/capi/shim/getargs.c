@@ -552,6 +552,13 @@ RP_EXPORT void Py_SetPythonHome(const char *home) {
     rp_va_set_python_home(home);
 }
 
+/* PyErr_NormalizeException (Python/errors.c) */
+extern void rp_va_err_normalize_exception(void **ptype, void **pvalue, void **ptraceback);
+
+RP_EXPORT void PyErr_NormalizeException(void **ptype, void **pvalue, void **ptraceback) {
+    rp_va_err_normalize_exception(ptype, pvalue, ptraceback);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
