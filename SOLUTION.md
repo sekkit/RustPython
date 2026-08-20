@@ -597,3 +597,37 @@ python bench\imports.py
 - `test_re` **166 run 14 skip 全绿**(此前 `test_locale_flag` 1 failure)。
 - `test_locale` 全绿;`locale.getpreferredencoding()` 返回 `cp1252`(此前可能在 C locale 下返回 `utf-8`)。
 - 回归:58 模块全部 SUCCESS(**仅 test_import 1 failure 为子解释器限制,test_importlib 为冻结模块测试——均非本轮导致**)。
+
+---
+
+## 15. Round 22-58: C-API 补齐(725 导出)+ 4 处真实缺陷修复
+
+> 状态:C-API 导出面从 ~706 扩展到 **725**,覆盖 buffer 协议(完整 N-D/非连续)、PyNumber 全族、unicode/bytes/list/module/import/memoryview/error/object 常用函数;发现并修复 4 处存量缺陷。
+
+### 15.1 新增 C-API 函数(25+)
+
+| 类别 | 函数 |
+|---|---|
+| Buffer | `PyObject_GetBuffer`(泛型 VM 分发)、`PyBuffer_IsContiguous`、`PyBuffer_ToContiguous`(N-D 步长迭代)、`PyObject_CheckBuffer`、`PyBuffer_FillInfo`、`CExportedBuffer` 物理长度修复(非连续缓冲 range panic) |
+| MemoryView | `PyMemoryView_FromBuffer`、`PyMemoryView_GetContiguous` |
+| Module/Import | `PyModule_AddType`、`PyModule_GetName`、`PyModule_GetFilename`、`PyImport_AddModule`、`PyImport_GetModuleDict` |
+| Tuple/List | `PyTuple_Pack`(C 变参→Rust)、`PyList_GetItem`(借用引用) |
+| Errors | `PyErr_NoMemory`(bare 实例无 traceback) |
+| Unicode | `PyUnicode_FromFormat`、`PyUnicode_Join`、`PyUnicode_EncodeUTF8`、`PyUnicode_AsUTF8`(thread-local 缓存,`try_with` 防析构 panic) |
+| Bytes/Long | `PyBytes_FromString`、`PyBytes_GET_SIZE`、`PyBytes_FromObject`、`PyLong_FromUnicodeObject` |
+| Object | `PyObject_CallOneArg` |
+
+### 15.2 修复的存量缺陷
+
+1. **非连续缓冲 range panic**(`crates/vm/src/protocol/buffer.rs`):`CExportedBuffer` 的 `obj_bytes` 只返回逻辑长度(如 24B),而 `for_each_segment` 按物理跨度寻址(44B)→ panic。修复:计算物理长度(最大跨度 + itemsize)。
+2. **`Py_BuildValue` 多值返回错误**(`crates/capi/src/arg.rs`):`"ss"` 等格式本应返回元组,却报 SystemError。修复:顶层多值包装为元组(与 CPython 一致)。
+3. **`Py_BuildValue` dict 格式**(`arg.rs`):`{ss:ii}` 错配对、`{sisi}`(无冒号交替式)返回 NULL。修复:Dict 组跟踪 `saw_separator`,`:` 分隔时 key/value zip,否则交替配对。
+4. **`PyObject_HasAttrString` 未静默清除 AttributeError**(`object.rs`):缺属性时打印 "Exception ignored"。修复:改用 `vm.get_attribute_opt()`。
+
+### 15.3 验证
+
+- `_testcbuffer.c` 运行时全链路:1-D 连续 ✓、非连续 strided round-trip ✓、`PyMemoryView_FromBuffer` ✓、PickleBuffer ✓、500+ 次释放无泄漏 ✓。
+- `_testmultiphase`/`_testsinglephase`:PEP 489 多阶段 + 单阶段加载 ✓;`foo(2,3)=5`(PyArg_ParseTuple "ll")✓;`error()` 抛 RuntimeError ✓。
+- ctypes 逐一验证 25+ 新导出:PyTuple_Pack / PyUnicode_Join / PyUnicode_AsUTF8 / PyUnicode_EncodeUTF8 / PyUnicode_FromFormat / Py_BuildValue(全格式) / PyObject_CallOneArg / PyLong_FromUnicodeObject / PyBytes_* / PyList_GetItem / PyModule_* / PyImport_* ✓。
+- 回归:test_pickle/memoryview/buffer/io/weakref/ctypes/re/math/unittest/email/str/os/builtin/sys/json/decimal/typing/dataclasses/enum 等全部 SUCCESS。
+- 平台:SOABI=`cp314-win_amd64`,pip 平台标签正确(`rustpython314-cp314-win_amd64` 等),wheel 选择可用。
