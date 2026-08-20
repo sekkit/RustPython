@@ -1,15 +1,15 @@
-//! Minimal buffer protocol (CPython Objects/abstract.c, buffer.c).
+//! Buffer protocol (CPython Objects/abstract.c, buffer.c).
 //!
-//! Only the flat 1-dimensional case is modeled: bytes and bytearray expose
-//! their storage, everything else reports that it does not support the buffer
-//! interface.
+//! Dispatches through the VM's buffer protocol, which handles native
+//! `as_buffer` slots (bytes, bytearray, etc.) and C extensions through
+//! `CBufferSlots`.
 
 use crate::PyObject;
 use crate::pystate::with_vm;
 use crate::refcount::_Py_DecRef;
 use core::ffi::{c_char, c_int, c_void};
-use rustpython_vm::builtins::{PyByteArray, PyBytes};
-use rustpython_vm::{AsObject, PyResult};
+use rustpython_vm::protocol::PyBuffer;
+use rustpython_vm::{AsObject, PyResult, TryFromBorrowedObject};
 
 // Names intentionally mirror the C identifiers.
 #[allow(non_upper_case_globals, dead_code, unreachable_pub)]
@@ -42,8 +42,10 @@ pub struct Py_buffer {
     pub internal: *mut c_void,
 }
 
-/// PyObject_GetBuffer: fill `view` with the object's buffer. Supports bytes
-/// and bytearray; other objects raise TypeError like CPython.
+/// PyObject_GetBuffer: fill `view` with the object's buffer.
+/// Dispatches through the VM's buffer protocol, so any buffer-supporting
+/// object (bytes, bytearray, memoryview, C extensions with CBufferSlots)
+/// is handled.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_GetBuffer(
     obj: *mut PyObject,
@@ -55,40 +57,43 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
             return Err(vm.new_system_error("PyObject_GetBuffer called with a NULL view"));
         }
         let obj = unsafe { &*obj };
-        let (ptr, len, readonly) = if let Some(b) = obj.downcast_ref::<PyBytes>() {
-            let data = b.as_bytes();
-            (data.as_ptr() as *mut c_void, data.len() as isize, 1)
-        } else if let Some(ba) = obj.downcast_ref::<PyByteArray>() {
-            let data = ba.borrow_buf();
-            (data.as_ptr() as *mut c_void, data.len() as isize, 0)
-        } else {
-            return Err(vm.new_type_error(format!(
-                "a bytes-like object is required, not '{}'",
-                obj.class().name()
-            )));
-        };
-        if flags & PyBUF_WRITABLE != 0 && readonly != 0 {
+        let buf = PyBuffer::try_from_borrowed_object(vm, obj)?;
+        if flags & PyBUF_WRITABLE != 0 && buf.desc.readonly {
             return Err(vm.new_buffer_error("Object is not writable."));
         }
+
+        // Read the data pointer under a transient borrow (same pattern as
+        // the previous bytes/bytearray fast path: the pointer stays valid
+        // while the exporter is alive, which `view.obj` guarantees).
+        let ptr = buf.obj_bytes().as_ptr() as *mut c_void;
         let view = unsafe { &mut *view };
         view.buf = ptr;
-        // Owned reference: bump the refcount and keep it in the view.
-        let owned = obj.to_owned();
-        view.obj = owned.as_object().as_raw().cast_mut();
-        core::mem::forget(owned);
-        view.len = len;
-        view.itemsize = 1;
-        view.readonly = readonly;
-        view.ndim = 1;
-        view.format = if flags & PyBUF_FORMAT != 0 {
-            c"B".as_ptr().cast_mut()
+        view.len = buf.desc.len as isize;
+        view.itemsize = buf.desc.itemsize.max(1) as isize;
+        view.readonly = if buf.desc.readonly { 1 } else { 0 };
+        view.ndim = buf.desc.ndim() as c_int;
+
+        // Format string (leak a C-string copy to the view).
+        let fmt = buf.desc.format.as_bytes();
+        if fmt != b"B" && !fmt.is_empty() {
+            let mut s = fmt.to_vec();
+            s.push(0);
+            view.format = s.as_mut_ptr().cast();
+            core::mem::forget(s);
         } else {
-            core::ptr::null_mut()
-        };
+            view.format = core::ptr::null_mut();
+        }
         view.shape = core::ptr::null_mut();
         view.strides = core::ptr::null_mut();
         view.suboffsets = core::ptr::null_mut();
         view.internal = core::ptr::null_mut();
+
+        // Owned reference: the Rust `PyBuffer` drops after this function
+        // (its own export counter is released), but the C view keeps the
+        // exporter alive via `view.obj`.
+        let owned = buf.obj.clone();
+        view.obj = owned.as_object().as_raw().cast_mut();
+        core::mem::forget(owned);
         Ok(0)
     })
 }
