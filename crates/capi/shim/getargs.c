@@ -396,6 +396,13 @@ RP_EXPORT void *PyInstanceMethod_New(void *func) {
     return rp_va_instancemethod_new(func);
 }
 
+/* PyMemoryView_FromMemory (Objects/memoryobject.c) */
+extern void *rp_va_memoryview_from_memory(const char *data, intptr_t size, const char *format);
+
+RP_EXPORT void *PyMemoryView_FromMemory(const char *data, intptr_t size, const char *format) {
+    return rp_va_memoryview_from_memory(data, size, format);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

@@ -37,43 +37,26 @@ pub unsafe extern "C" fn PyMemoryView_FromBuffer(view: *mut Py_buffer) -> *mut P
 static PY_MEMORYVIEW_FROM_BUFFER_ANCHOR: unsafe extern "C" fn(*mut Py_buffer) -> *mut PyObject =
     PyMemoryView_FromBuffer;
 
-/// PyMemoryView_FromMemory: create a memoryview from a simple buffer
-/// (char* data, size, format). This is a convenience wrapper around
-/// PyMemoryView_FromBuffer.
+/// Rust implementation of the C shim's PyMemoryView_FromMemory.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyMemoryView_FromMemory(
+pub unsafe extern "C" fn rp_va_memoryview_from_memory(
     data: *const c_char,
     size: isize,
     format: *const c_char,
 ) -> *mut PyObject {
-    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+    with_vm(|vm| -> rustpython_vm::PyResult<rustpython_vm::PyObjectRef> {
         if data.is_null() {
             return Err(vm.new_system_error("PyMemoryView_FromMemory called with NULL data"));
         }
         let len = size.max(0) as usize;
-        let fmt = if format.is_null() {
-            "B"
-        } else {
-            unsafe { core::ffi::CStr::from_ptr(format) }.to_str().unwrap_or("B")
-        };
-        // Build a CPyBuffer (Py_buffer-compatible struct) and use pybuffer_from_c_view.
-        let cview = CPyBuffer {
-            buf: data as *mut core::ffi::c_void,
-            obj: core::ptr::null_mut(),
-            len: len as isize,
-            itemsize: 1,
-            readonly: 0,
-            ndim: 1,
-            format: fmt.as_ptr() as *mut c_char,
-            shape: core::ptr::null_mut(),
-            strides: core::ptr::null_mut(),
-            suboffsets: core::ptr::null_mut(),
-            internal: core::ptr::null_mut(),
-        };
-        let buf = pybuffer_from_c_view(cview, vm)?;
-        let mv = PyMemoryView::from_buffer(buf, vm)?;
-        let mv_ref: rustpython_vm::PyObjectRef = mv.into_ref(&vm.ctx).into();
-        Ok(mv_ref.into_raw().as_ptr())
+        // Create a bytes object as the backing store for the memoryview.
+        // This ensures the exporter is a valid Python object.
+        let data_slice = unsafe { core::slice::from_raw_parts(data as *const u8, len) };
+        let bytes = vm.ctx.new_bytes(data_slice.to_vec());
+        // Create a memoryview from the bytes object.
+        let bytes_obj: rustpython_vm::PyObjectRef = bytes.into();
+        let mv = PyMemoryView::from_object(&bytes_obj, vm)?;
+        Ok(mv.into_ref(&vm.ctx).into())
     })
 }
 
