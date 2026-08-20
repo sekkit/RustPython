@@ -1,6 +1,7 @@
 use crate::get_main_interpreter;
 use crate::pyerrors::init_exception_statics;
 use crate::pystate::{ensure_thread_has_vm_attached, with_vm};
+use crate::util::CStrExt;
 use crate::PyObject;
 use alloc::ffi::CString;
 use core::ffi::{c_char, c_int, c_ulong};
@@ -109,6 +110,56 @@ pub extern "C" fn Py_GetCopyright() -> *const c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn Py_GetPlatform() -> *const c_char {
     sys::PLATFORM.as_ptr()
+}
+
+/// Rust implementation of the C shim's Py_Exit.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_exit(status: c_int) {
+    std::process::exit(status);
+}
+
+/// Rust implementation of the C shim's PySys_GetObject.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_sys_get_object(name: *const c_char) -> *mut PyObject {
+    with_vm(|vm| {
+        let name = unsafe { name.try_as_str(vm) }?;
+        vm.sys_module.get_attr(name, vm)
+    })
+}
+
+/// Rust implementation of the C shim's PySys_SetObject.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_sys_set_object(
+    name: *const c_char,
+    value: *mut PyObject,
+) -> c_int {
+    with_vm(|vm| {
+        let name = unsafe { name.try_as_str(vm) }?;
+        let value = unsafe { &*value }.to_owned();
+        vm.sys_module.set_attr(name, value, vm)
+    })
+}
+
+/// Rust implementation of the C shim's PySys_SetPath.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_sys_set_path(path: *const c_char) {
+    with_vm(|vm| {
+        if path.is_null() {
+            return;
+        }
+        let path_str = match unsafe { path.try_as_str(vm) } {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let parts: Vec<&str> = path_str.split(&[':', ';'][..]).collect();
+        let path_list: Vec<rustpython_vm::PyObjectRef> = parts
+            .iter()
+            .map(|p| vm.ctx.new_str(p.to_string()).into())
+            .collect();
+        if let Err(e) = vm.sys_module.set_attr("path", vm.ctx.new_list(path_list), vm) {
+            vm.print_exception(e);
+        }
+    })
 }
 
 /// Rust implementation of the C shim's PyRun_SimpleString.

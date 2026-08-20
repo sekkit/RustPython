@@ -328,6 +328,30 @@ RP_EXPORT void *PyRun_String(const char *code, int start, void *globals, void *l
     return rp_va_run_string(code, start, globals, locals);
 }
 
+/* PySys_* (Python/sysmodule.c) */
+extern void *rp_va_sys_get_object(const char *name);
+extern int rp_va_sys_set_object(const char *name, void *value);
+extern void rp_va_sys_set_path(const char *path);
+
+RP_EXPORT void *PySys_GetObject(const char *name) {
+    return rp_va_sys_get_object(name);
+}
+
+RP_EXPORT int PySys_SetObject(const char *name, void *value) {
+    return rp_va_sys_set_object(name, value);
+}
+
+RP_EXPORT void PySys_SetPath(const char *path) {
+    rp_va_sys_set_path(path);
+}
+
+/* Py_Exit (Python/sysmodule.c) */
+extern void rp_va_exit(int status);
+
+RP_EXPORT void Py_Exit(int status) {
+    rp_va_exit(status);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
