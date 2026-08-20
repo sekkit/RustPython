@@ -448,12 +448,34 @@ pub extern "C" fn rp_va_err_set_interrupt() {
 /// Rust impl of PyErr_SetInterruptEx: set the interrupt flag.
 #[unsafe(no_mangle)]
 pub extern "C" fn rp_va_err_set_interrupt_ex(_signum: c_int) {
-    // In RustPython, there's no true async interrupt mechanism.
-    // We set the pending KeyboardInterrupt for the next check.
-    // This is a best-effort implementation.
     with_vm(|vm| {
         let exc = vm.new_exception_empty(vm.ctx.exceptions.keyboard_interrupt.to_owned());
         vm.set_exception(Some(exc));
+    })
+}
+
+/// Rust impl of PyErr_WarnFormat: issue a warning with printf-style format.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_warn_format(
+    exception: *mut PyObject,
+    format: *const c_char,
+    slots: *const usize,
+    nslots: c_int,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if format.is_null() {
+            return Err(vm.new_system_error("PyErr_WarnFormat called with NULL format"));
+        }
+        let format_bytes = unsafe { core::ffi::CStr::from_ptr(format) }.to_bytes();
+        let mut va = crate::arg::VaSlots::new(unsafe { core::slice::from_raw_parts(slots, nslots as usize) });
+        let message = crate::arg::format_message(vm, format_bytes, &mut va)?;
+        let category = if exception.is_null() {
+            vm.ctx.exceptions.resource_warning.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        rustpython_vm::warn::warn(vm.ctx.new_str(message).into(), Some(category), 1, None, vm)?;
+        Ok(0)
     })
 }
 
