@@ -1,9 +1,12 @@
+use crate::object::define_py_check;
 use crate::PyObject;
 use crate::pystate::with_vm;
 use core::ffi::c_int;
 use rustpython_vm::PyPayload;
 use rustpython_vm::builtins::PySlice;
 use rustpython_vm::sliceable::SaturatedSlice;
+
+define_py_check!(fn PySlice_Check, types.slice_type);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySlice_New(
