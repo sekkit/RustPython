@@ -152,6 +152,21 @@ fn program_name_cstr() -> *const c_char {
     PROGRAM_NAME.try_with(|c| c.borrow().as_ptr()).unwrap_or(c"rustpython".as_ptr())
 }
 
+/// Rust implementation of the C shim's Py_GetRecursionLimit.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_get_recursion_limit() -> isize {
+    with_vm(|vm| -> PyResult<isize> { Ok(vm.recursion_limit.get() as isize) })
+}
+
+/// Rust implementation of the C shim's Py_SetRecursionLimit.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_set_recursion_limit(limit: isize) {
+    with_vm(|vm| {
+        let limit = limit.max(1) as usize;
+        vm.recursion_limit.set(limit);
+    })
+}
+
 /// Rust implementation of the C shim's Py_GetProgramName.
 #[unsafe(no_mangle)]
 pub extern "C" fn rp_va_get_program_name() -> *const c_char {

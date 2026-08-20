@@ -465,6 +465,18 @@ RP_EXPORT void *PyCapsule_GetDestructor(void *capsule) {
     return rp_va_capsule_get_destructor(capsule);
 }
 
+/* Py_GetRecursionLimit/Py_SetRecursionLimit (Python/pylifecycle.c) */
+extern intptr_t rp_va_get_recursion_limit(void);
+extern void rp_va_set_recursion_limit(intptr_t limit);
+
+RP_EXPORT intptr_t Py_GetRecursionLimit(void) {
+    return rp_va_get_recursion_limit();
+}
+
+RP_EXPORT void Py_SetRecursionLimit(intptr_t limit) {
+    rp_va_set_recursion_limit(limit);
+}
+
 /* PyBytes_FromFormat (Objects/bytesobject.c) — create bytes from printf format. */
 extern void *rp_va_bytes_from_format(const char *format, const uintptr_t *slots, int nslots);
 
