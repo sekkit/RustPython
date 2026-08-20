@@ -540,6 +540,18 @@ RP_EXPORT void *PyBytes_ConcatAndDel(void *a, void *b) {
     return rp_va_bytes_concat_and_del(a, b);
 }
 
+/* Py_GetPythonHome / Py_SetPythonHome (Python/pylifecycle.c) */
+extern const char *rp_va_get_python_home(void);
+extern void rp_va_set_python_home(const char *home);
+
+RP_EXPORT const char *Py_GetPythonHome(void) {
+    return rp_va_get_python_home();
+}
+
+RP_EXPORT void Py_SetPythonHome(const char *home) {
+    rp_va_set_python_home(home);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

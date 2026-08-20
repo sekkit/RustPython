@@ -202,6 +202,28 @@ pub extern "C" fn rp_va_get_path() -> *const c_char {
     c"".as_ptr()
 }
 
+/// Thread-local cache for Python home (mutable via Py_SetPythonHome).
+std::thread_local! {
+    static PYTHON_HOME: RefCell<CString> = RefCell::new(CString::new("").unwrap());
+}
+
+/// Rust implementation of the C shim's Py_GetPythonHome.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_get_python_home() -> *const c_char {
+    PYTHON_HOME.try_with(|h| h.borrow().as_ptr()).unwrap_or(c"".as_ptr())
+}
+
+/// Rust implementation of the C shim's Py_SetPythonHome.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_set_python_home(home: *const c_char) {
+    if !home.is_null() {
+        let home_str = unsafe { core::ffi::CStr::from_ptr(home) };
+        if let Ok(c) = CString::new(home_str.to_bytes().to_vec()) {
+            let _ = PYTHON_HOME.try_with(|h| *h.borrow_mut() = c);
+        }
+    }
+}
+
 /// Rust implementation of the C shim's Py_Exit.
 #[unsafe(no_mangle)]
 pub extern "C" fn rp_va_exit(status: c_int) {
