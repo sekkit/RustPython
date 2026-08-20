@@ -290,6 +290,29 @@ RP_EXPORT void *PyErr_Format(void *exception, const char *format, ...) {
     return rp_va_err_format(exception, format, slots, n);
 }
 
+/* PyUnicode_FromFormat (Objects/unicodeobject.c): build a unicode string
+ * from a printf-style format. Uses the same slot-snapshotting pattern. */
+void *rp_va_unicode_from_format(const char *format, const uintptr_t *slots, int nslots);
+
+RP_EXPORT void *PyUnicode_FromFormat(const char *format, ...) {
+    va_list ap;
+    uintptr_t slots[RP_MAX_SLOTS];
+    int n;
+    if (format == NULL) {
+        return NULL;
+    }
+    va_start(ap, format);
+    n = rp_count_printf_slots(format);
+    if (n > RP_MAX_SLOTS) {
+        n = RP_MAX_SLOTS;
+    }
+    for (int i = 0; i < n; i++) {
+        slots[i] = va_arg(ap, uintptr_t);
+    }
+    va_end(ap);
+    return rp_va_unicode_from_format(format, slots, n);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

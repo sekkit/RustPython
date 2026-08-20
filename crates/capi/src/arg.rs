@@ -1841,6 +1841,25 @@ pub unsafe extern "C" fn rp_va_err_format(
     })
 }
 
+/// C shim entry: PyUnicode_FromFormat. Builds a Python str from a
+/// printf-style format using the slot-snapshotting mechanism.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_from_format(
+    format: *const c_char,
+    slots: *const usize,
+    nslots: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| -> PyResult<PyObjectRef> {
+        if format.is_null() {
+            return Err(vm.new_system_error("PyUnicode_FromFormat called with NULL format"));
+        }
+        let format = unsafe { CStr::from_ptr(format) }.to_bytes();
+        let mut slots = VaSlots::new(unsafe { core::slice::from_raw_parts(slots, nslots as usize) });
+        let message = format_message(vm, format, &mut slots)?;
+        Ok(vm.ctx.new_str(message).into())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;
