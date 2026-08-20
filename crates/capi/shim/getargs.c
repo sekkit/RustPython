@@ -499,6 +499,23 @@ RP_EXPORT int PyBytes_AsStringAndSize(void *obj, char **s, intptr_t *len) {
     return rp_va_bytes_as_string_and_size(obj, s, len);
 }
 
+/* PyErr_BadArgument / PyErr_BadInternalCall / PyErr_SetNone (Python/errors.c) */
+extern void rp_va_err_bad_argument(void);
+extern void rp_va_err_bad_internal_call(void);
+extern void rp_va_err_set_none(void *exception);
+
+RP_EXPORT void PyErr_BadArgument(void) {
+    rp_va_err_bad_argument();
+}
+
+RP_EXPORT void PyErr_BadInternalCall(void) {
+    rp_va_err_bad_internal_call();
+}
+
+RP_EXPORT void PyErr_SetNone(void *exception) {
+    rp_va_err_set_none(exception);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

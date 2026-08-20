@@ -212,6 +212,35 @@ pub unsafe extern "C" fn PyErr_NoMemory() {
     })
 }
 
+/// Rust impl of PyErr_BadArgument: set TypeError.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_err_bad_argument() {
+    with_vm(|vm| {
+        let exc = vm.new_exception_msg(vm.ctx.exceptions.type_error.to_owned(), "bad argument".into());
+        vm.set_exception(Some(exc));
+    })
+}
+
+/// Rust impl of PyErr_BadInternalCall: set SystemError.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_err_bad_internal_call() {
+    with_vm(|vm| {
+        let exc = vm.new_exception_msg(vm.ctx.exceptions.system_error.to_owned(), "Bad internal call".into());
+        vm.set_exception(Some(exc));
+    })
+}
+
+/// Rust impl of PyErr_SetNone: set an instance of the given exception type.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_none(exception: *mut PyObject) {
+    with_vm(|vm| {
+        let exc_type = unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?;
+        let exc = vm.new_exception_empty(exc_type.to_owned());
+        vm.set_exception(Some(exc));
+        Ok(())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn PyErr_GetRaisedException() -> *mut PyObject {
     with_vm(|vm| {
