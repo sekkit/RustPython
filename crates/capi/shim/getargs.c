@@ -601,6 +601,13 @@ RP_EXPORT int PyUnicode_Tailmatch(void *obj, void *sub, intptr_t start, intptr_t
     return rp_va_unicode_tailmatch(obj, sub, start, end, direction);
 }
 
+/* PyUnicode_RSplit (Objects/unicodeobject.c) */
+extern void *rp_va_unicode_rsplit(void *obj, void *sep, intptr_t maxsplit);
+
+RP_EXPORT void *PyUnicode_RSplit(void *obj, void *sep, intptr_t maxsplit) {
+    return rp_va_unicode_rsplit(obj, sep, maxsplit);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

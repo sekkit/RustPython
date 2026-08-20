@@ -962,6 +962,61 @@ pub unsafe extern "C" fn rp_va_unicode_tailmatch(
     })
 }
 
+/// Rust impl of PyUnicode_RSplit: split a string from the right.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_rsplit(
+    obj: *mut PyObject,
+    sep: *mut PyObject,
+    maxsplit: isize,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<rustpython_vm::PyObjectRef> {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_RSplit: string is not valid UTF-8")
+        })?;
+        let sep_str = if sep.is_null() || unsafe { &*sep }.is(vm.ctx.none().as_object()) {
+            None
+        } else {
+            Some(unsafe { &*sep }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+                vm.new_system_error("PyUnicode_RSplit: separator is not valid UTF-8")
+            })?)
+        };
+        let parts: Vec<&str> = if let Some(sep) = sep_str {
+            if maxsplit >= 0 {
+                let mut v: Vec<&str> = s.rsplitn((maxsplit + 1) as usize, sep).collect();
+                v.reverse();
+                v
+            } else {
+                let mut v: Vec<&str> = s.rsplit(sep).collect();
+                v.reverse();
+                v
+            }
+        } else {
+            // Whitespace: split_whitespace gives correct order.
+            let all: Vec<&str> = s.split_whitespace().collect();
+            if maxsplit >= 0 && (maxsplit as usize) < all.len() {
+                let split_at = all.len() - maxsplit as usize;
+                let first = all[..split_at].join(" ");
+                let mut result: Vec<String> = Vec::new();
+                result.push(first);
+                for &item in &all[split_at..] {
+                    result.push(item.to_string());
+                }
+                let items: Vec<rustpython_vm::PyObjectRef> = result
+                    .into_iter()
+                    .map(|s| vm.ctx.new_str(s).into())
+                    .collect();
+                return Ok(vm.ctx.new_list(items).into());
+            }
+            all
+        };
+        let items: Vec<rustpython_vm::PyObjectRef> = parts
+            .iter()
+            .map(|p| vm.ctx.new_str(p.to_string()).into())
+            .collect();
+        Ok(vm.ctx.new_list(items).into())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
