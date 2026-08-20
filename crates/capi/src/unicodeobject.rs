@@ -5,7 +5,7 @@ use core::ffi::{CStr, c_char, c_int};
 use core::ptr::NonNull;
 use core::slice;
 use core::str;
-use rustpython_vm::builtins::{PyBytesRef, PyStr, PyStrRef, PyUtf8StrRef};
+use rustpython_vm::builtins::{PyBytesRef, PyList, PyStr, PyStrRef, PyTuple, PyUtf8StrRef};
 use rustpython_vm::common::wtf8::{CodePoint, Wtf8Buf};
 use rustpython_vm::convert::ToPyObject;
 use rustpython_vm::{AsObject, PyObjectRef, PyResult, VirtualMachine};
@@ -608,6 +608,50 @@ pub unsafe extern "C" fn PyUnicode_AsWideChar(
             unsafe { core::ptr::copy_nonoverlapping(units.as_ptr(), w.cast(), n) };
             Ok(size)
         }
+    })
+}
+
+/// PyUnicode_Join: join a sequence of strings with a separator.
+/// separator is a unicode string, seq is a tuple/list of strings.
+/// Returns a new unicode string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_Join(
+    separator: *mut PyObject,
+    seq: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let sep_str = unsafe { &*separator }
+            .try_downcast_ref::<PyStr>(vm)?
+            .to_str()
+            .ok_or_else(|| vm.new_system_error("PyUnicode_Join: separator is not a valid UTF-8 string"))?;
+        let seq = unsafe { &*seq };
+
+        // Collect the string items from the sequence.
+        let items: Vec<rustpython_vm::PyObjectRef> = if let Ok(tuple) =
+            seq.try_downcast_ref::<PyTuple>(vm)
+        {
+            tuple.iter().cloned().collect()
+        } else if let Ok(list) = seq.try_downcast_ref::<PyList>(vm) {
+            let list = list.borrow_vec();
+            list.iter().cloned().collect()
+        } else {
+            return Err(vm.new_type_error("PyUnicode_Join: seq must be a tuple or list"));
+        };
+
+        // Validate all items are strings and join them with Rust's string joining.
+        let mut parts: Vec<&str> = Vec::with_capacity(items.len());
+        for item in &items {
+            let s = item.downcast_ref::<PyStr>().ok_or_else(|| {
+                vm.new_type_error("sequence item must be a string")
+            })?;
+            let s_str = s.to_str().ok_or_else(|| {
+                vm.new_system_error("sequence item is not a valid UTF-8 string")
+            })?;
+            parts.push(s_str);
+        }
+        let joined = parts.join(sep_str);
+        let result: rustpython_vm::PyObjectRef = vm.ctx.new_str(joined).into();
+        Ok(result.into_raw().as_ptr())
     })
 }
 
