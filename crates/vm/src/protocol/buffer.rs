@@ -631,10 +631,28 @@ impl CExportedBuffer {
         };
         #[cfg(debug_assertions)]
         let desc = desc.validate();
+        // Physical buffer extent: the maximum span of the strided data. For a
+        // contiguous buffer this equals the logical length; for a strided buffer
+        // (e.g. shape=6, stride=8, itemsize=4) the physical span is 44 while the
+        // logical length is 24. `obj_bytes` must return the full physical span
+        // so that `for_each_segment` can address every segment.
+        let wrapper_len = if desc.is_contiguous() {
+            len
+        } else {
+            let mut max_end = len;
+            for &(shape_s, stride, _sub) in &desc.dim_desc {
+                if shape_s > 0 {
+                    let end =
+                        ((shape_s - 1) as isize * stride + itemsize as isize) as usize;
+                    max_end = max_end.max(end);
+                }
+            }
+            max_end
+        };
 
         let wrapper = Self {
             buf,
-            len,
+            len: wrapper_len,
             exporter,
             view: Box::new(view),
             refs: AtomicUsize::new(0),
