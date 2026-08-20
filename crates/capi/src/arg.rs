@@ -1283,7 +1283,9 @@ fn build_value(vm: &VirtualMachine, format: &[u8], slots: &mut VaSlots<'_>) -> P
     match top.len() {
         0 => Ok(vm.ctx.none()),
         1 => Ok(top.pop().unwrap()),
-        _ => Err(vm.new_system_error("Py_BuildValue: more than one value to build")),
+        // Multiple values at the top level: wrap in a tuple, matching
+        // CPython's Py_BuildValue("ss", ...) -> (a, b).
+        _ => Ok(vm.ctx.new_tuple(top).into()),
     }
 }
 
