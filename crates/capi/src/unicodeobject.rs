@@ -748,6 +748,52 @@ pub unsafe extern "C" fn PyUnicode_Join(
     })
 }
 
+/// Rust implementation of the C shim's PyUnicode_Split.
+/// Splits a string by a separator (maxsplit = -1 means no limit).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_split(
+    obj: *mut PyObject,
+    sep: *mut PyObject,
+    maxsplit: isize,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<rustpython_vm::PyObjectRef> {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Split: string is not valid UTF-8")
+        })?;
+        let sep_str = if sep.is_null() {
+            None
+        } else {
+            let sep_obj = unsafe { &*sep };
+            if sep_obj.is(vm.ctx.none().as_object()) {
+                None
+            } else {
+                Some(sep_obj.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+                    vm.new_system_error("PyUnicode_Split: separator is not valid UTF-8")
+                })?)
+            }
+        };
+        let parts: Vec<&str> = if let Some(sep) = sep_str {
+            if maxsplit >= 0 {
+                s.splitn((maxsplit + 1) as usize, sep).collect()
+            } else {
+                s.split(sep).collect()
+            }
+        } else {
+            // Split on whitespace (default).
+            if maxsplit >= 0 {
+                s.splitn((maxsplit + 1) as usize, |c: char| c.is_whitespace()).collect()
+            } else {
+                s.split_whitespace().collect()
+            }
+        };
+        let items: Vec<rustpython_vm::PyObjectRef> = parts
+            .iter()
+            .map(|p| vm.ctx.new_str(p.to_string()).into())
+            .collect();
+        Ok(vm.ctx.new_list(items).into())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
