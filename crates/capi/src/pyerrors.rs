@@ -364,6 +364,31 @@ pub unsafe extern "C" fn PyErr_SetRaisedException(exc: *mut PyObject) {
     })
 }
 
+/// Rust impl of PyErr_GetHandledException: return the current exception
+/// being handled (like sys.exc_info()).
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_err_get_handled_exception() -> *mut PyObject {
+    with_vm(|vm| {
+        vm.current_exception()
+            .map(|exc| exc.into_object().into_raw().as_ptr())
+            .unwrap_or_default()
+    })
+}
+
+/// Rust impl of PyErr_SetHandledException: set the current exception
+/// being handled.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_handled_exception(exc: *mut PyObject) {
+    with_vm(|vm| {
+        if let Some(exc) = NonNull::new(exc) {
+            let exception = unsafe { PyObjectRef::from_raw(exc).downcast_unchecked() };
+            vm.set_exception(Some(exception));
+        } else {
+            vm.set_exception(None);
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetObject(exception: *mut PyObject, value: *mut PyObject) {
     with_vm::<PyResult<Infallible>, _>(|vm| {

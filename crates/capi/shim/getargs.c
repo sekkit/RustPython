@@ -643,6 +643,18 @@ RP_EXPORT const char *Py_GetProgramFullPath(void) {
     return rp_va_get_program_full_path();
 }
 
+/* PyErr_GetHandledException / PyErr_SetHandledException (Python/errors.c) */
+extern void *rp_va_err_get_handled_exception(void);
+extern void rp_va_err_set_handled_exception(void *exception);
+
+RP_EXPORT void *PyErr_GetHandledException(void) {
+    return rp_va_err_get_handled_exception();
+}
+
+RP_EXPORT void PyErr_SetHandledException(void *exception) {
+    rp_va_err_set_handled_exception(exception);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
