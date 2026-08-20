@@ -636,6 +636,13 @@ UNICODE_CLASS_FUNC(PyUnicode_IsWhitespace)
 UNICODE_CONV_FUNC(PyUnicode_Tolower)
 UNICODE_CONV_FUNC(PyUnicode_Toupper)
 
+/* Py_GetProgramFullPath (Python/pylifecycle.c) */
+extern const char *rp_va_get_program_full_path(void);
+
+RP_EXPORT const char *Py_GetProgramFullPath(void) {
+    return rp_va_get_program_full_path();
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

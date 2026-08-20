@@ -173,6 +173,28 @@ pub extern "C" fn rp_va_get_program_name() -> *const c_char {
     program_name_cstr()
 }
 
+/// Rust implementation of the C shim's Py_GetProgramFullPath.
+/// Returns the full path of the running interpreter.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_get_program_full_path() -> *const c_char {
+    // Use the current executable path if available; otherwise fall back
+    // to the program name.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(s) = exe.to_str() {
+            if let Ok(c) = CString::new(s) {
+                let _ = FULL_PATH_CACHE.try_with(|p| *p.borrow_mut() = c);
+                return FULL_PATH_CACHE.try_with(|p| p.borrow().as_ptr()).unwrap_or(program_name_cstr());
+            }
+        }
+    }
+    program_name_cstr()
+}
+
+/// Thread-local cache for the program full path.
+std::thread_local! {
+    static FULL_PATH_CACHE: RefCell<CString> = RefCell::new(CString::new("").unwrap());
+}
+
 /// Rust implementation of the C shim's Py_SetProgramName.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rp_va_set_program_name(name: *const c_char) {
