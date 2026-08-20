@@ -893,6 +893,41 @@ pub unsafe extern "C" fn rp_va_unicode_find(
     })
 }
 
+/// Rust impl of PyUnicode_Splitlines: split a string into lines.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_splitlines(
+    obj: *mut PyObject,
+    keepends: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<rustpython_vm::PyObjectRef> {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Splitlines: string is not valid UTF-8")
+        })?;
+        let mut lines: Vec<String> = Vec::new();
+        if keepends != 0 {
+            // Keep line endings.
+            for chunk in s.split_inclusive('\n') {
+                lines.push(chunk.to_string());
+            }
+            // A trailing line without newline is included by split_inclusive.
+        } else {
+            // Drop line endings.
+            for line in s.split('\n') {
+                lines.push(line.to_string());
+            }
+            // Python's splitlines() drops a trailing empty element.
+            if lines.last().map(String::as_str) == Some("") {
+                lines.pop();
+            }
+        }
+        let items: Vec<rustpython_vm::PyObjectRef> = lines
+            .iter()
+            .map(|l| vm.ctx.new_str(l.clone()).into())
+            .collect();
+        Ok(vm.ctx.new_list(items).into())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};

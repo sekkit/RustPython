@@ -587,6 +587,13 @@ RP_EXPORT intptr_t PyUnicode_Find(void *obj, void *sub, intptr_t start, intptr_t
     return rp_va_unicode_find(obj, sub, start, end, direction);
 }
 
+/* PyUnicode_Splitlines (Objects/unicodeobject.c) */
+extern void *rp_va_unicode_splitlines(void *obj, int keepends);
+
+RP_EXPORT void *PyUnicode_Splitlines(void *obj, int keepends) {
+    return rp_va_unicode_splitlines(obj, keepends);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
