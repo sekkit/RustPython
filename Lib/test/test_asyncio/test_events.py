@@ -273,7 +273,6 @@ class EventLoopTestsMixin:
         support.gc_collect()
         super().tearDown()
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; - RuntimeWarning for unawaited coroutine not triggered
     def test_run_until_complete_nesting(self):
         async def coro1():
             await asyncio.sleep(0)
