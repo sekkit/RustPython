@@ -359,6 +359,35 @@ RP_EXPORT int PyModule_AddObject(void *module, const char *name, void *value) {
     return rp_va_module_add_object(module, name, value);
 }
 
+/* PySys_WriteStdout / PySys_WriteStderr (Python/sysmodule.c) — printf-style
+ * output to sys.stdout/sys.stderr. Variadic, so the C shim captures the args. */
+extern int rp_va_sys_write_stdout(const char *format, const uintptr_t *slots, int nslots);
+extern int rp_va_sys_write_stderr(const char *format, const uintptr_t *slots, int nslots);
+
+RP_EXPORT int PySys_WriteStdout(const char *format, ...) {
+    va_list ap;
+    uintptr_t slots[RP_MAX_SLOTS];
+    int n;
+    va_start(ap, format);
+    n = rp_count_printf_slots(format == NULL ? "" : format);
+    if (n > RP_MAX_SLOTS) { n = RP_MAX_SLOTS; }
+    for (int i = 0; i < n; i++) { slots[i] = va_arg(ap, uintptr_t); }
+    va_end(ap);
+    return rp_va_sys_write_stdout(format, slots, n);
+}
+
+RP_EXPORT int PySys_WriteStderr(const char *format, ...) {
+    va_list ap;
+    uintptr_t slots[RP_MAX_SLOTS];
+    int n;
+    va_start(ap, format);
+    n = rp_count_printf_slots(format == NULL ? "" : format);
+    if (n > RP_MAX_SLOTS) { n = RP_MAX_SLOTS; }
+    for (int i = 0; i < n; i++) { slots[i] = va_arg(ap, uintptr_t); }
+    va_end(ap);
+    return rp_va_sys_write_stderr(format, slots, n);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

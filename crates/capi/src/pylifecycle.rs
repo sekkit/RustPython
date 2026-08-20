@@ -204,6 +204,46 @@ pub unsafe extern "C" fn rp_va_run_string(
     })
 }
 
+/// Rust implementation of the C shim's PySys_WriteStdout.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_sys_write_stdout(
+    format: *const c_char,
+    slots: *const usize,
+    nslots: c_int,
+) -> c_int {
+    with_vm(|vm| -> PyResult<c_int> {
+        if format.is_null() {
+            return Err(vm.new_system_error("PySys_WriteStdout: NULL format"));
+        }
+        let format = unsafe { core::ffi::CStr::from_ptr(format) }.to_bytes();
+        let mut va = crate::arg::VaSlots::new(unsafe { core::slice::from_raw_parts(slots, nslots as usize) });
+        let message = crate::arg::format_message(vm, format, &mut va)?;
+        let stdout = vm.sys_module.get_attr("stdout", vm)?;
+        vm.call_method(&stdout, "write", vec![vm.ctx.new_str(message).into()])?;
+        Ok(0)
+    })
+}
+
+/// Rust implementation of the C shim's PySys_WriteStderr.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_sys_write_stderr(
+    format: *const c_char,
+    slots: *const usize,
+    nslots: c_int,
+) -> c_int {
+    with_vm(|vm| -> PyResult<c_int> {
+        if format.is_null() {
+            return Err(vm.new_system_error("PySys_WriteStderr: NULL format"));
+        }
+        let format = unsafe { core::ffi::CStr::from_ptr(format) }.to_bytes();
+        let mut va = crate::arg::VaSlots::new(unsafe { core::slice::from_raw_parts(slots, nslots as usize) });
+        let message = crate::arg::format_message(vm, format, &mut va)?;
+        let stderr = vm.sys_module.get_attr("stderr", vm)?;
+        vm.call_method(&stderr, "write", vec![vm.ctx.new_str(message).into()])?;
+        Ok(0)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;

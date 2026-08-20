@@ -60,13 +60,13 @@ fn cached_utf16(vm: &VirtualMachine, s: &PyStrRef) -> PyResult<*const libc::wcha
 type PyStrRef = rustpython_vm::PyRef<PyStr>;
 
 /// The snapshot of variadic slots handed over from the C shim.
-struct VaSlots<'a> {
+pub(crate) struct VaSlots<'a> {
     slots: &'a [usize],
     pos: usize,
 }
 
 impl<'a> VaSlots<'a> {
-    fn new(slots: &'a [usize]) -> Self {
+    pub(crate) fn new(slots: &'a [usize]) -> Self {
         Self { slots, pos: 0 }
     }
 
@@ -1731,7 +1731,7 @@ fn zero_extend(v: usize, length: &str) -> u64 {
 /// Format a message from a printf-style format string (PyErr_Format subset:
 /// s, d, i, u, o, x, X, c, p, R, S, U, T, A, V with l/ll/h/z/t/j length
 /// modifiers; width/precision are accepted and ignored).
-fn format_message(vm: &VirtualMachine, format: &[u8], slots: &mut VaSlots<'_>) -> PyResult<String> {
+pub(crate) fn format_message(vm: &VirtualMachine, format: &[u8], slots: &mut VaSlots<'_>) -> PyResult<String> {
     let mut out = String::new();
     let mut i = 0usize;
     while i < format.len() {
