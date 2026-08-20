@@ -1208,20 +1208,24 @@ pub struct Py_complex {
 enum Group {
     Tuple(Vec<PyObjectRef>),
     List(Vec<PyObjectRef>),
-    Dict(Vec<(PyObjectRef, PyObjectRef)>),
+    /// Dict: with a ':' separator the items are split keys|values and zipped;
+    /// without one, items are alternating key/value pairs (CPython semantics).
+    Dict {
+        items: Vec<PyObjectRef>,
+        in_values: bool,
+        saw_separator: bool,
+    },
 }
 
 fn push_to_group(group: &mut Group, value: PyObjectRef, vm: &VirtualMachine) {
     match group {
         Group::Tuple(items) | Group::List(items) => items.push(value),
-        Group::Dict(pairs) => {
-            if pairs.len() % 2 == 1 {
-                if let Some((_, v)) = pairs.last_mut() {
-                    *v = value;
-                }
-            } else {
-                pairs.push((value, vm.ctx.none()));
-            }
+        Group::Dict { items, in_values, .. } => {
+            // Only route through the values list when a ':' separator was seen;
+            // otherwise items form alternating key/value pairs.
+            let _ = in_values;
+            items.push(value);
+            let _ = vm;
         }
     }
 }
@@ -1241,7 +1245,7 @@ fn build_value(vm: &VirtualMachine, format: &[u8], slots: &mut VaSlots<'_>) -> P
                 } else if code == b'[' {
                     Group::List(Vec::new())
                 } else {
-                    Group::Dict(Vec::new())
+                    Group::Dict { items: Vec::new(), in_values: false, saw_separator: false }
                 };
                 stack.push(g);
                 i += 1;
@@ -1253,10 +1257,30 @@ fn build_value(vm: &VirtualMachine, format: &[u8], slots: &mut VaSlots<'_>) -> P
                 let value = match g {
                     Group::Tuple(items) => vm.ctx.new_tuple(items).into(),
                     Group::List(items) => vm.ctx.new_list(items).into(),
-                    Group::Dict(pairs) => {
+                    Group::Dict { items, saw_separator, .. } => {
                         let d = vm.ctx.new_dict();
-                        for (k, v) in pairs {
-                            d.set_item(&*k, v, vm)?;
+                        let n = items.len();
+                        if saw_separator {
+                            // keys | values, zipped positionally.
+                            if n % 2 != 0 {
+                                return Err(vm.new_system_error(
+                                    "Py_BuildValue: dict format has odd number of items",
+                                ));
+                            }
+                            let (keys, values) = items.split_at(n / 2);
+                            for (k, v) in keys.iter().zip(values) {
+                                d.set_item(&**k, v.clone(), vm)?;
+                            }
+                        } else {
+                            // Alternating key/value pairs.
+                            if n % 2 != 0 {
+                                return Err(vm.new_system_error(
+                                    "Py_BuildValue: dict format has odd number of items",
+                                ));
+                            }
+                            for pair in items.chunks_exact(2) {
+                                d.set_item(&*pair[0], pair[1].clone(), vm)?;
+                            }
                         }
                         d.into()
                     }
@@ -1268,7 +1292,15 @@ fn build_value(vm: &VirtualMachine, format: &[u8], slots: &mut VaSlots<'_>) -> P
                 }
                 i += 1;
             }
-            b':' | b';' | b',' => i += 1, // separators / funcname marker: no slot
+            b':' => {
+                // Inside a dict group, ':' switches from keys to values.
+                if let Some(Group::Dict { in_values, saw_separator, .. }) = stack.last_mut() {
+                    *in_values = true;
+                    *saw_separator = true;
+                }
+                i += 1;
+            }
+            b';' | b',' => i += 1, // separators / funcname marker: no slot
             _ => {
                 let value = build_one(vm, code, &format[i..], slots)?;
                 if let Some(top_group) = stack.last_mut() {
