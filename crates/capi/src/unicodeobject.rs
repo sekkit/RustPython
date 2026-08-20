@@ -321,6 +321,29 @@ pub unsafe extern "C" fn PyUnicode_GetLength(unicode: *mut PyObject) -> isize {
     })
 }
 
+/// PyUnicode_Resize: resize a unicode string to `newsize` characters.
+/// Since RustPython strings are immutable, replaces the object with a
+/// zero-padded string of the new length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_Resize(
+    unicode: *mut *mut PyObject,
+    newsize: isize,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if unicode.is_null() || unsafe { (*unicode).is_null() } {
+            return Err(vm.new_system_error("PyUnicode_Resize called with NULL"));
+        }
+        let newlen: usize = newsize
+            .try_into()
+            .map_err(|_| vm.new_system_error("PyUnicode_Resize: negative size"))?;
+        let new_str: rustpython_vm::PyObjectRef = vm.ctx.new_str("\0".repeat(newlen)).into();
+        let old = unsafe { PyObjectRef::from_raw(core::ptr::NonNull::new_unchecked(*unicode)) };
+        let _ = old;
+        unsafe { *unicode = new_str.into_raw().as_ptr() };
+        Ok(0)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_GetDefaultEncoding() -> *const c_char {
     c"utf-8".as_ptr()

@@ -102,6 +102,26 @@ pub unsafe extern "C" fn PyDict_GetItemString(
     })
 }
 
+/// PyDict_SetDefault: if key exists, return its value (borrowed). Otherwise,
+/// insert the default value and return it (owned). Same as dict.setdefault.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDict_SetDefault(
+    dict: *mut PyObject,
+    key: *mut PyObject,
+    default_value: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let dict = unsafe { &*dict }.try_downcast_ref::<PyDict>(vm)?;
+        let key = unsafe { &*key };
+        let default_value = unsafe { &*default_value }.to_owned();
+        if let Some(existing) = dict.inner_getitem_opt(key, vm)? {
+            return Ok(existing.into_raw().as_ptr());
+        }
+        dict.inner_setitem(key, default_value.clone(), vm)?;
+        Ok(default_value.into_raw().as_ptr())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_GetItemStringRef(
     dict: *mut PyObject,

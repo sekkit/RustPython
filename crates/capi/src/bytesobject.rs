@@ -1,7 +1,8 @@
 use crate::object::define_py_check;
 use crate::{PyObject, pystate::with_vm};
-use core::ffi::c_char;
+use core::ffi::{c_char, c_int};
 use rustpython_vm::builtins::PyBytes;
+use rustpython_vm::PyObjectRef;
 
 define_py_check!(fn PyBytes_Check, types.bytes_type);
 define_py_check!(exact fn PyBytes_CheckExact, types.bytes_type);
@@ -61,6 +62,27 @@ pub unsafe extern "C" fn PyBytes_GET_SIZE(bytes: *mut PyObject) -> isize {
     with_vm(|vm| {
         let bytes = unsafe { &*bytes }.try_downcast_ref::<PyBytes>(vm)?;
         Ok(bytes.as_bytes().len())
+    })
+}
+
+/// PyBytes_Resize: resize a bytes object to `newsize` bytes.
+/// Since RustPython bytes are immutable, we replace the object with a
+/// zero-initialized bytes of the new size (matching the observable
+/// behavior of CPython's resize-for-writing path).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyBytes_Resize(bytes: *mut *mut PyObject, newsize: isize) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if bytes.is_null() || unsafe { (*bytes).is_null() } {
+            return Err(vm.new_system_error("PyBytes_Resize called with NULL bytes"));
+        }
+        let newlen: usize = newsize
+            .try_into()
+            .map_err(|_| vm.new_system_error("PyBytes_Resize: negative size"))?;
+        let new_bytes: PyObjectRef = vm.ctx.new_bytes(vec![0u8; newlen]).into();
+        let old = unsafe { PyObjectRef::from_raw(core::ptr::NonNull::new_unchecked(*bytes)) };
+        let _ = old; // drop the old object reference
+        unsafe { *bytes = new_bytes.into_raw().as_ptr() };
+        Ok(0)
     })
 }
 
