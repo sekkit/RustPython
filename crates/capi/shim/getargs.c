@@ -573,6 +573,13 @@ RP_EXPORT void *PyErr_SetImportError(void *msg, void *name, void *path) {
     return rp_va_err_set_import_error(msg, name, path);
 }
 
+/* PyUnicode_Count (Objects/unicodeobject.c) */
+extern intptr_t rp_va_unicode_count(void *obj, void *sub, intptr_t start, intptr_t end);
+
+RP_EXPORT intptr_t PyUnicode_Count(void *obj, void *sub, intptr_t start, intptr_t end) {
+    return rp_va_unicode_count(obj, sub, start, end);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

@@ -821,6 +821,35 @@ pub unsafe extern "C" fn rp_va_unicode_replace(
     })
 }
 
+/// Rust impl of PyUnicode_Count: count occurrences of a substring.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_count(
+    obj: *mut PyObject,
+    sub: *mut PyObject,
+    start: isize,
+    end: isize,
+) -> isize {
+    with_vm(|vm| -> rustpython_vm::PyResult<isize> {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Count: string is not valid UTF-8")
+        })?;
+        let sub_s = unsafe { &*sub }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Count: substring is not valid UTF-8")
+        })?;
+        let len = s.chars().count() as isize;
+        let start = if start < 0 { (len + start).max(0) } else { start.min(len) };
+        let end = if end < 0 { (len + end).max(0) } else { end.min(len) };
+        if start >= end || sub_s.is_empty() {
+            return Ok(0);
+        }
+        // Convert byte indices to char indices.
+        let start_byte = s.chars().take(start as usize).map(|c| c.len_utf8()).sum::<usize>();
+        let end_byte = s.chars().take(end as usize).map(|c| c.len_utf8()).sum::<usize>();
+        let sub_str = &s[start_byte..end_byte];
+        Ok(sub_str.matches(sub_s).count() as isize)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
