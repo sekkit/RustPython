@@ -4,7 +4,7 @@ use crate::pystate::{ensure_thread_has_vm_attached, with_vm};
 use crate::util::CStrExt;
 use crate::PyObject;
 use alloc::ffi::CString;
-use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
+use core::ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void};
 use core::sync::atomic::{AtomicPtr, Ordering};
 use rustpython_vm::common::rc::PyRc;
 use rustpython_vm::stdlib::sys;

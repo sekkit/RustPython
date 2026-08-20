@@ -8,6 +8,7 @@ use rustpython_vm::builtins::{PyStr, object_generic_set_dict, object_get_dict};
 use rustpython_vm::bytecode::ComparisonOperator;
 use rustpython_vm::function::PySetterValue;
 use rustpython_vm::types::{PyComparisonOp, hash_not_implemented};
+use rustpython_vm::{PyObjectRef};
 use rustpython_vm::{AsObject, PyPayload, PyResult, VirtualMachine};
 
 pub mod pytype;
@@ -60,7 +61,19 @@ pub extern "C" fn Py_GetConstantBorrowed(constant_id: c_uint) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Py_GetConstant(constant_id: c_uint) -> *mut PyObject {
-    with_vm(|vm| get_constant(vm, constant_id).map(ToOwned::to_owned))
+    with_vm(|vm| {
+        // Handle extra constants (5-9) that need owned objects.
+        let obj: PyObjectRef = match constant_id {
+            0..=4 => get_constant(vm, constant_id)?.to_owned().into(),
+            5 => vm.ctx.new_int(0).into(),          // Py_CONSTANT_ZERO
+            6 => vm.ctx.new_int(1).into(),          // Py_CONSTANT_ONE
+            7 => vm.ctx.empty_str.to_owned().into(),// Py_CONSTANT_EMPTY_STR
+            8 => vm.ctx.new_bytes(vec![]).into(),   // Py_CONSTANT_EMPTY_BYTES
+            9 => vm.ctx.new_tuple(vec![]).into(),   // Py_CONSTANT_EMPTY_TUPLE
+            _ => return Err(vm.new_system_error("Invalid constant ID")),
+        };
+        Ok(obj.into_raw().as_ptr())
+    })
 }
 
 #[unsafe(no_mangle)]
