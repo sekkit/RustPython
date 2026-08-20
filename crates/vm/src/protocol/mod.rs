@@ -8,7 +8,7 @@ mod sequence;
 
 pub use buffer::{
     BufferDescriptor, BufferMethods, BufferResizeGuard, CBufferSlots, CPyBuffer, PyBuffer,
-    VecBuffer,
+    VecBuffer, pybuffer_from_c_view,
 };
 pub(crate) use buffer::CExportedBuffer;
 pub use callable::PyCallable;

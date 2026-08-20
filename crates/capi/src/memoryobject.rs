@@ -1,7 +1,9 @@
+use crate::buffer::Py_buffer;
 use crate::object::define_py_check;
 use crate::{PyObject, pystate::with_vm};
 use rustpython_vm::PyPayload;
 use rustpython_vm::builtins::PyMemoryView;
+use rustpython_vm::protocol::{CPyBuffer, pybuffer_from_c_view};
 
 define_py_check!(fn PyMemoryView_Check, types.memoryview_type);
 
@@ -12,6 +14,27 @@ pub unsafe extern "C" fn PyMemoryView_FromObject(obj: *mut PyObject) -> *mut PyO
         Ok(PyMemoryView::from_object(obj, vm)?.into_ref(&vm.ctx))
     })
 }
+
+/// PyMemoryView_FromBuffer: create a memoryview from a `Py_buffer`. Takes
+/// ownership of `view->obj`; the caller must not release `view` afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMemoryView_FromBuffer(view: *mut Py_buffer) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        if view.is_null() {
+            return Err(vm.new_system_error("PyMemoryView_FromBuffer called with NULL view"));
+        }
+        let cview = unsafe { core::ptr::read(view as *const CPyBuffer) };
+        let buf = pybuffer_from_c_view(cview, vm)?;
+        let mv = PyMemoryView::from_buffer(buf, vm)?;
+        let mv_ref: rustpython_vm::PyObjectRef = mv.into_ref(&vm.ctx).into();
+        Ok(mv_ref.into_raw().as_ptr())
+    })
+}
+
+// Anchor so the linker keeps PyMemoryView_FromBuffer in the export table.
+#[used]
+static PY_MEMORYVIEW_FROM_BUFFER_ANCHOR: unsafe extern "C" fn(*mut Py_buffer) -> *mut PyObject =
+    PyMemoryView_FromBuffer;
 
 #[cfg(test)]
 mod tests {

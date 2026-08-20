@@ -571,7 +571,7 @@ impl CExportedBuffer {
     /// Wrap a C-exported `Py_buffer` (already filled by the exporter's
     /// `getbufferproc`) into a Rust `PyBuffer`. Takes ownership of the
     /// `view.obj` reference.
-    fn into_pybuffer(view: CPyBuffer, vm: &VirtualMachine) -> PyResult<PyBuffer> {
+    pub fn into_pybuffer(view: CPyBuffer, vm: &VirtualMachine) -> PyResult<PyBuffer> {
         let buf = NonNull::new(view.buf.cast::<u8>())
             .ok_or_else(|| vm.new_buffer_error("C buffer has a NULL data pointer"))?;
         if view.obj.is_null() {
@@ -660,4 +660,11 @@ pub(crate) fn try_c_buffer(obj: &PyObject, vm: &VirtualMachine) -> Option<PyResu
         return Some(Err(vm.new_buffer_error("C exporter's getbuffer() failed")));
     }
     Some(CExportedBuffer::into_pybuffer(view, vm))
+}
+
+/// Convert a C-API `Py_buffer` (mirrored as `CPyBuffer`) into a Rust `PyBuffer`.
+/// Takes ownership of the `view.obj` reference. The caller should not release
+/// or reuse the original `Py_buffer` after this call.
+pub fn pybuffer_from_c_view(view: CPyBuffer, vm: &VirtualMachine) -> PyResult<PyBuffer> {
+    CExportedBuffer::into_pybuffer(view, vm)
 }
