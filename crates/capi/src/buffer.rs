@@ -279,19 +279,55 @@ pub unsafe extern "C" fn PyBuffer_ToContiguous(
 ) -> c_int {
     let src = unsafe { &*src };
     let ndim = src.ndim as usize;
-    if ndim <= 1 || (ndim > 0 && src.strides.is_null()) {
-        // 1-D or no strides: simple memcpy.
-        let copy_len = len.min(src.len) as usize;
+    let itemsize = if src.itemsize > 0 { src.itemsize as usize } else { 1 };
+    let copy_len = (len.min(src.len).max(0) as usize) / itemsize;
+
+    if ndim <= 1 || src.strides.is_null() {
+        // 1-D or no strides: simple copy.
+        let bytes = copy_len * itemsize;
         unsafe {
-            core::ptr::copy_nonoverlapping(src.buf.cast::<u8>(), dst.cast::<u8>(), copy_len);
+            core::ptr::copy_nonoverlapping(src.buf.cast::<u8>(), dst.cast::<u8>(), bytes);
         }
         return 0;
     }
-    // N-D with strides: use the VM's buffer descriptor logic.
-    // For now, just do a linear copy (handles contiguous and simple cases).
-    let copy_len = len.min(src.len) as usize;
-    unsafe {
-        core::ptr::copy_nonoverlapping(src.buf.cast::<u8>(), dst.cast::<u8>(), copy_len);
+
+    // N-D with strides: walk the logical elements in the requested order.
+    let shape = unsafe { core::slice::from_raw_parts(src.shape, ndim) };
+    let strides = unsafe { core::slice::from_raw_parts(src.strides, ndim) };
+    let f_order = order as u8 as char == 'F';
+
+    let mut indices = vec![0isize; ndim];
+    let src_base = src.buf.cast::<u8>();
+    let dst_base = dst.cast::<u8>();
+    let mut copied = 0usize;
+    loop {
+        // Compute the byte offset for the current index vector.
+        let mut src_off = 0isize;
+        for (i, &idx) in indices.iter().enumerate() {
+            src_off += strides[i] * idx;
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(src_base.offset(src_off), dst_base.add(copied * itemsize), itemsize);
+        }
+        copied += 1;
+        if copied >= copy_len {
+            break;
+        }
+        // Advance the index vector (dim 0 fastest for F, last dim fastest for C).
+        let first = if f_order { 0 } else { ndim - 1 };
+        let step = if f_order { 1 } else { -1 };
+        let mut d = first;
+        loop {
+            indices[d] += step;
+            if indices[d] >= 0 && indices[d] < shape[d] {
+                break;
+            }
+            indices[d] = 0;
+            if (f_order && d + 1 >= ndim) || (!f_order && d == 0) {
+                return 0; // wrapped past the end
+            }
+            d = (d as isize + step) as usize;
+        }
     }
     0
 }
