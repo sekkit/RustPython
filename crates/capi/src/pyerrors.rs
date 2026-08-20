@@ -420,6 +420,20 @@ pub extern "C" fn PyErr_PrintEx(_set_sys_last_vars: c_int) {
     })
 }
 
+/// Rust impl of PyErr_Display: print an exception with its traceback.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_display(exception: *mut PyObject) {
+    with_vm(|vm| {
+        if exception.is_null() {
+            return;
+        }
+        let exc = unsafe { &*exception }.to_owned();
+        if let Ok(exc) = exc.downcast::<rustpython_vm::builtins::PyBaseException>() {
+            vm.print_exception(exc);
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_DisplayException(exc: *mut PyObject) {
     with_vm(|vm| {
