@@ -3,7 +3,7 @@ use crate::{PyObject, pystate::with_vm};
 use bitflags::bitflags;
 use core::ffi::{CStr, c_char, c_double, c_int, c_long, c_longlong, c_ulong, c_ulonglong, c_void};
 use malachite_bigint::{BigInt, Sign};
-use rustpython_vm::builtins::{PyInt, try_bigint_to_f64, try_f64_to_bigint};
+use rustpython_vm::builtins::{PyInt, PyStr, try_bigint_to_f64, try_f64_to_bigint};
 use rustpython_vm::common::int::bytes_to_int;
 use rustpython_vm::protocol::handle_bytes_to_int_err;
 use rustpython_vm::{AsObject, PyResult, VirtualMachine};
@@ -178,6 +178,26 @@ pub unsafe extern "C" fn PyLong_FromString(
             unsafe { *pend = bytes.as_ptr().add(end_offset).cast_mut().cast() };
         }
 
+        parsed.map_err(|err| {
+            let obj = vm.ctx.new_bytes(bytes.to_vec());
+            handle_bytes_to_int_err(err, obj.as_object(), vm)
+        })
+    })
+}
+
+/// PyLong_FromUnicodeObject: convert a unicode string to a Python int.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_FromUnicodeObject(
+    obj: *mut PyObject,
+    base: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyLong_FromUnicodeObject: string is not valid UTF-8")
+        })?;
+        let bytes = s.as_bytes();
+        let parsed = bytes_to_int(bytes, base as u32, vm.state.int_max_str_digits.load())
+            .map(|value| vm.ctx.new_bigint(&value));
         parsed.map_err(|err| {
             let obj = vm.ctx.new_bytes(bytes.to_vec());
             handle_bytes_to_int_err(err, obj.as_object(), vm)

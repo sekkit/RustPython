@@ -64,6 +64,19 @@ pub unsafe extern "C" fn PyBytes_GET_SIZE(bytes: *mut PyObject) -> isize {
     })
 }
 
+/// PyBytes_FromObject: convert any object to bytes (calls bytes(obj)).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyBytes_FromObject(obj: *mut PyObject) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let obj = unsafe { &*obj };
+        let result = vm.call_method(obj, "__bytes__", ())?;
+        if result.downcast_ref::<PyBytes>().is_none() {
+            return Err(vm.new_type_error("__bytes__ returned non-bytes type"));
+        }
+        Ok(result.into_raw().as_ptr())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;
