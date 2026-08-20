@@ -41,6 +41,32 @@ pub unsafe extern "C" fn PyList_GetItemRef(obj: *mut PyObject, index: isize) -> 
     })
 }
 
+/// PyList_GetItem: return a *borrowed* reference to the item at `index`.
+/// The caller must not decref the result, and must not use it after the
+/// list is modified (same contract as CPython).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_GetItem(obj: *mut PyObject, index: isize) -> *mut PyObject {
+    with_vm(|vm| {
+        let list = unsafe { &*obj }.try_downcast_ref::<PyList>(vm)?;
+        let index: usize = index
+            .try_into()
+            .ok()
+            .ok_or_else(|| vm.new_index_error(format!("list index out of range: {index}")))?;
+        let ptr = {
+            let vec = list.borrow_vec();
+            let item = vec
+                .get(index)
+                .ok_or_else(|| vm.new_index_error(format!("list index out of range: {index}")))?;
+            // Borrowed reference: return the raw pointer without incref.
+            // The list's vector storage outlives the read lock, so the
+            // pointer stays valid until the list is mutated (CPython
+            // contract for borrowed references).
+            item.as_object().as_raw().cast_mut()
+        };
+        Ok(ptr)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_SetItem(
     list: *mut PyObject,
@@ -164,6 +190,11 @@ pub unsafe extern "C" fn PyList_Sort(list: *mut PyObject) -> c_int {
         Ok(())
     })
 }
+
+// Anchor so the linker keeps PyList_GetItem in the export table.
+#[used]
+static PY_LIST_GETITEM_ANCHOR: unsafe extern "C" fn(*mut PyObject, isize) -> *mut PyObject =
+    PyList_GetItem;
 
 #[cfg(test)]
 mod tests {
