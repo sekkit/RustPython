@@ -363,6 +363,32 @@ pub unsafe extern "C" fn PyObject_Dir(obj: *mut PyObject) -> *mut PyObject {
     })
 }
 
+/// PyObject_LengthHint: return an estimate of the object's length.
+/// Returns the length hint, or `defaultvalue` if the object doesn't
+/// provide __length_hint__ or __len__.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_LengthHint(
+    obj: *mut PyObject,
+    defaultvalue: isize,
+) -> isize {
+    with_vm(|vm| {
+        let obj = unsafe { &*obj };
+        // Try __length_hint__() first.
+        if let Ok(hint) = vm.call_method(obj, "__length_hint__", ()) {
+            if let Some(n) = hint.downcast_ref::<rustpython_vm::builtins::PyInt>() {
+                if let Ok(v) = n.try_to_primitive::<isize>(vm) {
+                    return Ok(v);
+                }
+            }
+        }
+        // Fall back to len().
+        if let Ok(length) = obj.length(vm) {
+            return Ok(length as isize);
+        }
+        Ok(defaultvalue)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_IsTrue(obj: *mut PyObject) -> c_int {
     with_vm(|vm| {
