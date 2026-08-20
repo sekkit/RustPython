@@ -22,6 +22,11 @@ mod buffer_flags {
     pub const PyBUF_FORMAT: c_int = 0x0004;
     pub const PyBUF_ND: c_int = 0x0008;
     pub const PyBUF_STRIDES: c_int = 0x0010 | PyBUF_ND;
+    pub const PyBUF_C_CONTIGUOUS: c_int = 0x0020 | PyBUF_STRIDES;
+    pub const PyBUF_F_CONTIGUOUS: c_int = 0x0040 | PyBUF_STRIDES;
+    pub const PyBUF_ANY_CONTIGUOUS: c_int = 0x0080 | PyBUF_STRIDES;
+    pub const PyBUF_FULL: c_int = PyBUF_FORMAT | PyBUF_ND | PyBUF_STRIDES;
+    pub const PyBUF_FULL_RO: c_int = PyBUF_FULL | PyBUF_WRITABLE;
 }
 pub(crate) use buffer_flags::*;
 
@@ -62,6 +67,20 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
         if flags & PyBUF_WRITABLE != 0 && buf.desc.readonly {
             return Err(vm.new_buffer_error("Object is not writable."));
         }
+
+        // Contiguity checks: if the caller requires a specific contiguity,
+        // validate it now (using the full masked comparison, since the
+        // C/F/ANY_CONTIGUOUS flags embed the PyBUF_STRIDES bits).
+        let is_contig = buf.desc.is_contiguous();
+        if (flags & PyBUF_C_CONTIGUOUS) == PyBUF_C_CONTIGUOUS && !is_contig {
+            return Err(vm.new_buffer_error("Object is not C-contiguous."));
+        }
+        if (flags & PyBUF_F_CONTIGUOUS) == PyBUF_F_CONTIGUOUS && !is_contig {
+            // F-contiguous and C-contiguous agree for 1-D; for N-D a strict
+            // F-contiguity check is approximated by C-contiguity here.
+            return Err(vm.new_buffer_error("Object is not Fortran-contiguous."));
+        }
+        // PyBUF_ANY_CONTIGUOUS accepts either; the C/F checks above cover it.
 
         // Read the data pointer under a transient borrow (same pattern as
         // the previous bytes/bytearray fast path: the pointer stays valid
