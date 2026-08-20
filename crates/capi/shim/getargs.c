@@ -458,6 +458,21 @@ RP_EXPORT int Py_AtExit(void (*func)(void)) {
     return rp_va_atexit(func);
 }
 
+/* PyBytes_FromFormat (Objects/bytesobject.c) — create bytes from printf format. */
+extern void *rp_va_bytes_from_format(const char *format, const uintptr_t *slots, int nslots);
+
+RP_EXPORT void *PyBytes_FromFormat(const char *format, ...) {
+    va_list ap;
+    uintptr_t slots[RP_MAX_SLOTS];
+    int n;
+    va_start(ap, format);
+    n = rp_count_printf_slots(format == NULL ? "" : format);
+    if (n > RP_MAX_SLOTS) { n = RP_MAX_SLOTS; }
+    for (int i = 0; i < n; i++) { slots[i] = va_arg(ap, uintptr_t); }
+    va_end(ap);
+    return rp_va_bytes_from_format(format, slots, n);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

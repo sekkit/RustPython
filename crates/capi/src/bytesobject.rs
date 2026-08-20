@@ -99,6 +99,25 @@ pub unsafe extern "C" fn PyBytes_FromObject(obj: *mut PyObject) -> *mut PyObject
     })
 }
 
+/// Rust implementation of the C shim's PyBytes_FromFormat.
+/// Creates a bytes object from a printf-style format string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_bytes_from_format(
+    format: *const c_char,
+    slots: *const usize,
+    nslots: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<PyObjectRef> {
+        if format.is_null() {
+            return Err(vm.new_system_error("PyBytes_FromFormat called with NULL format"));
+        }
+        let format = unsafe { core::ffi::CStr::from_ptr(format) }.to_bytes();
+        let mut va = crate::arg::VaSlots::new(unsafe { core::slice::from_raw_parts(slots, nslots as usize) });
+        let message = crate::arg::format_message(vm, format, &mut va)?;
+        Ok(vm.ctx.new_bytes(message.into_bytes()).into())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;
