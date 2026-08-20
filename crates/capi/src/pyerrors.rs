@@ -112,9 +112,9 @@ pub extern "C" fn PyErr_Occurred() -> *mut PyObject {
 /// PyErr_NoMemory: set the current exception to MemoryError.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_NoMemory() {
-    with_vm::<PyResult<Infallible>, _>(|vm| {
-        let exc = vm.invoke_exception(vm.ctx.exceptions.memory_error, vec![])?;
-        Err(exc)
+    with_vm(|vm| {
+        let exc = vm.new_exception_empty(vm.ctx.exceptions.memory_error.to_owned());
+        vm.set_exception(Some(exc));
     })
 }
 
