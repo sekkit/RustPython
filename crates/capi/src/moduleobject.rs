@@ -5,6 +5,7 @@ use crate::pystate::with_vm;
 use crate::util::CStrExt;
 use alloc::ffi::CString;
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+use core::ptr::NonNull;
 use std::cell::RefCell;
 use rustpython_vm::builtins::{PyModule, PyStr, PyTuple, PyType};
 use rustpython_vm::{AsObject, PyObjectRef, PyResult, VirtualMachine};
@@ -695,6 +696,28 @@ pub unsafe extern "C" fn PyModule_AddObjectRef(
         let module = unsafe { &*module }.to_owned();
         let name = unsafe { name.try_as_str(vm) }?;
         let value = unsafe { &*value }.to_owned();
+        module.set_attr(name, value, vm)?;
+        Ok(0)
+    })
+}
+
+/// PyModule_AddObject: add an object to a module, STEALING the reference
+/// (the caller must not use the value afterwards). Matches CPython's
+/// PyModule_AddObject which steals the reference.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_module_add_object(
+    module: *mut PyObject,
+    name: *const c_char,
+    value: *mut PyObject,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if name.is_null() || value.is_null() {
+            return Err(vm.new_system_error("Bad internal call"));
+        }
+        let module = unsafe { &*module }.to_owned();
+        let name = unsafe { name.try_as_str(vm) }?;
+        // Steal the reference (from_raw takes ownership, no incref).
+        let value = unsafe { rustpython_vm::PyObjectRef::from_raw(core::ptr::NonNull::new_unchecked(value)) };
         module.set_attr(name, value, vm)?;
         Ok(0)
     })

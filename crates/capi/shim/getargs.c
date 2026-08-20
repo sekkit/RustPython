@@ -352,6 +352,13 @@ RP_EXPORT void Py_Exit(int status) {
     rp_va_exit(status);
 }
 
+/* PyModule_AddObject (Objects/moduleobject.c) — steal reference variant. */
+extern int rp_va_module_add_object(void *module, const char *name, void *value);
+
+RP_EXPORT int PyModule_AddObject(void *module, const char *name, void *value) {
+    return rp_va_module_add_object(module, name, value);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
