@@ -248,19 +248,12 @@ pub unsafe extern "C" fn PyObject_HasAttrString(
     obj: *mut PyObject,
     attr_name: *const c_char,
 ) -> c_int {
-    with_vm(|vm| {
+    with_vm(|vm| -> rustpython_vm::PyResult<bool> {
         let obj = unsafe { &*obj };
-        let Ok(name) = (unsafe { attr_name.try_as_str(vm) }) else {
-            return false;
-        };
-
-        match obj.has_attr(name, vm) {
-            Ok(has_attr) => has_attr,
-            Err(err) => {
-                vm.run_unraisable(err, None, obj.to_owned());
-                false
-            }
-        }
+        let name = unsafe { attr_name.try_as_str(vm) }?;
+        // get_attribute_opt returns None for a missing attribute without
+        // raising an unraisable warning (matching CPython's HasAttr behavior).
+        Ok(vm.get_attribute_opt(obj.to_owned(), name)?.is_some())
     })
 }
 
