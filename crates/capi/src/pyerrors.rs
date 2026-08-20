@@ -454,7 +454,57 @@ pub extern "C" fn rp_va_err_set_interrupt_ex(_signum: c_int) {
     })
 }
 
-/// Rust impl of PyErr_WarnFormat: issue a warning with printf-style format.
+/// Rust impl of PyErr_SetFromErrno: set an OSError based on errno.
+/// Returns NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_from_errno(
+    exception: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let errno_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        let exc_type = if exception.is_null() {
+            vm.ctx.exceptions.os_error.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        let exc = vm.new_exception_msg(exc_type, format!("[Errno {errno_val}] {}", std::io::Error::last_os_error()).into());
+        vm.set_exception(Some(exc));
+        Ok(core::ptr::null_mut())
+    })
+}
+
+/// Rust impl of PyErr_SetFromErrnoWithFilename: set OSError with filename.
+/// Returns NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename(
+    exception: *mut PyObject,
+    filename: *const c_char,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let errno_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        let exc_type = if exception.is_null() {
+            vm.ctx.exceptions.os_error.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        let filename_str = if filename.is_null() {
+            None
+        } else {
+            Some(unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or(""))
+        };
+        let msg = if let Some(fname) = filename_str {
+            format!("[Errno {errno_val}] {}: '{}'", std::io::Error::last_os_error(), fname)
+        } else {
+            format!("[Errno {errno_val}] {}", std::io::Error::last_os_error())
+        };
+        let exc = vm.new_exception_msg(exc_type, msg.into());
+        if let Some(fname) = filename_str {
+            let _ = exc.as_object().set_attr("filename", vm.ctx.new_str(fname), vm);
+        }
+        vm.set_exception(Some(exc));
+        Ok(core::ptr::null_mut())
+    })
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rp_va_err_warn_format(
     exception: *mut PyObject,

@@ -731,6 +731,18 @@ RP_EXPORT char *Py_EncodeLocale(const wchar_t *wstr, size_t *size, int *exceptio
     return (char *)rp_va_encode_locale(wstr, size, exception);
 }
 
+/* PyErr_SetFromErrno / PyErr_SetFromErrnoWithFilename (Python/errors.c) */
+extern void *rp_va_err_set_from_errno(void *exception);
+extern void *rp_va_err_set_from_errno_with_filename(void *exception, const char *filename);
+
+RP_EXPORT void *PyErr_SetFromErrno(void *exception) {
+    return rp_va_err_set_from_errno(exception);
+}
+
+RP_EXPORT void *PyErr_SetFromErrnoWithFilename(void *exception, const char *filename) {
+    return rp_va_err_set_from_errno_with_filename(exception, filename);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
