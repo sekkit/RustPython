@@ -85,6 +85,19 @@ pub unsafe extern "C" fn PyCapsule_SetPointer(
     })
 }
 
+/// Rust implementation of the C shim's PyCapsule_GetDestructor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_capsule_get_destructor(
+    capsule: *mut PyObject,
+) -> *mut c_void {
+    with_vm(|vm| {
+        let capsule = unsafe { &*capsule }
+            .downcast_ref_if_exact::<PyCapsule>(vm)
+            .ok_or_else(|| vm.new_value_error("Invalid capsule"))?;
+        Ok(capsule.destructor().map_or(core::ptr::null_mut(), |d| d as *mut c_void))
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const c_char) -> c_int {
     with_vm(|vm| {

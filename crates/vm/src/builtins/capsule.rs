@@ -62,7 +62,7 @@ impl PyCapsule {
         self.name
     }
 
-    fn destructor(&self) -> Option<unsafe extern "C" fn(_: *mut PyObject)> {
+    pub fn destructor(&self) -> Option<unsafe extern "C" fn(_: *mut PyObject)> {
         self.destructor
     }
 }

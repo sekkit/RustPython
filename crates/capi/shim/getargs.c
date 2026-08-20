@@ -458,6 +458,13 @@ RP_EXPORT int Py_AtExit(void (*func)(void)) {
     return rp_va_atexit(func);
 }
 
+/* PyCapsule_GetDestructor (Objects/capsule.c) */
+extern void *rp_va_capsule_get_destructor(void *capsule);
+
+RP_EXPORT void *PyCapsule_GetDestructor(void *capsule) {
+    return rp_va_capsule_get_destructor(capsule);
+}
+
 /* PyBytes_FromFormat (Objects/bytesobject.c) — create bytes from printf format. */
 extern void *rp_va_bytes_from_format(const char *format, const uintptr_t *slots, int nslots);
 
