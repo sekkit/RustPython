@@ -662,6 +662,17 @@ RP_EXPORT int PyErr_ResourceWarning(void *source, void *warning) {
     return rp_va_err_resource_warning(source, warning);
 }
 
+/* PyErr_SyntaxLocation / PyErr_SyntaxLocationEx (Python/errors.c) */
+extern void rp_va_err_syntax_location_ex(void *exception, const char *filename, int lineno, int col_offset);
+
+RP_EXPORT void PyErr_SyntaxLocationEx(const char *filename, int lineno, int col_offset) {
+    rp_va_err_syntax_location_ex(NULL, filename, lineno, col_offset);
+}
+
+RP_EXPORT void PyErr_SyntaxLocation(const char *filename, int lineno) {
+    rp_va_err_syntax_location_ex(NULL, filename, lineno, -1);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

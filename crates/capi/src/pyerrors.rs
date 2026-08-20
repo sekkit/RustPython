@@ -405,6 +405,40 @@ pub unsafe extern "C" fn rp_va_err_resource_warning(
     })
 }
 
+/// Rust impl of PyErr_SyntaxLocationEx: set filename/lineno/col_offset
+/// attributes on the current exception.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_syntax_location_ex(
+    _exception: *mut PyObject,
+    filename: *const c_char,
+    lineno: c_int,
+    col_offset: c_int,
+) {
+    with_vm(|vm| {
+        let Some(exc) = vm.current_exception() else {
+            return;
+        };
+        let filename_str = if filename.is_null() {
+            ""
+        } else {
+            unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or("")
+        };
+        if let Err(e) = exc.as_object().set_attr("filename", vm.ctx.new_str(filename_str), vm) {
+            vm.set_exception(Some(e));
+            return;
+        }
+        if let Err(e) = exc.as_object().set_attr("lineno", vm.ctx.new_int(lineno), vm) {
+            vm.set_exception(Some(e));
+            return;
+        }
+        if col_offset >= 0 {
+            if let Err(e) = exc.as_object().set_attr("offset", vm.ctx.new_int(col_offset), vm) {
+                vm.set_exception(Some(e));
+            }
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetObject(exception: *mut PyObject, value: *mut PyObject) {
     with_vm::<PyResult<Infallible>, _>(|vm| {
