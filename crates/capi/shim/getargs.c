@@ -707,6 +707,18 @@ RP_EXPORT int PyErr_WarnFormat(void *exception, const char *format, ...) {
     return rp_va_err_warn_format(exception, format, slots, n);
 }
 
+/* Py_EnterRecursiveCall / Py_LeaveRecursiveCall (Python/ceval.c) */
+extern int rp_va_enter_recursive_call(const char *where);
+extern void rp_va_leave_recursive_call(void);
+
+RP_EXPORT int Py_EnterRecursiveCall(const char *where) {
+    return rp_va_enter_recursive_call(where);
+}
+
+RP_EXPORT void Py_LeaveRecursiveCall(void) {
+    rp_va_leave_recursive_call();
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

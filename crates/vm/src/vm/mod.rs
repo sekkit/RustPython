@@ -1947,6 +1947,31 @@ impl VirtualMachine {
         self.recursion_depth.get()
     }
 
+    /// Increment recursion depth (for C-API Py_EnterRecursiveCall).
+    /// Returns true if the recursion limit was exceeded and an error was set.
+    pub fn increment_recursion(&self, where_: &str) -> bool {
+        let depth = self.recursion_depth.get();
+        if depth >= self.recursion_limit.get() {
+            let exc = self.new_exception_msg(
+                self.ctx.exceptions.recursion_error.to_owned(),
+                format!("recursion error: {where_}").into(),
+            );
+            self.set_exception(Some(exc));
+            true
+        } else {
+            self.recursion_depth.set(depth + 1);
+            false
+        }
+    }
+
+    /// Decrement recursion depth (for C-API Py_LeaveRecursiveCall).
+    pub fn decrement_recursion(&self) {
+        let depth = self.recursion_depth.get();
+        if depth > 0 {
+            self.recursion_depth.set(depth - 1);
+        }
+    }
+
     /// Stack margin bytes (like _PyOS_STACK_MARGIN_BYTES).
     /// The margin is doubled for debug/sanitized builds because frame
     /// evaluation consumes more native stack in those configurations.

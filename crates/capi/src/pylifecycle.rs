@@ -167,6 +167,32 @@ pub extern "C" fn rp_va_set_recursion_limit(limit: isize) {
     })
 }
 
+/// Rust impl of Py_EnterRecursiveCall: check recursion depth and increment.
+/// Returns 0 on success, -1 if recursion limit exceeded.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_enter_recursive_call(where_: *const c_char) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        let where_str = if where_.is_null() {
+            ""
+        } else {
+            unsafe { core::ffi::CStr::from_ptr(where_) }.to_str().unwrap_or("")
+        };
+        if vm.increment_recursion(where_str) {
+            Ok(-1)
+        } else {
+            Ok(0)
+        }
+    })
+}
+
+/// Rust impl of Py_LeaveRecursiveCall: decrement recursion depth.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_leave_recursive_call() {
+    with_vm(|vm| {
+        vm.decrement_recursion();
+    })
+}
+
 /// Rust implementation of the C shim's Py_GetProgramName.
 #[unsafe(no_mangle)]
 pub extern "C" fn rp_va_get_program_name() -> *const c_char {
