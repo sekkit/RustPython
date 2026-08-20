@@ -4,7 +4,7 @@ use crate::object::define_py_check;
 use crate::pystate::with_vm;
 use crate::util::CStrExt;
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
-use rustpython_vm::builtins::{PyModule, PyStr, PyTuple};
+use rustpython_vm::builtins::{PyModule, PyStr, PyTuple, PyType};
 use rustpython_vm::{AsObject, PyObjectRef, PyResult, VirtualMachine};
 
 define_py_check!(fn PyModule_Check, types.module_type);
@@ -648,6 +648,35 @@ pub unsafe extern "C" fn PyModule_Add(
     unsafe { PyModule_AddObjectRef(module, name, value) }
 }
 
+/// PyModule_AddType: add a type to the module dict by its tp_name.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_AddType(
+    module: *mut PyObject,
+    type_obj: *mut PyObject,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if module.is_null() || type_obj.is_null() {
+            return Err(vm.new_system_error("Bad internal call"));
+        }
+        let ty = unsafe { &*type_obj }
+            .downcast_ref::<PyType>()
+            .ok_or_else(|| vm.new_system_error("PyModule_AddType: not a type"))?;
+        // Strip the module prefix (strrchr(tp_name, '.')) like CPython.
+        let full_name = ty.name().to_string();
+        let short_name = full_name.rsplit('.').next().unwrap_or(&full_name);
+        let name = vm.ctx.new_str(short_name.to_owned());
+        let module = unsafe { &*module }.to_owned();
+        let type_obj: PyObjectRef = ty.to_owned().into();
+        module.set_attr(&name, type_obj, vm)?;
+        Ok(0)
+    })
+}
+
+// Anchor so the linker keeps PyModule_AddType in the export table.
+#[used]
+static PY_MODULE_ADD_TYPE_ANCHOR: unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> c_int =
+    PyModule_AddType;
+
 /// PyModule_AddStringConstant: add a str constant to the module.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_AddStringConstant(
@@ -791,3 +820,4 @@ mod tests {
         });
     }
 }
+

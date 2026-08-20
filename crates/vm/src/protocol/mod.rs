@@ -10,6 +10,7 @@ pub use buffer::{
     BufferDescriptor, BufferMethods, BufferResizeGuard, CBufferSlots, CPyBuffer, PyBuffer,
     VecBuffer,
 };
+pub(crate) use buffer::CExportedBuffer;
 pub use callable::PyCallable;
 pub(crate) use callable::TraceEvent;
 pub use iter::{PyIter, PyIterIter, PyIterReturn};

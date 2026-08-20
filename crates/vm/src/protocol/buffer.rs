@@ -525,7 +525,7 @@ pub struct CBufferSlots {
 /// Internal wrapper that keeps a C exporter's buffer alive.
 #[pyclass(module = false, name = "_c_exported_buffer")]
 #[derive(Debug, PyPayload)]
-pub(crate) struct CExportedBuffer {
+pub struct CExportedBuffer {
     buf: NonNull<u8>,
     len: usize,
     exporter: PyObjectRef,
@@ -566,6 +566,7 @@ static C_BUFFER_METHODS: BufferMethods = BufferMethods {
     },
 };
 
+#[pyclass]
 impl CExportedBuffer {
     /// Wrap a C-exported `Py_buffer` (already filled by the exporter's
     /// `getbufferproc`) into a Rust `PyBuffer`. Takes ownership of the
