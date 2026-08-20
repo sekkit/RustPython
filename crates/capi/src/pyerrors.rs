@@ -109,6 +109,100 @@ pub extern "C" fn PyErr_Occurred() -> *mut PyObject {
     })
 }
 
+/// PyErr_Clear: clear the current exception (if any).
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_Clear() {
+    with_vm(|vm| {
+        vm.set_exception(None);
+    })
+}
+
+/// PyErr_Fetch: return (type, value, traceback) of the current exception and
+/// clear it. Each output is a new reference (caller must decref).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_Fetch(
+    ptype: *mut *mut PyObject,
+    pvalue: *mut *mut PyObject,
+    ptraceback: *mut *mut PyObject,
+) {
+    with_vm(|vm| {
+        let exc = vm.take_raised_exception();
+        let (type_, value, traceback) = match exc {
+            Some(exc) => {
+                let type_obj = exc.class().as_object().to_owned();
+                let value_obj: PyObjectRef = exc.into_object();
+                let tb = value_obj
+                    .get_attr("__traceback__", vm)
+                    .ok()
+                    .filter(|o| !o.is(vm.ctx.none().as_object()))
+                    .unwrap_or_else(|| vm.ctx.none().to_owned());
+                (type_obj, value_obj, tb)
+            }
+            None => (
+                vm.ctx.none().to_owned(),
+                vm.ctx.none().to_owned(),
+                vm.ctx.none().to_owned(),
+            ),
+        };
+        unsafe { *ptype = type_.into_raw().as_ptr() };
+        unsafe { *pvalue = value.into_raw().as_ptr() };
+        unsafe { *ptraceback = traceback.into_raw().as_ptr() };
+    })
+}
+
+/// PyErr_Restore: set the current exception from (type, value, traceback).
+/// Steals the references (caller must not use them afterwards).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_Restore(
+    type_: *mut PyObject,
+    value: *mut PyObject,
+    traceback: *mut PyObject,
+) {
+    with_vm(|vm| {
+        let value_obj = if value.is_null() {
+            None
+        } else {
+            Some(unsafe { PyObjectRef::from_raw(NonNull::new_unchecked(value)) })
+        };
+        match value_obj {
+            Some(v) => {
+                unsafe { vm.set_exception(Some(v.downcast_unchecked())) };
+            }
+            None => vm.set_exception(None),
+        }
+        // The type and traceback references are stolen; drop them.
+        if !type_.is_null() {
+            unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(type_))) };
+        }
+        if !traceback.is_null() {
+            unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(traceback))) };
+        }
+    })
+}
+
+/// PyErr_Print: print the current exception (like an uncaught traceback) and
+/// clear it.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_Print() {
+    with_vm(|vm| {
+        if let Some(exc) = vm.take_raised_exception() {
+            vm.print_exception(exc);
+        }
+    })
+}
+
+// Anchors so the linker keeps the error-management functions in the export table.
+#[used]
+static PYERR_CLEAR_ANCHOR: extern "C" fn() = PyErr_Clear;
+#[used]
+static PYERR_FETCH_ANCHOR: unsafe extern "C" fn(*mut *mut PyObject, *mut *mut PyObject, *mut *mut PyObject) =
+    PyErr_Fetch;
+#[used]
+static PYERR_RESTORE_ANCHOR: unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) =
+    PyErr_Restore;
+#[used]
+static PYERR_PRINT_ANCHOR: extern "C" fn() = PyErr_Print;
+
 /// PyErr_NoMemory: set the current exception to MemoryError.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_NoMemory() {
