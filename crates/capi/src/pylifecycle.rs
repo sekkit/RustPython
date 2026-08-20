@@ -4,7 +4,7 @@ use crate::pystate::{ensure_thread_has_vm_attached, with_vm};
 use crate::util::CStrExt;
 use crate::PyObject;
 use alloc::ffi::CString;
-use core::ffi::{c_char, c_int, c_ulong};
+use core::ffi::{CStr, c_char, c_int, c_ulong};
 use core::sync::atomic::{AtomicPtr, Ordering};
 use rustpython_vm::common::rc::PyRc;
 use rustpython_vm::stdlib::sys;
@@ -110,6 +110,52 @@ pub extern "C" fn Py_GetCopyright() -> *const c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn Py_GetPlatform() -> *const c_char {
     sys::PLATFORM.as_ptr()
+}
+
+/// Thread-local cache for the program name (mutable via Py_SetProgramName).
+/// Uses the same pattern as PyUnicode_AsUTF8: pointer valid until next call.
+use std::cell::RefCell;
+std::thread_local! {
+    static PROGRAM_NAME: RefCell<CString> = RefCell::new(CString::new("rustpython").unwrap());
+}
+
+fn program_name_cstr() -> *const c_char {
+    PROGRAM_NAME.try_with(|c| c.borrow().as_ptr()).unwrap_or(c"rustpython".as_ptr())
+}
+
+/// Rust implementation of the C shim's Py_GetProgramName.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_get_program_name() -> *const c_char {
+    program_name_cstr()
+}
+
+/// Rust implementation of the C shim's Py_SetProgramName.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_set_program_name(name: *const c_char) {
+    if !name.is_null() {
+        let name_str = unsafe { core::ffi::CStr::from_ptr(name) };
+        if let Ok(c) = CString::new(name_str.to_bytes().to_vec()) {
+            let _ = PROGRAM_NAME.try_with(|n| *n.borrow_mut() = c);
+        }
+    }
+}
+
+/// Rust implementation of the C shim's Py_GetPrefix.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_get_prefix() -> *const c_char {
+    c"".as_ptr()
+}
+
+/// Rust implementation of the C shim's Py_GetExecPrefix.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_get_exec_prefix() -> *const c_char {
+    c"".as_ptr()
+}
+
+/// Rust implementation of the C shim's Py_GetPath.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_get_path() -> *const c_char {
+    c"".as_ptr()
 }
 
 /// Rust implementation of the C shim's Py_Exit.

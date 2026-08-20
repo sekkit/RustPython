@@ -424,6 +424,33 @@ RP_EXPORT void *PyUnicode_Replace(void *obj, void *old, void *new_, intptr_t max
     return rp_va_unicode_replace(obj, old, new_, maxreplace);
 }
 
+/* Py_GetProgramName/Py_SetProgramName (Python/pylifecycle.c) */
+extern const char *rp_va_get_program_name(void);
+extern void rp_va_set_program_name(const char *name);
+extern const char *rp_va_get_prefix(void);
+extern const char *rp_va_get_exec_prefix(void);
+extern const char *rp_va_get_path(void);
+
+RP_EXPORT const char *Py_GetProgramName(void) {
+    return rp_va_get_program_name();
+}
+
+RP_EXPORT void Py_SetProgramName(const char *name) {
+    rp_va_set_program_name(name);
+}
+
+RP_EXPORT const char *Py_GetPrefix(void) {
+    return rp_va_get_prefix();
+}
+
+RP_EXPORT const char *Py_GetExecPrefix(void) {
+    return rp_va_get_exec_prefix();
+}
+
+RP_EXPORT const char *Py_GetPath(void) {
+    return rp_va_get_path();
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
