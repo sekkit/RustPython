@@ -7,7 +7,8 @@
 use crate::PyObject;
 use crate::pystate::with_vm;
 use crate::refcount::_Py_DecRef;
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::CString;
 use rustpython_vm::protocol::PyBuffer;
 use rustpython_vm::{AsObject, PyResult, TryFromBorrowedObject};
 
@@ -73,18 +74,31 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
         view.readonly = if buf.desc.readonly { 1 } else { 0 };
         view.ndim = buf.desc.ndim() as c_int;
 
-        // Format string (leak a C-string copy to the view).
+        // Format string (CString, freed in PyBuffer_Release).
         let fmt = buf.desc.format.as_bytes();
         if fmt != b"B" && !fmt.is_empty() {
-            let mut s = fmt.to_vec();
-            s.push(0);
-            view.format = s.as_mut_ptr().cast();
-            core::mem::forget(s);
+            // Format strings do not contain NUL bytes; build a C string.
+            let cstr = CString::new(fmt).unwrap_or_else(|_| CString::new(b"B").unwrap());
+            view.format = cstr.into_raw();
         } else {
             view.format = core::ptr::null_mut();
         }
-        view.shape = core::ptr::null_mut();
-        view.strides = core::ptr::null_mut();
+
+        // Shape and strides arrays (allocated with Box, freed in PyBuffer_Release).
+        let ndim = buf.desc.ndim();
+        if ndim > 0 {
+            let mut shape = vec![0isize; ndim].into_boxed_slice();
+            let mut strides = vec![0isize; ndim].into_boxed_slice();
+            for (i, (s, stride, _sub)) in buf.desc.dim_desc.iter().enumerate() {
+                shape[i] = *s as isize;
+                strides[i] = *stride;
+            }
+            view.shape = Box::leak(shape).as_mut_ptr();
+            view.strides = Box::leak(strides).as_mut_ptr();
+        } else {
+            view.shape = core::ptr::null_mut();
+            view.strides = core::ptr::null_mut();
+        }
         view.suboffsets = core::ptr::null_mut();
         view.internal = core::ptr::null_mut();
 
@@ -98,7 +112,8 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
     })
 }
 
-/// PyBuffer_Release: drop the reference held in the view.
+/// PyBuffer_Release: drop the reference held in the view, plus the shape /
+/// strides / format arrays that PyObject_GetBuffer allocated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
     if view.is_null() {
@@ -107,6 +122,25 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
     let view = unsafe { &mut *view };
     if !view.obj.is_null() {
         unsafe { _Py_DecRef(view.obj) };
+    }
+    if !view.shape.is_null() {
+        // Recover the Box allocations made in PyObject_GetBuffer.
+        unsafe {
+            drop(Box::from_raw(core::slice::from_raw_parts_mut(view.shape, view.ndim as usize)));
+        }
+        view.shape = core::ptr::null_mut();
+    }
+    if !view.strides.is_null() {
+        unsafe {
+            drop(Box::from_raw(core::slice::from_raw_parts_mut(view.strides, view.ndim as usize)));
+        }
+        view.strides = core::ptr::null_mut();
+    }
+    if !view.format.is_null() {
+        unsafe {
+            drop(CString::from_raw(view.format));
+        }
+        view.format = core::ptr::null_mut();
     }
     *view = Py_buffer {
         buf: core::ptr::null_mut(),
