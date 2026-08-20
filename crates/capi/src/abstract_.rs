@@ -5,7 +5,7 @@ use core::ffi::{c_char, c_int};
 pub use iter::*;
 pub use mapping::*;
 pub use number::*;
-use rustpython_vm::builtins::{PyDict, PyStr, PyTuple};
+use rustpython_vm::builtins::{PyDict, PyStr, PyStrRef, PyTuple};
 use rustpython_vm::function::{FuncArgs, KwArgs, PosArgs};
 use rustpython_vm::{AsObject, Py, PyObjectRef, PyResult, VirtualMachine};
 pub use sequence::*;
@@ -237,11 +237,16 @@ pub unsafe extern "C" fn PyObject_Format(
 ) -> *mut PyObject {
     with_vm(|vm| {
         let obj = unsafe { &*obj };
-        let spec = unsafe { format_spec.as_ref() }
-            .map(|spec| spec.try_downcast_ref::<PyStr>(vm))
-            .transpose()?
-            .unwrap_or_else(|| vm.ctx.empty_str);
-        vm.format(obj, spec.to_owned())
+        let spec: PyStrRef = if let Some(spec) = unsafe { format_spec.as_ref() } {
+            if spec.is(vm.ctx.none().as_object()) {
+                vm.ctx.empty_str.to_owned().into()
+            } else {
+                spec.try_downcast_ref::<PyStr>(vm)?.to_owned()
+            }
+        } else {
+            vm.ctx.empty_str.to_owned().into()
+        };
+        vm.format(obj, spec)
     })
 }
 
