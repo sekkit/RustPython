@@ -33,6 +33,18 @@ pub static mut PyUnicode_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 
 pub static mut PyLong_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
 #[unsafe(no_mangle)]
 pub static mut PyBool_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut _Py_FalseStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut _Py_TrueStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut _Py_EllipsisObject: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyFloat_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PySlice_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyType_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
 
 static STATICS_REFRESHED: AtomicBool = AtomicBool::new(false);
 
@@ -45,15 +57,59 @@ pub(crate) fn ensure_object_statics(vm: &VirtualMachine) {
     let size = rustpython_vm::import::PYOBJECT_HEADER_BYTES;
     #[allow(static_mut_refs)]
     unsafe {
-        copy_header(&mut _Py_NoneStruct, vm.ctx.none().as_object().as_raw(), size);
-        copy_header(&mut PyUnicode_Type, vm.ctx.types.str_type.as_object().as_raw(), size);
-        copy_header(&mut PyLong_Type, vm.ctx.types.int_type.as_object().as_raw(), size);
-        copy_header(&mut PyBool_Type, vm.ctx.types.bool_type.as_object().as_raw(), size);
+        copy_header(
+            &mut _Py_NoneStruct,
+            vm.ctx.none().as_object().as_raw(),
+            size,
+        );
+        copy_header(
+            &mut PyUnicode_Type,
+            vm.ctx.types.str_type.as_object().as_raw(),
+            size,
+        );
+        copy_header(
+            &mut PyLong_Type,
+            vm.ctx.types.int_type.as_object().as_raw(),
+            size,
+        );
+        copy_header(
+            &mut PyBool_Type,
+            vm.ctx.types.bool_type.as_object().as_raw(),
+            size,
+        );
+        copy_header(
+            &mut _Py_FalseStruct,
+            vm.ctx.false_value.as_object().as_raw(),
+            size,
+        );
+        copy_header(
+            &mut _Py_TrueStruct,
+            vm.ctx.true_value.as_object().as_raw(),
+            size,
+        );
+        copy_header(
+            &mut _Py_EllipsisObject,
+            vm.ctx.ellipsis.as_object().as_raw(),
+            size,
+        );
+        copy_header(
+            &mut PyFloat_Type,
+            vm.ctx.types.float_type.as_object().as_raw(),
+            size,
+        );
+        copy_header(
+            &mut PySlice_Type,
+            vm.ctx.types.slice_type.as_object().as_raw(),
+            size,
+        );
+        copy_header(
+            &mut PyType_Type,
+            vm.ctx.types.type_type.as_object().as_raw(),
+            size,
+        );
         // Tell the vm where the None stub lives so it can translate C-returned
         // `Py_None` pointers into the real None object.
-        rustpython_vm::import::register_none_stub_addr(
-            core::ptr::addr_of!(_Py_NoneStruct) as usize,
-        );
+        rustpython_vm::import::register_none_stub_addr(core::ptr::addr_of!(_Py_NoneStruct) as usize);
     }
     #[cfg(windows)]
     unsafe {
@@ -64,11 +120,7 @@ pub(crate) fn ensure_object_statics(vm: &VirtualMachine) {
 
 unsafe fn copy_header(dst: &mut ObjectHeaderCopy, src: *const PyObject, size: usize) {
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            src.cast::<u8>(),
-            dst.words.as_mut_ptr().cast::<u8>(),
-            size,
-        );
+        core::ptr::copy_nonoverlapping(src.cast::<u8>(), dst.words.as_mut_ptr().cast::<u8>(), size);
         // Mark the copy leaked (which also sets the C-side immortal bit).
         let state = dst.words.as_mut_ptr().cast::<usize>();
         *state |= 1usize << (usize::BITS - 3);

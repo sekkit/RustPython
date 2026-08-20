@@ -1,5 +1,5 @@
 use crate::methodobject::{PyMethodDef, build_method_def};
-use crate::moduleobject::{PySlot, Py_slot_end, Py_slot_invalid};
+use crate::moduleobject::{Py_slot_end, Py_slot_invalid, PySlot};
 use crate::object::define_py_check;
 use crate::pystate::with_vm;
 use crate::util::CStrExt;
@@ -7,6 +7,7 @@ use core::ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void};
 use core::ptr::NonNull;
 use rustpython_vm::builtins::{PyStr, PyType};
 use rustpython_vm::function::FuncArgs;
+use rustpython_vm::protocol::{CBufferSlots, CPyBuffer};
 use rustpython_vm::{AsObject, Py, PyObject, PyObjectRef, PyRef, VirtualMachine};
 
 pub type PyTypeObject = Py<PyType>;
@@ -75,12 +76,11 @@ fn resolve_type_ptr(
     }
     for (vtable, ty) in vtable_probes(vm) {
         if addr == vtable {
-            let obj = unsafe {
-                rustpython_vm::PyObjectRef::from_raw(NonNull::new_unchecked(ty.cast()))
-            };
-            return obj.downcast::<PyType>().map_err(|_| {
-                vm.new_system_error("PyType_IsSubtype: vtable probe is not a type")
-            });
+            let obj =
+                unsafe { rustpython_vm::PyObjectRef::from_raw(NonNull::new_unchecked(ty.cast())) };
+            return obj
+                .downcast::<PyType>()
+                .map_err(|_| vm.new_system_error("PyType_IsSubtype: vtable probe is not a type"));
         }
     }
     // The exported type-stub symbols only mirror a type's header; map them
@@ -108,8 +108,10 @@ fn resolve_type_ptr(
 /// (payload vtable address, real type object pointer) pairs for the common
 /// builtin types, captured once from fresh instances.
 fn vtable_probes(vm: &VirtualMachine) -> Vec<(usize, *mut u8)> {
-    use rustpython_vm::builtins::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyStr, PyTuple};
     use rustpython_vm::PyPayload;
+    use rustpython_vm::builtins::{
+        PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyStr, PyTuple,
+    };
 
     fn probe<T: PyPayload>(obj: PyObjectRef, ty: PyRef<PyType>) -> (usize, *mut u8) {
         let vtable = unsafe { *((obj.as_object().as_raw() as *const u8).add(8) as *const usize) };
@@ -119,13 +121,34 @@ fn vtable_probes(vm: &VirtualMachine) -> Vec<(usize, *mut u8)> {
     let mut probes = Vec::new();
     let mut push = |obj: PyObjectRef, ty: PyRef<PyType>| probes.push(probe::<PyStr>(obj, ty));
     push(vm.ctx.new_str("").into(), vm.ctx.types.str_type.to_owned());
-    probes.push(probe::<PyInt>(vm.ctx.new_int(0).into(), vm.ctx.types.int_type.to_owned()));
-    probes.push(probe::<PyBool>(vm.ctx.new_bool(true).into(), vm.ctx.types.bool_type.to_owned()));
-    probes.push(probe::<PyFloat>(vm.ctx.new_float(0.0).into(), vm.ctx.types.float_type.to_owned()));
-    probes.push(probe::<PyBytes>(vm.ctx.new_bytes(vec![]).into(), vm.ctx.types.bytes_type.to_owned()));
-    probes.push(probe::<PyTuple>(vm.ctx.new_tuple(vec![]).into(), vm.ctx.types.tuple_type.to_owned()));
-    probes.push(probe::<PyList>(vm.ctx.new_list(vec![]).into(), vm.ctx.types.list_type.to_owned()));
-    probes.push(probe::<PyDict>(vm.ctx.new_dict().into(), vm.ctx.types.dict_type.to_owned()));
+    probes.push(probe::<PyInt>(
+        vm.ctx.new_int(0).into(),
+        vm.ctx.types.int_type.to_owned(),
+    ));
+    probes.push(probe::<PyBool>(
+        vm.ctx.new_bool(true).into(),
+        vm.ctx.types.bool_type.to_owned(),
+    ));
+    probes.push(probe::<PyFloat>(
+        vm.ctx.new_float(0.0).into(),
+        vm.ctx.types.float_type.to_owned(),
+    ));
+    probes.push(probe::<PyBytes>(
+        vm.ctx.new_bytes(vec![]).into(),
+        vm.ctx.types.bytes_type.to_owned(),
+    ));
+    probes.push(probe::<PyTuple>(
+        vm.ctx.new_tuple(vec![]).into(),
+        vm.ctx.types.tuple_type.to_owned(),
+    ));
+    probes.push(probe::<PyList>(
+        vm.ctx.new_list(vec![]).into(),
+        vm.ctx.types.list_type.to_owned(),
+    ));
+    probes.push(probe::<PyDict>(
+        vm.ctx.new_dict().into(),
+        vm.ctx.types.dict_type.to_owned(),
+    ));
     probes
 }
 
@@ -165,10 +188,7 @@ pub unsafe extern "C" fn PyType_GetFullyQualifiedName(ptr: *const PyTypeObject) 
 /// vm does not model return NULL, which is the "slot not defined" answer.
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyType_GetSlot(
-    ty: *mut PyTypeObject,
-    slot: c_int,
-) -> *mut c_void {
+pub unsafe extern "C" fn PyType_GetSlot(ty: *mut PyTypeObject, slot: c_int) -> *mut c_void {
     with_vm(|_vm| {
         let ty = unsafe { &*ty };
         match slot {
@@ -218,6 +238,8 @@ const _: () = assert!(core::mem::size_of::<PyType_Slot>() == 16);
 const PY_TP_BASE: c_int = 48;
 const PY_TP_DOC: c_int = 56;
 const PY_TP_METHODS: c_int = 64;
+const PY_BF_GETBUFFER: c_int = 1;
+const PY_BF_RELEASEBUFFER: c_int = 2;
 
 fn map_base_ptr(vm: &VirtualMachine, ptr: *mut c_void) -> rustpython_vm::PyResult<PyObjectRef> {
     if ptr.is_null() {
@@ -252,6 +274,10 @@ pub unsafe extern "C" fn PyType_FromSpec(spec: *mut PyType_Spec) -> *mut PyObjec
         let mut base: Option<PyObjectRef> = None;
         let mut methods: *const PyMethodDef = core::ptr::null();
         let mut doc: Option<String> = None;
+        let mut c_getbuffer: Option<
+            unsafe extern "C" fn(*mut PyObject, *mut CPyBuffer, c_int) -> c_int,
+        > = None;
+        let mut c_releasebuffer: Option<unsafe extern "C" fn(*mut PyObject, *mut CPyBuffer)> = None;
 
         let mut i = 0usize;
         loop {
@@ -273,6 +299,12 @@ pub unsafe extern "C" fn PyType_FromSpec(spec: *mut PyType_Spec) -> *mut PyObjec
                             .map_err(|_| vm.new_system_error("PyType_FromSpec: invalid doc"))?
                             .to_owned(),
                     );
+                }
+                PY_BF_GETBUFFER => {
+                    c_getbuffer = Some(unsafe { core::mem::transmute(slot.pfunc) });
+                }
+                PY_BF_RELEASEBUFFER => {
+                    c_releasebuffer = Some(unsafe { core::mem::transmute(slot.pfunc) });
                 }
                 // Behavioral slots (getattro/setattr/finalize/traverse/...)
                 // are not modeled; the default dict-based behavior is used.
@@ -309,13 +341,21 @@ pub unsafe extern "C" fn PyType_FromSpec(spec: *mut PyType_Spec) -> *mut PyObjec
         }
 
         let bases = vm.ctx.new_tuple(vec![base]);
-        let args = FuncArgs::from(vec![
-            vm.ctx.new_str(name).into(),
-            bases.into(),
-            dict.into(),
-        ]);
+        let args = FuncArgs::from(vec![vm.ctx.new_str(name).into(), bases.into(), dict.into()]);
         let metaclass: PyObjectRef = vm.ctx.types.type_type.to_owned().into();
-        metaclass.call(args, vm)
+        metaclass.call(args, vm).and_then(|ty| {
+            if let Some(getbuffer) = c_getbuffer {
+                let ty = ty
+                    .downcast_ref::<PyType>()
+                    .ok_or_else(|| vm.new_system_error("PyType_FromSpec: result is not a type"))?;
+                ty.init_type_data(CBufferSlots {
+                    getbuffer,
+                    releasebuffer: c_releasebuffer,
+                })
+                .map_err(|e| vm.new_system_error(e))?;
+            }
+            Ok(ty)
+        })
     })
 }
 
@@ -385,14 +425,11 @@ pub unsafe extern "C" fn PyType_FromSlots(slots: *mut PySlot) -> *mut PyObject {
                     );
                 }
                 Py_tp_base => {
-                    base = Some(
-                        unsafe { &*slot.sl_value.sl_ptr.cast::<PyObject>() }.to_owned(),
-                    );
+                    base = Some(unsafe { &*slot.sl_value.sl_ptr.cast::<PyObject>() }.to_owned());
                 }
                 Py_tp_metaclass => {
-                    metaclass = Some(
-                        unsafe { &*slot.sl_value.sl_ptr.cast::<PyObject>() }.to_owned(),
-                    );
+                    metaclass =
+                        Some(unsafe { &*slot.sl_value.sl_ptr.cast::<PyObject>() }.to_owned());
                 }
                 Py_tp_methods => {
                     methods = unsafe { slot.sl_value.sl_ptr }.cast::<PyMethodDef>();
@@ -410,7 +447,8 @@ pub unsafe extern "C" fn PyType_FromSlots(slots: *mut PySlot) -> *mut PyObject {
             }
             i += 1;
         }
-        let name = name.ok_or_else(|| vm.new_system_error("PyType_FromSlots: missing Py_tp_name"))?;
+        let name =
+            name.ok_or_else(|| vm.new_system_error("PyType_FromSlots: missing Py_tp_name"))?;
         let base = base.unwrap_or_else(|| vm.ctx.types.object_type.to_owned().into());
 
         let dict = vm.ctx.new_dict();
@@ -441,11 +479,7 @@ pub unsafe extern "C" fn PyType_FromSlots(slots: *mut PySlot) -> *mut PyObject {
 
         let bases = vm.ctx.new_tuple(vec![base]);
         let metaclass = metaclass.unwrap_or_else(|| vm.ctx.types.type_type.to_owned().into());
-        let args = FuncArgs::from(vec![
-            vm.ctx.new_str(name).into(),
-            bases.into(),
-            dict.into(),
-        ]);
+        let args = FuncArgs::from(vec![vm.ctx.new_str(name).into(), bases.into(), dict.into()]);
         metaclass.call(args, vm)
     })
 }

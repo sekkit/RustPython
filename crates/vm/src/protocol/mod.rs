@@ -6,7 +6,10 @@ mod number;
 mod object;
 mod sequence;
 
-pub use buffer::{BufferDescriptor, BufferMethods, BufferResizeGuard, PyBuffer, VecBuffer};
+pub use buffer::{
+    BufferDescriptor, BufferMethods, BufferResizeGuard, CBufferSlots, CPyBuffer, PyBuffer,
+    VecBuffer,
+};
 pub use callable::PyCallable;
 pub(crate) use callable::TraceEvent;
 pub use iter::{PyIter, PyIterIter, PyIterReturn};

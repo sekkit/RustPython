@@ -2,7 +2,8 @@
 //! <https://docs.python.org/3/c-api/buffer.html>
 
 use crate::{
-    Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, TryFromBorrowedObject, VirtualMachine,
+    AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, TryFromBorrowedObject,
+    VirtualMachine,
     common::{
         borrow::{BorrowedValue, BorrowedValueMut},
         lock::{MapImmutable, PyMutex, PyMutexGuard},
@@ -11,7 +12,13 @@ use crate::{
     sliceable::SequenceIndexOp,
 };
 use alloc::borrow::Cow;
-use core::{fmt::Debug, ops::Range};
+use core::{
+    ffi::{CStr, c_char, c_int, c_void},
+    fmt::Debug,
+    ops::Range,
+    ptr::NonNull,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use itertools::Itertools;
 
 pub struct BufferMethods {
@@ -164,6 +171,9 @@ impl<'a> TryFromBorrowedObject<'a> for PyBuffer {
         let cls = obj.class();
         if let Some(f) = cls.slots.as_buffer {
             return f(obj, vm);
+        }
+        if let Some(result) = try_c_buffer(obj, vm) {
+            return result;
         }
         Err(vm.new_type_error(format!(
             "a bytes-like object is required, not '{}'",
@@ -479,3 +489,174 @@ static VEC_BUFFER_METHODS: BufferMethods = BufferMethods {
     release: |_| {},
     retain: |_| {},
 };
+
+// ---- C-extension buffer protocol ------------------------------------------
+
+/// Mirror of CPython's `Py_buffer` (layout must match crates/capi/src/buffer.rs).
+#[repr(C)]
+#[derive(Debug)]
+pub struct CPyBuffer {
+    pub buf: *mut c_void,
+    pub obj: *mut PyObject,
+    pub len: isize,
+    pub itemsize: isize,
+    pub readonly: c_int,
+    pub ndim: c_int,
+    pub format: *mut c_char,
+    pub shape: *mut isize,
+    pub strides: *mut isize,
+    pub suboffsets: *mut isize,
+    pub internal: *mut c_void,
+}
+
+// Safety: raw pointer fields are accessed only through the C-API, which is
+// thread-safe per the Python buffer protocol contract.
+unsafe impl Send for CPyBuffer {}
+unsafe impl Sync for CPyBuffer {}
+
+/// C buffer-protocol callbacks attached to a heap type through
+/// `PyType::init_type_data`.
+#[derive(Clone, Copy)]
+pub struct CBufferSlots {
+    pub getbuffer: unsafe extern "C" fn(*mut PyObject, *mut CPyBuffer, c_int) -> c_int,
+    pub releasebuffer: Option<unsafe extern "C" fn(*mut PyObject, *mut CPyBuffer)>,
+}
+
+/// Internal wrapper that keeps a C exporter's buffer alive.
+#[pyclass(module = false, name = "_c_exported_buffer")]
+#[derive(Debug, PyPayload)]
+pub(crate) struct CExportedBuffer {
+    buf: NonNull<u8>,
+    len: usize,
+    exporter: PyObjectRef,
+    view: Box<CPyBuffer>,
+    refs: AtomicUsize,
+}
+
+// Safety: raw pointer (buf) is valid for the lifetime of the export; the
+// C-API exporter manages thread safety per the buffer protocol contract.
+unsafe impl Send for CExportedBuffer {}
+unsafe impl Sync for CExportedBuffer {}
+
+static C_BUFFER_METHODS: BufferMethods = BufferMethods {
+    obj_bytes: |buffer| {
+        let w = buffer.obj_as::<CExportedBuffer>();
+        BorrowedValue::Ref(unsafe { core::slice::from_raw_parts(w.buf.as_ptr(), w.len) })
+    },
+    obj_bytes_mut: |buffer| {
+        let w = buffer.obj_as::<CExportedBuffer>();
+        BorrowedValueMut::RefMut(unsafe { core::slice::from_raw_parts_mut(w.buf.as_ptr(), w.len) })
+    },
+    release: |buffer| {
+        let w = buffer.obj_as::<CExportedBuffer>();
+        let prev = w.refs.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            let exporter = w.exporter.as_object().as_raw().cast_mut();
+            if let Some(release) = w.exporter.class().get_type_data::<CBufferSlots>()
+                && let Some(releasebuf) = release.releasebuffer
+            {
+                let view = core::ptr::addr_of!(*w.view) as *mut CPyBuffer;
+                unsafe { releasebuf(exporter, view) };
+            }
+        }
+    },
+    retain: |buffer| {
+        let w = buffer.obj_as::<CExportedBuffer>();
+        w.refs.fetch_add(1, Ordering::AcqRel);
+    },
+};
+
+impl CExportedBuffer {
+    /// Wrap a C-exported `Py_buffer` (already filled by the exporter's
+    /// `getbufferproc`) into a Rust `PyBuffer`. Takes ownership of the
+    /// `view.obj` reference.
+    fn into_pybuffer(view: CPyBuffer, vm: &VirtualMachine) -> PyResult<PyBuffer> {
+        let buf = NonNull::new(view.buf.cast::<u8>())
+            .ok_or_else(|| vm.new_buffer_error("C buffer has a NULL data pointer"))?;
+        if view.obj.is_null() {
+            return Err(
+                vm.new_buffer_error("C exporter did not set Py_buffer.obj (unsupported exporter)")
+            );
+        }
+        let exporter = unsafe { PyObjectRef::from_raw(NonNull::new_unchecked(view.obj)) };
+
+        let len = view.len.max(0) as usize;
+        let itemsize = view.itemsize.max(0) as usize;
+        let readonly = view.readonly != 0;
+        let format = if view.format.is_null() {
+            Cow::Borrowed("B")
+        } else {
+            Cow::Owned(
+                unsafe { CStr::from_ptr(view.format) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        };
+        let dim_desc = if view.ndim > 0 && !view.shape.is_null() {
+            let ndim = view.ndim as usize;
+            let shape = unsafe { core::slice::from_raw_parts(view.shape, ndim) };
+            let strides = if view.strides.is_null() {
+                None
+            } else {
+                Some(unsafe { core::slice::from_raw_parts(view.strides, ndim) })
+            };
+            let suboffsets = if view.suboffsets.is_null() {
+                None
+            } else {
+                Some(unsafe { core::slice::from_raw_parts(view.suboffsets, ndim) })
+            };
+            shape
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| {
+                    let stride = strides.map_or(itemsize as isize, |st| st[i]);
+                    let sub = suboffsets.map_or(0, |so| so[i]);
+                    (s as usize, stride, sub)
+                })
+                .collect()
+        } else {
+            vec![(
+                if itemsize > 0 { len / itemsize } else { 0 },
+                itemsize as isize,
+                0,
+            )]
+        };
+        let desc = BufferDescriptor {
+            len,
+            readonly,
+            itemsize,
+            format,
+            dim_desc,
+        };
+        #[cfg(debug_assertions)]
+        let desc = desc.validate();
+
+        let wrapper = Self {
+            buf,
+            len,
+            exporter,
+            view: Box::new(view),
+            refs: AtomicUsize::new(0),
+        };
+        Ok(PyBuffer::new(
+            wrapper.into_pyobject(vm),
+            desc,
+            &C_BUFFER_METHODS,
+        ))
+    }
+}
+
+/// Attempt to obtain a `PyBuffer` from an object backed by a C exporter whose
+/// type carries [`CBufferSlots`]. Used by the buffer-protocol lookup after the
+/// native `as_buffer` slot has been consulted.
+pub(crate) fn try_c_buffer(obj: &PyObject, vm: &VirtualMachine) -> Option<PyResult<PyBuffer>> {
+    let cls = obj.class();
+    let slots = cls.get_type_data::<CBufferSlots>()?;
+    const PY_BUF_FULL_RO: c_int = 0x100 | 0x18 | 0x4;
+    let mut view: CPyBuffer = unsafe { core::mem::zeroed() };
+    let ret = unsafe { (slots.getbuffer)(obj.as_raw().cast_mut(), &raw mut view, PY_BUF_FULL_RO) };
+    if ret != 0 {
+        return Some(Err(vm.new_buffer_error("C exporter's getbuffer() failed")));
+    }
+    Some(CExportedBuffer::into_pybuffer(view, vm))
+}
