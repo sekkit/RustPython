@@ -516,6 +516,18 @@ RP_EXPORT void PyErr_SetNone(void *exception) {
     rp_va_err_set_none(exception);
 }
 
+/* PyErr_GetExcInfo / PyErr_SetExcInfo (Python/errors.c) */
+extern void rp_va_err_get_exc_info(void **ptype, void **pvalue, void **ptraceback);
+extern void rp_va_err_set_exc_info(void *type, void *value, void *traceback);
+
+RP_EXPORT void PyErr_GetExcInfo(void **ptype, void **pvalue, void **ptraceback) {
+    rp_va_err_get_exc_info(ptype, pvalue, ptraceback);
+}
+
+RP_EXPORT void PyErr_SetExcInfo(void *type, void *value, void *traceback) {
+    rp_va_err_set_exc_info(type, value, traceback);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

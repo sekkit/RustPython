@@ -241,6 +241,64 @@ pub unsafe extern "C" fn rp_va_err_set_none(exception: *mut PyObject) {
     })
 }
 
+/// Rust impl of PyErr_GetExcInfo: return the current exception info
+/// (type, value, traceback) as new references, without clearing it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_get_exc_info(
+    ptype: *mut *mut PyObject,
+    pvalue: *mut *mut PyObject,
+    ptraceback: *mut *mut PyObject,
+) {
+    with_vm(|vm| {
+        let (t, v, tb) = if let Some(exc) = vm.current_exception() {
+            let type_obj = exc.class().as_object().to_owned();
+            let value_obj: PyObjectRef = exc.into_object();
+            let tb = value_obj
+                .get_attr("__traceback__", vm)
+                .ok()
+                .filter(|o| !o.is(vm.ctx.none().as_object()))
+                .unwrap_or_else(|| vm.ctx.none().to_owned());
+            (type_obj, value_obj, tb)
+        } else {
+            (
+                vm.ctx.none().to_owned(),
+                vm.ctx.none().to_owned(),
+                vm.ctx.none().to_owned(),
+            )
+        };
+        unsafe { *ptype = t.into_raw().as_ptr() };
+        unsafe { *pvalue = v.into_raw().as_ptr() };
+        unsafe { *ptraceback = tb.into_raw().as_ptr() };
+    })
+}
+
+/// Rust impl of PyErr_SetExcInfo: set the current exception info.
+/// Steals the references (type, value, traceback).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_exc_info(
+    type_: *mut PyObject,
+    value: *mut PyObject,
+    traceback: *mut PyObject,
+) {
+    with_vm(|vm| {
+        let value_obj = if value.is_null() {
+            None
+        } else {
+            Some(unsafe { PyObjectRef::from_raw(NonNull::new_unchecked(value)) })
+        };
+        match value_obj {
+            Some(v) => vm.set_exception(Some(unsafe { v.downcast_unchecked() })),
+            None => vm.set_exception(None),
+        }
+        if !type_.is_null() {
+            unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(type_))) };
+        }
+        if !traceback.is_null() {
+            unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(traceback))) };
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn PyErr_GetRaisedException() -> *mut PyObject {
     with_vm(|vm| {
