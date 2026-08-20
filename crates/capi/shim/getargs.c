@@ -680,6 +680,18 @@ RP_EXPORT void *PyCFunction_GetSelf(void *method) {
     return rp_va_cfunction_get_self(method);
 }
 
+/* PyErr_SetInterrupt / PyErr_SetInterruptEx (Python/errors.c) */
+extern void rp_va_err_set_interrupt(void);
+extern void rp_va_err_set_interrupt_ex(int signum);
+
+RP_EXPORT void PyErr_SetInterrupt(void) {
+    rp_va_err_set_interrupt();
+}
+
+RP_EXPORT void PyErr_SetInterruptEx(int signum) {
+    rp_va_err_set_interrupt_ex(signum);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

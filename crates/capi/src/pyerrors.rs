@@ -439,6 +439,24 @@ pub unsafe extern "C" fn rp_va_err_syntax_location_ex(
     })
 }
 
+/// Rust impl of PyErr_SetInterrupt: simulate a keyboard interrupt.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_err_set_interrupt() {
+    rp_va_err_set_interrupt_ex(2); // SIGINT
+}
+
+/// Rust impl of PyErr_SetInterruptEx: set the interrupt flag.
+#[unsafe(no_mangle)]
+pub extern "C" fn rp_va_err_set_interrupt_ex(_signum: c_int) {
+    // In RustPython, there's no true async interrupt mechanism.
+    // We set the pending KeyboardInterrupt for the next check.
+    // This is a best-effort implementation.
+    with_vm(|vm| {
+        let exc = vm.new_exception_empty(vm.ctx.exceptions.keyboard_interrupt.to_owned());
+        vm.set_exception(Some(exc));
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetObject(exception: *mut PyObject, value: *mut PyObject) {
     with_vm::<PyResult<Infallible>, _>(|vm| {
