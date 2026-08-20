@@ -608,6 +608,34 @@ RP_EXPORT void *PyUnicode_RSplit(void *obj, void *sep, intptr_t maxsplit) {
     return rp_va_unicode_rsplit(obj, sep, maxsplit);
 }
 
+/* Unicode character classification functions (Objects/unicodeobject.c).
+ * Each wraps a Rust implementation via the rp_va_ prefix. */
+#define UNICODE_CLASS_FUNC(name) \
+    extern int rp_va_##name(int); \
+    RP_EXPORT int name(int ch) { return rp_va_##name(ch); }
+
+UNICODE_CLASS_FUNC(PyUnicode_IsAlpha)
+UNICODE_CLASS_FUNC(PyUnicode_IsAlnum)
+UNICODE_CLASS_FUNC(PyUnicode_IsDecimal)
+UNICODE_CLASS_FUNC(PyUnicode_IsDigit)
+UNICODE_CLASS_FUNC(PyUnicode_IsLower)
+UNICODE_CLASS_FUNC(PyUnicode_IsNumeric)
+UNICODE_CLASS_FUNC(PyUnicode_IsSpace)
+UNICODE_CLASS_FUNC(PyUnicode_IsTitle)
+UNICODE_CLASS_FUNC(PyUnicode_IsUpper)
+UNICODE_CLASS_FUNC(PyUnicode_IsXidStart)
+UNICODE_CLASS_FUNC(PyUnicode_IsXidContinue)
+UNICODE_CLASS_FUNC(PyUnicode_IsPrintable)
+UNICODE_CLASS_FUNC(PyUnicode_IsWhitespace)
+
+/* Conversion functions return u32, not int. */
+#define UNICODE_CONV_FUNC(name) \
+    extern unsigned int rp_va_##name(unsigned int); \
+    RP_EXPORT unsigned int name(unsigned int ch) { return rp_va_##name(ch); }
+
+UNICODE_CONV_FUNC(PyUnicode_Tolower)
+UNICODE_CONV_FUNC(PyUnicode_Toupper)
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);

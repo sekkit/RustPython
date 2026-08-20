@@ -1017,6 +1017,39 @@ pub unsafe extern "C" fn rp_va_unicode_rsplit(
     })
 }
 
+// Macro for Unicode character classification functions.
+// The full function name (with rp_va_ prefix) is passed in.
+macro_rules! define_unicode_class_func {
+    ($full_name:ident, $method:expr) => {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $full_name(ch: u32) -> c_int {
+            char::from_u32(ch).map_or(0, |c| if $method(c) { 1 } else { 0 })
+        }
+    };
+    ($full_name:ident, $method:expr, $ret:ty) => {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $full_name(ch: u32) -> $ret {
+            char::from_u32(ch).map_or(0, $method) as $ret
+        }
+    };
+}
+
+define_unicode_class_func!(rp_va_PyUnicode_IsAlpha, |c: char| c.is_alphabetic());
+define_unicode_class_func!(rp_va_PyUnicode_IsAlnum, |c: char| c.is_alphanumeric());
+define_unicode_class_func!(rp_va_PyUnicode_IsDecimal, |c: char| c.is_ascii_digit());
+define_unicode_class_func!(rp_va_PyUnicode_IsDigit, |c: char| c.is_ascii_digit());
+define_unicode_class_func!(rp_va_PyUnicode_IsLower, |c: char| c.is_lowercase());
+define_unicode_class_func!(rp_va_PyUnicode_IsNumeric, |c: char| c.is_numeric());
+define_unicode_class_func!(rp_va_PyUnicode_IsSpace, |c: char| c.is_whitespace());
+define_unicode_class_func!(rp_va_PyUnicode_IsTitle, |c: char| c.is_uppercase()); // simplified
+define_unicode_class_func!(rp_va_PyUnicode_IsUpper, |c: char| c.is_uppercase());
+define_unicode_class_func!(rp_va_PyUnicode_IsXidStart, |c: char| c.is_ascii_alphabetic());
+define_unicode_class_func!(rp_va_PyUnicode_IsXidContinue, |c: char| c.is_alphanumeric() || c == '_');
+define_unicode_class_func!(rp_va_PyUnicode_IsPrintable, |c: char| !c.is_control());
+define_unicode_class_func!(rp_va_PyUnicode_IsWhitespace, |c: char| c.is_whitespace());
+define_unicode_class_func!(rp_va_PyUnicode_Tolower, |c: char| c.to_lowercase().next().unwrap_or(c) as u32, u32);
+define_unicode_class_func!(rp_va_PyUnicode_Toupper, |c: char| c.to_uppercase().next().unwrap_or(c) as u32, u32);
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
