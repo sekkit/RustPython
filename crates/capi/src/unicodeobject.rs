@@ -313,6 +313,31 @@ pub unsafe extern "C" fn PyUnicode_Concat(
     })
 }
 
+/// Rust implementation of the C shim's PyUnicode_Substring.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_substring(
+    obj: *mut PyObject,
+    start: isize,
+    end: isize,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<rustpython_vm::PyObjectRef> {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Substring: string is not valid UTF-8")
+        })?;
+        let len = s.chars().count() as isize;
+        let start = if start < 0 { (len + start).max(0) } else { start.min(len) };
+        let end = if end < 0 { (len + end).max(0) } else { end.min(len) };
+        if start >= end {
+            let empty: rustpython_vm::PyObjectRef = vm.ctx.empty_str.to_owned().into();
+            return Ok(empty);
+        }
+        let start_idx = s.chars().take(start as usize).map(|c| c.len_utf8()).sum();
+        let end_idx = s.chars().take(end as usize).map(|c| c.len_utf8()).sum();
+        let sub = &s[start_idx..end_idx];
+        Ok(vm.ctx.new_str(sub).into())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_GetLength(unicode: *mut PyObject) -> isize {
     with_vm(|vm| {

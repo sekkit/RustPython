@@ -403,6 +403,13 @@ RP_EXPORT void *PyMemoryView_FromMemory(const char *data, intptr_t size, const c
     return rp_va_memoryview_from_memory(data, size, format);
 }
 
+/* PyUnicode_Substring (Objects/unicodeobject.c) */
+extern void *rp_va_unicode_substring(void *obj, intptr_t start, intptr_t end);
+
+RP_EXPORT void *PyUnicode_Substring(void *obj, intptr_t start, intptr_t end) {
+    return rp_va_unicode_substring(obj, start, end);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
