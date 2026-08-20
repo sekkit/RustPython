@@ -66,6 +66,36 @@ pub unsafe extern "C" fn PyModule_GetName(module: *mut PyObject) -> *const c_cha
     })
 }
 
+/// Thread-local cache for PyModule_GetFilename's NULL-terminated return value.
+std::thread_local! {
+    static MODULE_FILENAME_CACHE: RefCell<CString> = RefCell::new(CString::new("").unwrap());
+}
+
+/// PyModule_GetFilename: return the module's __file__ as a NULL-terminated
+/// C string (legacy API; use PyModule_GetFilenameObject in new code).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_GetFilename(module: *mut PyObject) -> *const c_char {
+    with_vm(|vm| -> rustpython_vm::PyResult<*const c_char> {
+        let module = unsafe { &*module }.try_downcast_ref::<PyModule>(vm)?;
+        let dict = module.dict();
+        let filename = dict
+            .get_item_opt(rustpython_vm::identifier!(vm, __file__), vm)?
+            .and_then(|obj| obj.downcast_ref::<PyStr>().map(ToOwned::to_owned))
+            .ok_or_else(|| vm.new_system_error("module filename missing"))?;
+        let s = filename.to_str().ok_or_else(|| {
+            vm.new_system_error("module filename is not valid UTF-8")
+        })?;
+        let cstr = alloc::ffi::CString::new(s).map_err(|_| {
+            vm.new_system_error("module filename contains null byte")
+        })?;
+        let ptr = MODULE_FILENAME_CACHE.try_with(|cache| {
+            *cache.borrow_mut() = cstr;
+            cache.borrow().as_ptr()
+        }).unwrap_or(core::ptr::null());
+        Ok(ptr)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_NewObject(name: *mut PyObject) -> *mut PyObject {
     with_vm(|vm| -> rustpython_vm::PyResult<_> {
