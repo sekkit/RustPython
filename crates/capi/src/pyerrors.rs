@@ -389,6 +389,22 @@ pub unsafe extern "C" fn rp_va_err_set_handled_exception(exc: *mut PyObject) {
     })
 }
 
+/// Rust impl of PyErr_ResourceWarning: issue a ResourceWarning.
+/// Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_resource_warning(
+    source: *mut PyObject,
+    warning: *mut PyObject,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        let source_obj = unsafe { &*source }.to_owned();
+        let warning_obj = unsafe { &*warning }.to_owned();
+        let category = vm.ctx.exceptions.resource_warning.to_owned();
+        rustpython_vm::warn::warn(warning_obj, Some(category), 1, Some(source_obj), vm)?;
+        Ok(0)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetObject(exception: *mut PyObject, value: *mut PyObject) {
     with_vm::<PyResult<Infallible>, _>(|vm| {

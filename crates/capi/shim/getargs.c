@@ -655,6 +655,13 @@ RP_EXPORT void PyErr_SetHandledException(void *exception) {
     rp_va_err_set_handled_exception(exception);
 }
 
+/* PyErr_ResourceWarning (Python/errors.c) */
+extern int rp_va_err_resource_warning(void *source, void *warning);
+
+RP_EXPORT int PyErr_ResourceWarning(void *source, void *warning) {
+    return rp_va_err_resource_warning(source, warning);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
