@@ -233,6 +233,24 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF8(
 ) -> *mut PyObject {
     unsafe { PyUnicode_Decode(s, size, c"utf-8".as_ptr(), errors) }
 }
+
+/// PyUnicode_EncodeUTF8: encode a unicode string to UTF-8 bytes.
+/// Returns a new bytes object (owned reference).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_EncodeUTF8(
+    unicode: *mut PyObject,
+    errors: *const c_char,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let s = unsafe { &*unicode }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_EncodeUTF8: string is not valid UTF-8")
+        })?;
+        // errors parameter is ignored for UTF-8 encoding (all valid strings
+        // can be encoded to UTF-8).
+        let bytes: rustpython_vm::PyObjectRef = vm.ctx.new_bytes(s.as_bytes().to_vec()).into();
+        Ok(bytes.into_raw().as_ptr())
+    })
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_DecodeUnicodeEscape(
     s: *const c_char,
