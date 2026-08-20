@@ -1,5 +1,20 @@
 use rustpython_wtf8::Wtf8;
 
+/// FFI declarations for the C locale functions (isalpha, tolower, toupper).
+/// These are used by the LOCALE-aware regex operations for bytes patterns.
+/// `isalpha`/`tolower`/`toupper` operate on `int` (representing `unsigned char`),
+/// which is the correct level for single-byte locale character classification.
+#[cfg(any(unix, windows))]
+#[allow(dead_code, unsafe_code)]
+mod locale_ffi {
+    use core::ffi::c_int;
+    unsafe extern "C" {
+        pub fn isalpha(c: c_int) -> c_int;
+        pub fn tolower(c: c_int) -> c_int;
+        pub fn toupper(c: c_int) -> c_int;
+    }
+}
+
 /// A position in the subject, paired with the byte pointer it resolves to.
 ///
 /// `position` is a **character index**, never a byte offset. The engine does
@@ -393,8 +408,21 @@ pub(crate) fn is_digit(ch: u32) -> bool {
 
 #[inline]
 pub(crate) fn is_loc_alnum(ch: u32) -> bool {
-    // FIXME: Ignore the locales
-    u8::try_from(ch).is_ok_and(|x| x.is_ascii_alphanumeric())
+    // Use the C library's isalpha for bytes (0-255) to support locale-aware
+    // character classification (e.g. CP1252 letters on Windows).
+    // For larger values, fall back to ASCII-only.
+    if ch < 256 {
+        #[cfg(any(unix, windows))]
+        {
+            unsafe { locale_ffi::isalpha(ch as core::ffi::c_int) != 0 }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            u8::try_from(ch).is_ok_and(|x| x.is_ascii_alphanumeric())
+        }
+    } else {
+        u8::try_from(ch).is_ok_and(|x| x.is_ascii_alphanumeric())
+    }
 }
 
 #[inline]
@@ -415,14 +443,38 @@ pub fn lower_ascii(ch: u32) -> u32 {
 
 #[inline]
 pub(crate) fn lower_locate(ch: u32) -> u32 {
-    // FIXME: Ignore the locales
-    lower_ascii(ch)
+    // Use the C library's tolower for bytes (0-255) to support locale-aware
+    // case folding (e.g. CP1252 0x8A(Š)→0x9A(š) on Windows).
+    if ch < 256 {
+        #[cfg(any(unix, windows))]
+        {
+            unsafe { locale_ffi::tolower(ch as core::ffi::c_int) as u32 }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            lower_ascii(ch)
+        }
+    } else {
+        lower_ascii(ch)
+    }
 }
 
 #[inline]
 pub(crate) fn upper_locate(ch: u32) -> u32 {
-    // FIXME: Ignore the locales
-    u8::try_from(ch).map_or(ch, |x| x.to_ascii_uppercase() as u32)
+    // Use the C library's toupper for bytes (0-255) to support locale-aware
+    // case folding (e.g. CP1252 0x9A(š)→0x8A(Š) on Windows).
+    if ch < 256 {
+        #[cfg(any(unix, windows))]
+        {
+            unsafe { locale_ffi::toupper(ch as core::ffi::c_int) as u32 }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            u8::try_from(ch).map_or(ch, |x| x.to_ascii_uppercase() as u32)
+        }
+    } else {
+        u8::try_from(ch).map_or(ch, |x| x.to_ascii_uppercase() as u32)
+    }
 }
 
 #[inline]

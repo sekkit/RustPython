@@ -86,6 +86,18 @@ compile_error!(
 pub fn run(mut builder: InterpreterBuilder) -> ExitCode {
     env_logger::init();
 
+    // Set the C locale from the user's environment (matching CPython behavior).
+    // Without this, the C library's character classification (isalpha, tolower,
+    // etc.) uses the "C" locale, which is ASCII-only. This affects re.LOCALE,
+    // locale.getpreferredencoding(), and other locale-dependent operations.
+    #[cfg(not(target_os = "wasi"))]
+    {
+        // Set the C locale from the user's environment (matching CPython
+        // behavior). Without this, isalpha/tolower in the "C" locale are
+        // ASCII-only, breaking re.LOCALE.
+        unsafe { libc::setlocale(libc::LC_ALL, c"".as_ptr()) };
+    }
+
     // NOTE: This is not a WASI convention. But it will be convenient since POSIX shell always defines it.
     #[cfg(target_os = "wasi")]
     {
