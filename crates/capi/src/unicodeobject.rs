@@ -93,6 +93,33 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
     })
 }
 
+/// Thread-local cache for PyUnicode_AsUTF8 NULL-terminated return value.
+use std::cell::RefCell;
+std::thread_local! {
+    static UNICODE_UTF8_CACHE: RefCell<alloc::ffi::CString> =
+        RefCell::new(alloc::ffi::CString::new("").unwrap());
+}
+
+/// PyUnicode_AsUTF8: return a pointer to the UTF-8 representation.
+/// The returned pointer is valid until the next PyUnicode_AsUTF8 call in
+/// the same thread (matching CPython's "valid until next call" contract).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_AsUTF8(obj: *mut PyObject) -> *const c_char {
+    with_vm(|vm| -> rustpython_vm::PyResult<*const c_char> {
+        let unicode = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_AsUTF8: string is not valid UTF-8")
+        })?;
+        let cstr = alloc::ffi::CString::new(unicode).map_err(|_| {
+            vm.new_system_error("PyUnicode_AsUTF8: string contains null byte")
+        })?;
+        let ptr = UNICODE_UTF8_CACHE.with(|cache| {
+            *cache.borrow_mut() = cstr;
+            cache.borrow().as_ptr()
+        });
+        Ok(ptr)
+    })
+}
+
 fn encode_unicode(
     vm: &VirtualMachine,
     unicode: *mut PyObject,
