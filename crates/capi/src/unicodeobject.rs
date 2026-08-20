@@ -794,6 +794,33 @@ pub unsafe extern "C" fn rp_va_unicode_split(
     })
 }
 
+/// Rust implementation of the C shim's PyUnicode_Replace.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_replace(
+    obj: *mut PyObject,
+    old: *mut PyObject,
+    new_: *mut PyObject,
+    maxreplace: isize,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<rustpython_vm::PyObjectRef> {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Replace: string is not valid UTF-8")
+        })?;
+        let old_s = unsafe { &*old }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Replace: old substring is not valid UTF-8")
+        })?;
+        let new_s = unsafe { &*new_ }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Replace: new substring is not valid UTF-8")
+        })?;
+        let result = if maxreplace >= 0 {
+            s.replacen(old_s, new_s, maxreplace as usize)
+        } else {
+            s.replace(old_s, new_s)
+        };
+        Ok(vm.ctx.new_str(result).into())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};

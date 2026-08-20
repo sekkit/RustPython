@@ -417,6 +417,13 @@ RP_EXPORT void *PyUnicode_Split(void *obj, void *sep, intptr_t maxsplit) {
     return rp_va_unicode_split(obj, sep, maxsplit);
 }
 
+/* PyUnicode_Replace (Objects/unicodeobject.c) — replace substrings. */
+extern void *rp_va_unicode_replace(void *obj, void *old, void *new_, intptr_t maxreplace);
+
+RP_EXPORT void *PyUnicode_Replace(void *obj, void *old, void *new_, intptr_t maxreplace) {
+    return rp_va_unicode_replace(obj, old, new_, maxreplace);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
