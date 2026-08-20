@@ -4,7 +4,7 @@ use crate::pystate::{ensure_thread_has_vm_attached, with_vm};
 use crate::util::CStrExt;
 use crate::PyObject;
 use alloc::ffi::CString;
-use core::ffi::{CStr, c_char, c_int, c_ulong};
+use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 use core::sync::atomic::{AtomicPtr, Ordering};
 use rustpython_vm::common::rc::PyRc;
 use rustpython_vm::stdlib::sys;
@@ -191,6 +191,65 @@ pub extern "C" fn rp_va_leave_recursive_call() {
     with_vm(|vm| {
         vm.decrement_recursion();
     })
+}
+
+/// Rust impl of Py_DecodeLocale: convert a C string to wchar_t.
+/// Simple implementation: treat as UTF-8 (or ASCII on non-Windows).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_decode_locale(arg: *const c_char, size: *mut usize) -> *mut c_void {
+    if arg.is_null() {
+        return core::ptr::null_mut();
+    }
+    let s = unsafe { core::ffi::CStr::from_ptr(arg) }.to_bytes();
+    // Convert to wchar_t (widen each byte).
+    let wlen = s.len();
+    let buf_size = (wlen + 1) * core::mem::size_of::<libc::wchar_t>();
+    let buf = unsafe { libc::malloc(buf_size) } as *mut libc::wchar_t;
+    if !buf.is_null() {
+        for i in 0..wlen {
+            unsafe { *buf.add(i) = s[i] as libc::wchar_t };
+        }
+        unsafe { *buf.add(wlen) = 0 };
+        if let Some(sz) = unsafe { size.as_mut() } {
+            *sz = buf_size;
+        }
+    }
+    buf as *mut c_void
+}
+
+/// Rust impl of Py_EncodeLocale: convert a wchar_t* to C string.
+/// Simple implementation: narrow each wchar_t to a byte.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_encode_locale(
+    wstr: *const c_void,
+    size: *mut usize,
+    exception: *mut c_int,
+) -> *mut c_char {
+    if wstr.is_null() {
+        return core::ptr::null_mut();
+    }
+    let ws = wstr as *const libc::wchar_t;
+    let mut len = 0;
+    while unsafe { *ws.add(len) } != 0 { len += 1; }
+    let buf = unsafe { libc::malloc(len + 1) } as *mut c_char;
+    if !buf.is_null() {
+        for i in 0..len {
+            let wc = unsafe { *ws.add(i) };
+            if wc > 255 {
+                if let Some(ep) = unsafe { exception.as_mut() } {
+                    *ep = 1;
+                }
+                unsafe { libc::free(buf as *mut c_void) };
+                return core::ptr::null_mut();
+            }
+            unsafe { *buf.add(i) = wc as c_char };
+        }
+        unsafe { *buf.add(len) = 0 };
+        if let Some(sz) = unsafe { size.as_mut() } {
+            *sz = len + 1;
+        }
+    }
+    buf
 }
 
 /// Rust implementation of the C shim's Py_GetProgramName.

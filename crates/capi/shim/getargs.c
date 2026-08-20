@@ -719,6 +719,18 @@ RP_EXPORT void Py_LeaveRecursiveCall(void) {
     rp_va_leave_recursive_call();
 }
 
+/* Py_DecodeLocale / Py_EncodeLocale (Python/fileutils.c) */
+extern void *rp_va_decode_locale(const char *arg, size_t *size);
+extern void *rp_va_encode_locale(const void *wstr, size_t *size, int *exception);
+
+RP_EXPORT wchar_t *Py_DecodeLocale(const char *arg, size_t *size) {
+    return (wchar_t *)rp_va_decode_locale(arg, size);
+}
+
+RP_EXPORT char *Py_EncodeLocale(const wchar_t *wstr, size_t *size, int *exception) {
+    return (char *)rp_va_encode_locale(wstr, size, exception);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
