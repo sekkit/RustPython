@@ -5,7 +5,7 @@ use crate::pystate::with_vm;
 use crate::util::CStrExt;
 use core::ffi::{c_char, c_int};
 use rustpython_vm::function::{HeapMethodDef, PyMethodFlags};
-use rustpython_vm::{PyRef, PyResult, VirtualMachine};
+use rustpython_vm::{AsObject, PyRef, PyResult, VirtualMachine};
 
 define_py_check!(fn PyCFunction_Check, types.builtin_function_or_method_type);
 define_py_check!(exact fn PyCFunction_CheckExact, types.builtin_function_or_method_type);
@@ -93,6 +93,21 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
     module: *mut PyObject,
 ) -> *mut PyObject {
     unsafe { PyCMethod_New(ml, slf, module, core::ptr::null_mut()) }
+}
+
+/// Rust impl of PyCFunction_GetSelf: return the bound self of a C function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_cfunction_get_self(method: *mut PyObject) -> *mut PyObject {
+    with_vm(|vm| {
+        let obj = unsafe { &*method };
+        // Try to get __self__ attribute (exposed by PyNativeFunction).
+        if let Ok(self_obj) = obj.get_attr("__self__", vm) {
+            if !self_obj.is(vm.ctx.none().as_object()) {
+                return Ok(self_obj.into_raw().as_ptr());
+            }
+        }
+        Ok(core::ptr::null_mut())
+    })
 }
 
 #[cfg(test)]

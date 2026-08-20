@@ -673,6 +673,13 @@ RP_EXPORT void PyErr_SyntaxLocation(const char *filename, int lineno) {
     rp_va_err_syntax_location_ex(NULL, filename, lineno, -1);
 }
 
+/* PyCFunction_GetSelf (Objects/methodobject.c) — return the bound self. */
+extern void *rp_va_cfunction_get_self(void *method);
+
+RP_EXPORT void *PyCFunction_GetSelf(void *method) {
+    return rp_va_cfunction_get_self(method);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
