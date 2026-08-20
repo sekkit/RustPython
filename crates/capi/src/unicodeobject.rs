@@ -928,6 +928,40 @@ pub unsafe extern "C" fn rp_va_unicode_splitlines(
     })
 }
 
+/// Rust impl of PyUnicode_Tailmatch: test whether the string starts with
+/// (direction=1) or ends with (direction=-1) the substring.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_tailmatch(
+    obj: *mut PyObject,
+    sub: *mut PyObject,
+    start: isize,
+    end: isize,
+    direction: c_int,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Tailmatch: string is not valid UTF-8")
+        })?;
+        let sub_s = unsafe { &*sub }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_Tailmatch: substring is not valid UTF-8")
+        })?;
+        let len = s.chars().count() as isize;
+        let start = if start < 0 { (len + start).max(0) } else { start.min(len) };
+        let end = if end < 0 { (len + end).max(0) } else { end.min(len) };
+        if start >= end {
+            return Ok(0);
+        }
+        let start_byte = s.chars().take(start as usize).map(|c| c.len_utf8()).sum::<usize>();
+        let end_byte = s.chars().take(end as usize).map(|c| c.len_utf8()).sum::<usize>();
+        let sub_str = &s[start_byte..end_byte];
+        if direction == 1 {
+            Ok(sub_str.starts_with(sub_s) as c_int)
+        } else {
+            Ok(sub_str.ends_with(sub_s) as c_int)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};
