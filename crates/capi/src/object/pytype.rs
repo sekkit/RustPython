@@ -61,11 +61,11 @@ pub unsafe extern "C" fn PyType_IsSubtype(a: *const PyTypeObject, b: *const PyTy
 }
 
 /// The C-visible `ob_type` of a RustPython object (offset 8 of the object
-/// header) is the payload vtable, not a type pointer. CPython's inline
-/// PyObject_TypeCheck falls back to calling the exported PyType_IsSubtype
-/// with those raw pointers, so resolve them: known payload vtables map to
-/// their real type; the exported type-stub symbols (byte copies of a type's
-/// header) carry the real type's fields and can be used directly.
+/// header, where `typ` now lives — matching CPython's PyObject layout).
+/// CPython's inline PyObject_TypeCheck falls back to calling the exported
+/// PyType_IsSubtype with those raw pointers, so resolve them: known payload
+/// vtables map to their real type; the exported type-stub symbols (byte copies
+/// of a type's header) carry the real type's fields and can be used directly.
 fn resolve_type_ptr(
     vm: &VirtualMachine,
     ptr: *const PyTypeObject,
@@ -114,7 +114,10 @@ fn vtable_probes(vm: &VirtualMachine) -> Vec<(usize, *mut u8)> {
     };
 
     fn probe<T: PyPayload>(obj: PyObjectRef, ty: PyRef<PyType>) -> (usize, *mut u8) {
-        let vtable = unsafe { *((obj.as_object().as_raw() as *const u8).add(8) as *const usize) };
+        // vtable is at offset 40 of PyInner (after ref_count, typ, gc_bits,
+        // gc_generation, padding, gc_pointers). typ is at offset 8 (matching
+        // CPython's ob_type).
+        let vtable = unsafe { *((obj.as_object().as_raw() as *const u8).add(40) as *const usize) };
         (vtable, ty.as_object().as_raw().cast_mut().cast())
     }
 

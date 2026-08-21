@@ -383,7 +383,9 @@ const _: () = assert!(core::mem::align_of::<WeakRefList>() >= core::mem::align_o
 #[repr(C)]
 pub(super) struct PyInner<T> {
     pub(super) ref_count: RefCount,
-    pub(super) vtable: &'static PyObjVTable,
+    /// __class__ member — at offset 8 matching CPython's PyObject.ob_type,
+    /// so C extensions compiled for CPython read the correct type pointer.
+    pub(super) typ: PyAtomicRef<PyType>,
     /// GC bits for free-threading (like ob_gc_bits)
     pub(super) gc_bits: PyAtomic<u8>,
     /// GC generation index (0-2=gen, GC_PERMANENT=permanent, GC_UNTRACKED=not tracked).
@@ -392,7 +394,7 @@ pub(super) struct PyInner<T> {
     /// Intrusive linked list pointers for GC generational tracking
     pub(super) gc_pointers: Pointers<PyObject>,
 
-    pub(super) typ: PyAtomicRef<PyType>, // __class__ member
+    pub(super) vtable: &'static PyObjVTable,
 
     pub(super) payload: T,
 }
