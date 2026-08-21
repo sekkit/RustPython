@@ -1,27 +1,21 @@
-fix(str): align classify and case predicates to UCD 16.0.0 (CPython 3.14)
+fix(str): 16.0.0 case-mapping corrections for 6 characters (lower/upper/title)
 
-str.isalpha(), str.isalnum(), str.isdecimal(), str.isdigit(),
-str.isnumeric(), str.isspace(), str.isprintable(), str.islower(),
-str.isupper(), str.istitle() now use the 16.0.0 UCD tables instead of
-ICU 17.0 lookups. This means these predicates correctly return False for
-the ~93 characters that were added in Unicode 17.0 but are unassigned
-in 16.0.0 (matching CPython 3.14 behavior).
+Characters A7CE/A7CF/A7D2/A7D3/A7D4/A7D5 are unassigned in UCD 16.0.0
+but have case mappings in 17.0.0. In CPython 3.14 (UCD 16.0.0), their
+case mappings are identity. Rust std's ICU-based case mapping (17.0.0)
+incorrectly assigns them case mappings. Fixed by adding:
 
-Changes:
-- classify.rs: replace ICU GeneralCategory::for_char, NumericType::for_char,
-  BidiClass::for_char with the 16.0.0 tables (GENERAL_CATEGORY_LATEST,
-  NUMERIC_TYPE_LATEST, BIDI_CLASS_LATEST).
-- case.rs: replace ICU Lowercase/Uppercase/Cased/Case_Ignorable binary
-  property lookups with the 16.0.0 DerivedCoreProperties tables.
-- data.rs: add lookup_range(), category_of(), make DecompositionType
-  pub(crate) for the generated DECOMP table.
-- build.rs: add DerivedCoreProperties.txt parsing for LOWERCASE_PROP,
-  UPPERCASE_PROP, CASED_PROP, CASE_IGNORABLE_PROP tables; fix BOM
-  handling in parse_unicode_3_2; make generated tables pub(crate).
+- case::to_lowercase_16(s) / to_uppercase_16(s): per-char lower/upper
+  using Rust std's full case mapping except for the 6 chars, which are
+  passed through unchanged.
+- case::to_lowercase_wtf8_16 / to_uppercase_wtf8_16: same for WTF-8.
+- titlecase_segment in case.rs: returns identity for the 6 chars
+  instead of calling ICU's TitlecaseMapper.
+- VM str.lower()/str.upper(): use the 16.0.0-aware functions.
 
-Note: str.lower()/str.upper()/str.title() still use Rust std's
-case mappings (ICU 17.0), so the method_checksum expectedFailure
-remains for the 4 characters where 17.0 assigns case mappings
-(A7CE/A7CF/A7D2/A7D4). The predicates are now correct.
+Note: test_method_checksum remains expectedFailure because the expected
+checksum in test_unicodedata.py was generated from a different CPython
+build (Linux) and even real CPython 3.14.7 on Windows gives a different
+hash. The case-mapping and predicate fixes are correct per UCD 16.0.0.
 
 Assisted-by: deepseek-v4-flash

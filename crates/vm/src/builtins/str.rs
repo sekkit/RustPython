@@ -754,8 +754,8 @@ impl PyStr {
     fn lower(&self) -> Self {
         match self.as_str_kind() {
             PyKindStr::Ascii(s) => s.to_ascii_lowercase().into(),
-            PyKindStr::Utf8(s) => s.to_lowercase().into(),
-            PyKindStr::Wtf8(w) => w.to_lowercase().into(),
+            PyKindStr::Utf8(s) => unicode::case::to_lowercase_16(s).into(),
+            PyKindStr::Wtf8(w) => unicode::case::to_lowercase_wtf8_16(w).into(),
         }
     }
 
@@ -777,8 +777,8 @@ impl PyStr {
     fn upper(&self) -> Self {
         match self.as_str_kind() {
             PyKindStr::Ascii(s) => s.to_ascii_uppercase().into(),
-            PyKindStr::Utf8(s) => s.to_uppercase().into(),
-            PyKindStr::Wtf8(w) => w.to_uppercase().into(),
+            PyKindStr::Utf8(s) => unicode::case::to_uppercase_16(s).into(),
+            PyKindStr::Wtf8(w) => unicode::case::to_uppercase_wtf8_16(w).into(),
         }
     }
 

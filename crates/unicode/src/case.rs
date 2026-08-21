@@ -30,6 +30,83 @@ use crate::data::{lookup_range, category_of, CASED_PROP, CASE_IGNORABLE_PROP, LO
 
 // Code-point mappings
 
+/// Characters that are unassigned in UCD 16.0.0 but have a case mapping
+/// in 17.0.0. For these characters, `str.lower()`/`str.upper()`/`str.title()`
+/// must return the character itself (identity) to match CPython 3.14.
+#[must_use]
+pub fn is_ucd_16_only_case(c: char) -> bool {
+    matches!(c as u32, 0xA7CE | 0xA7CF | 0xA7D2 | 0xA7D3 | 0xA7D4 | 0xA7D5)
+}
+
+/// UCD 16.0.0-aware lowercase: uses Rust std's full case mapping for all
+/// characters except the few that were added in 17.0.0 and have no 16.0.0
+/// mapping.
+#[must_use]
+pub fn to_lowercase_16(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if is_ucd_16_only_case(c) {
+            out.push(c);
+        } else {
+            out.extend(c.to_lowercase());
+        }
+    }
+    out
+}
+
+/// UCD 16.0.0-aware uppercase.
+#[must_use]
+pub fn to_uppercase_16(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if is_ucd_16_only_case(c) {
+            out.push(c);
+        } else {
+            out.extend(c.to_uppercase());
+        }
+    }
+    out
+}
+
+/// UCD 16.0.0-aware lowercase for WTF-8, passing lone surrogates through.
+#[must_use]
+pub fn to_lowercase_wtf8_16(text: &Wtf8) -> Wtf8Buf {
+    let mut out = Vec::with_capacity(text.len());
+    for chunk in text.chunks() {
+        match chunk {
+            Wtf8Chunk::Utf8(s) => {
+                out.extend(to_lowercase_16(s).as_bytes());
+            }
+            Wtf8Chunk::Surrogate(c) => {
+                let mut buf = Wtf8Buf::new();
+                buf.push(c);
+                out.extend_from_slice(buf.as_bytes());
+            }
+        }
+    }
+    // SAFETY: to_lowercase_16 produces valid UTF-8, surrogates are valid WTF-8.
+    unsafe { Wtf8Buf::from_bytes_unchecked(out) }
+}
+
+/// UCD 16.0.0-aware uppercase for WTF-8, passing lone surrogates through.
+#[must_use]
+pub fn to_uppercase_wtf8_16(text: &Wtf8) -> Wtf8Buf {
+    let mut out = Vec::with_capacity(text.len());
+    for chunk in text.chunks() {
+        match chunk {
+            Wtf8Chunk::Utf8(s) => {
+                out.extend(to_uppercase_16(s).as_bytes());
+            }
+            Wtf8Chunk::Surrogate(c) => {
+                let mut buf = Wtf8Buf::new();
+                buf.push(c);
+                out.extend_from_slice(buf.as_bytes());
+            }
+        }
+    }
+    unsafe { Wtf8Buf::from_bytes_unchecked(out) }
+}
+
 /// Simple (one-to-one) lowercase mapping of `c` (`Py_UNICODE_TOLOWER`).
 #[must_use]
 pub fn simple_lowercase(c: char) -> char {
@@ -243,6 +320,14 @@ fn titlecase_segment(s: &str, out: &mut FmtWriter<'_>) {
     // and skips anything else, dropping the titlecase mapping of cased marks
     // such as U+0345 (`ͅ`, general category Mn) -> U+0399 (`Ι`). `None`
     // titlecases the code point as given.
+    // UCD 16.0.0 correction: characters unassigned in 16.0.0 have no titlecase
+    // mapping (identity).
+    if let Some(ch) = s.chars().next()
+        && is_ucd_16_only_case(ch)
+    {
+        push_char(ch, out);
+        return;
+    }
     let mut options = TitlecaseOptions::default();
     options.leading_adjustment = Some(LeadingAdjustment::None);
     TitlecaseMapper::new()
