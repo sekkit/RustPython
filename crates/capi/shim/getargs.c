@@ -746,6 +746,13 @@ RP_EXPORT void *PyImport_ExecCodeModule(const char *name, void *co) {
     return rp_va_import_exec_code_module(name, co);
 }
 
+/* PyImport_GetImporter (Python/import.c) */
+extern void *rp_va_import_get_importer(void *path);
+
+RP_EXPORT void *PyImport_GetImporter(void *path) {
+    return rp_va_import_get_importer(path);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \

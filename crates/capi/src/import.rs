@@ -100,7 +100,21 @@ pub unsafe extern "C" fn rp_va_import_exec_code_module_object(
     })
 }
 
-/// Rust impl of PyImport_ExecCodeModuleWithPathnames: import code object with pathnames.
+/// Rust impl of PyImport_GetImporter: return the importer for a path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_import_get_importer(
+    path: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let path_obj = unsafe { &*path }.to_owned();
+        // Use importlib._bootstrap._get_importer
+        let importlib = vm.import("importlib", 0)?;
+        let bootstrap = importlib.get_attr("_bootstrap", vm)?;
+        let get_importer = bootstrap.get_attr("_get_importer", vm)?;
+        let result = vm.invoke(&get_importer, (path_obj,))?;
+        Ok(result.into_raw().as_ptr())
+    })
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rp_va_import_exec_code_module_with_pathnames(
     name: *const c_char,
