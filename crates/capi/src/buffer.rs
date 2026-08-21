@@ -386,3 +386,61 @@ pub unsafe extern "C" fn PyBuffer_FillInfo(
     view.internal = core::ptr::null_mut();
     0
 }
+
+/// Rust impl of PyBuffer_SizeFromFormat: calculate total size from format string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_buffer_size_from_format(format: *const c_char) -> isize {
+    if format.is_null() {
+        return 1;
+    }
+    let fmt = unsafe { core::ffi::CStr::from_ptr(format) }.to_str().unwrap_or("");
+    match fmt {
+        "b" | "B" | "c" | "?" => 1,
+        "h" | "H" => 2,
+        "i" | "I" | "l" | "L" | "f" => 4,
+        "q" | "Q" | "n" | "N" | "d" => 8,
+        "P" | "O" => core::mem::size_of::<*mut core::ffi::c_void>() as isize,
+        _ => {
+            // Try to parse as a tuple format: (fmt)
+            if let Some(stripped) = fmt.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+                return unsafe { rp_va_buffer_size_from_format(stripped.as_ptr() as *const c_char) };
+            }
+            1
+        }
+    }
+}
+
+/// Rust impl of PyBuffer_FillContiguousStrides: fill strides for contiguous N-D buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_buffer_fill_contiguous_strides(
+    ndim: c_int,
+    shape: *mut isize,
+    strides: *mut isize,
+    itemsize: isize,
+    fortran: c_int,
+) -> c_int {
+    if ndim <= 0 || shape.is_null() || strides.is_null() {
+        return -1;
+    }
+    let ndim = ndim as usize;
+    let shape_slice = unsafe { core::slice::from_raw_parts(shape, ndim) };
+    let strides_slice = unsafe { core::slice::from_raw_parts_mut(strides, ndim) };
+    if fortran != 0 {
+        let mut stride = itemsize;
+        for i in 0..ndim {
+            strides_slice[i] = stride;
+            if shape_slice[i] > 1 {
+                stride *= shape_slice[i];
+            }
+        }
+    } else {
+        let mut stride = itemsize;
+        for i in (0..ndim).rev() {
+            strides_slice[i] = stride;
+            if shape_slice[i] > 1 {
+                stride *= shape_slice[i];
+            }
+        }
+    }
+    0
+}

@@ -608,6 +608,18 @@ RP_EXPORT void *PyUnicode_RSplit(void *obj, void *sep, intptr_t maxsplit) {
     return rp_va_unicode_rsplit(obj, sep, maxsplit);
 }
 
+/* PyBuffer_SizeFromFormat / PyBuffer_FillContiguousStrides (Objects/buffer.c) */
+extern intptr_t rp_va_buffer_size_from_format(const char *format);
+extern int rp_va_buffer_fill_contiguous_strides(int ndim, intptr_t *shape, intptr_t *strides, intptr_t itemsize, int fortran);
+
+RP_EXPORT intptr_t PyBuffer_SizeFromFormat(const char *format) {
+    return rp_va_buffer_size_from_format(format);
+}
+
+RP_EXPORT int PyBuffer_FillContiguousStrides(int ndim, intptr_t *shape, intptr_t *strides, intptr_t itemsize, int fortran) {
+    return rp_va_buffer_fill_contiguous_strides(ndim, shape, strides, itemsize, fortran);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
