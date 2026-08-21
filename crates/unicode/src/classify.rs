@@ -3,15 +3,20 @@
 //! Each predicate operates on a single Unicode scalar. Callers iterating over
 //! WTF-8 text apply these per code point, treating lone surrogates as failing
 //! every predicate.
+//!
+//! Uses the 16.0.0 UCD tables (matching CPython 3.14) instead of ICU lookups
+//! so that `str.isalpha()` etc. are consistent with `unicodedata`.
 
-use icu_properties::props::{
-    BidiClass, EnumeratedProperty, GeneralCategory, GeneralCategoryGroup, NumericType,
+use icu_properties::props::{BidiClass, GeneralCategory, GeneralCategoryGroup, NumericType};
+
+use crate::data::{
+    lookup_property, category_of, BIDI_CLASS_LATEST, NUMERIC_TYPE_LATEST,
 };
 
 /// `str.isalpha` for a single character: any `Letter` general category.
 #[must_use]
 pub fn is_alpha(c: char) -> bool {
-    GeneralCategoryGroup::Letter.contains(GeneralCategory::for_char(c))
+    GeneralCategoryGroup::Letter.contains(category_of(c))
 }
 
 /// `str.isalnum` for a single character: any `Letter` or `Number` category.
@@ -19,20 +24,20 @@ pub fn is_alpha(c: char) -> bool {
 pub fn is_alnum(c: char) -> bool {
     GeneralCategoryGroup::Letter
         .union(GeneralCategoryGroup::Number)
-        .contains(GeneralCategory::for_char(c))
+        .contains(category_of(c))
 }
 
 /// `str.isdecimal` for a single character: `Decimal_Number` general category.
 #[must_use]
 pub fn is_decimal(c: char) -> bool {
-    matches!(GeneralCategory::for_char(c), GeneralCategory::DecimalNumber)
+    matches!(category_of(c), GeneralCategory::DecimalNumber)
 }
 
 /// `str.isdigit` for a single character: `Numeric_Type` of `Digit` or `Decimal`.
 #[must_use]
 pub fn is_digit(c: char) -> bool {
     matches!(
-        NumericType::for_char(c),
+        lookup_property(NUMERIC_TYPE_LATEST, c).unwrap_or(NumericType::None),
         NumericType::Digit | NumericType::Decimal
     )
 }
@@ -41,7 +46,7 @@ pub fn is_digit(c: char) -> bool {
 #[must_use]
 pub fn is_numeric(c: char) -> bool {
     matches!(
-        NumericType::for_char(c),
+        lookup_property(NUMERIC_TYPE_LATEST, c).unwrap_or(NumericType::None),
         NumericType::Decimal | NumericType::Digit | NumericType::Numeric
     )
 }
@@ -50,13 +55,13 @@ pub fn is_numeric(c: char) -> bool {
 /// whitespace / paragraph / segment separator.
 #[must_use]
 pub fn is_space(c: char) -> bool {
-    matches!(
-        GeneralCategory::for_char(c),
-        GeneralCategory::SpaceSeparator
-    ) || matches!(
-        BidiClass::for_char(c),
-        BidiClass::WhiteSpace | BidiClass::ParagraphSeparator | BidiClass::SegmentSeparator
-    )
+    matches!(category_of(c), GeneralCategory::SpaceSeparator)
+        || matches!(
+            lookup_property(BIDI_CLASS_LATEST, c),
+            Some(BidiClass::WhiteSpace)
+                | Some(BidiClass::ParagraphSeparator)
+                | Some(BidiClass::SegmentSeparator)
+        )
 }
 
 /// `str.isprintable` for a single character: ASCII space is printable, as are
@@ -80,7 +85,7 @@ pub fn is_printable(c: char) -> bool {
 #[must_use]
 pub fn is_repr_printable(c: char) -> bool {
     !matches!(
-        GeneralCategory::for_char(c),
+        category_of(c),
         GeneralCategory::SpaceSeparator
             | GeneralCategory::LineSeparator
             | GeneralCategory::ParagraphSeparator

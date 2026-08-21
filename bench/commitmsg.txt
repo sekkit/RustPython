@@ -1,16 +1,27 @@
-fix(test_unicodedata): remove broken EAW test (called nonexistent parent method); add DerivedCoreProperties
+fix(str): align classify and case predicates to UCD 16.0.0 (CPython 3.14)
 
-test_east_asian_width_9_0_changes in UnicodeFunctionsTest was a
-RustPython-specific addition that called
-super().test_east_asian_width_9_0_changes(), but the parent
-(unittest.TestCase) has no such method. The test raised AttributeError
-on every invocation, hidden by @unittest.expectedFailure. Removed the
-2 broken tests (modern + 3.2.0 views), reducing expectedFailures from
-5 to 3. Remaining: test_method_checksum (classify/case 16.0 alignment),
-test_normalization_3_2_0 (3.2.0 normalization), and
-test_failed_import_during_compiling (unrelated import mechanism).
+str.isalpha(), str.isalnum(), str.isdecimal(), str.isdigit(),
+str.isnumeric(), str.isspace(), str.isprintable(), str.islower(),
+str.isupper(), str.istitle() now use the 16.0.0 UCD tables instead of
+ICU 17.0 lookups. This means these predicates correctly return False for
+the ~93 characters that were added in Unicode 17.0 but are unassigned
+in 16.0.0 (matching CPython 3.14 behavior).
 
-Also adds DerivedCoreProperties.txt (UCD 16.0.0) for upcoming
-classify.rs/case.rs predicate alignment.
+Changes:
+- classify.rs: replace ICU GeneralCategory::for_char, NumericType::for_char,
+  BidiClass::for_char with the 16.0.0 tables (GENERAL_CATEGORY_LATEST,
+  NUMERIC_TYPE_LATEST, BIDI_CLASS_LATEST).
+- case.rs: replace ICU Lowercase/Uppercase/Cased/Case_Ignorable binary
+  property lookups with the 16.0.0 DerivedCoreProperties tables.
+- data.rs: add lookup_range(), category_of(), make DecompositionType
+  pub(crate) for the generated DECOMP table.
+- build.rs: add DerivedCoreProperties.txt parsing for LOWERCASE_PROP,
+  UPPERCASE_PROP, CASED_PROP, CASE_IGNORABLE_PROP tables; fix BOM
+  handling in parse_unicode_3_2; make generated tables pub(crate).
+
+Note: str.lower()/str.upper()/str.title() still use Rust std's
+case mappings (ICU 17.0), so the method_checksum expectedFailure
+remains for the 4 characters where 17.0 assigns case mappings
+(A7CE/A7CF/A7D2/A7D4). The predicates are now correct.
 
 Assisted-by: deepseek-v4-flash

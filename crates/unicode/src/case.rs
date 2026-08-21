@@ -22,11 +22,11 @@ use alloc::{
 use icu_casemap::options::{LeadingAdjustment, TitlecaseOptions};
 use icu_casemap::{CaseMapper, TitlecaseMapper};
 use icu_locale::LanguageIdentifier;
-use icu_properties::props::{
-    BinaryProperty, CaseIgnorable, Cased, EnumeratedProperty, GeneralCategory, Lowercase, Uppercase,
-};
+use icu_properties::props::GeneralCategory;
 use rustpython_wtf8::{CodePoint, Wtf8, Wtf8Buf, Wtf8Chunk};
 use writeable::Writeable;
+
+use crate::data::{lookup_range, category_of, CASED_PROP, CASE_IGNORABLE_PROP, LOWERCASE_PROP, UPPERCASE_PROP};
 
 // Code-point mappings
 
@@ -59,31 +59,31 @@ pub fn simple_fold(c: char) -> char {
 /// Whether `c` has the `Lowercase` property.
 #[must_use]
 pub fn is_lowercase(c: char) -> bool {
-    Lowercase::for_char(c)
+    lookup_range(LOWERCASE_PROP, c)
 }
 
 /// Whether `c` has the `Uppercase` property.
 #[must_use]
 pub fn is_uppercase(c: char) -> bool {
-    Uppercase::for_char(c)
+    lookup_range(UPPERCASE_PROP, c)
 }
 
 /// Whether `c` is a titlecase letter (general category `Lt`).
 #[must_use]
 pub fn is_titlecase(c: char) -> bool {
-    GeneralCategory::for_char(c) == GeneralCategory::TitlecaseLetter
+    category_of(c) == GeneralCategory::TitlecaseLetter
 }
 
 /// Whether `c` has the `Cased` property.
 #[must_use]
 pub fn is_cased(c: char) -> bool {
-    Cased::for_char(c)
+    lookup_range(CASED_PROP, c)
 }
 
 /// Whether `c` has the `Case_Ignorable` property.
 #[must_use]
 pub fn is_case_ignorable(c: char) -> bool {
-    CaseIgnorable::for_char(c)
+    lookup_range(CASE_IGNORABLE_PROP, c)
 }
 
 // String-level mappings

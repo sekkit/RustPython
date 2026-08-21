@@ -626,6 +626,30 @@ fn generate_unicode_latest() {
         write!(writer, "({name:?}, 0x{cp:X}),").unwrap();
     }
     writeln!(writer, "];").unwrap();
+
+    // Casing-related derived properties from DerivedCoreProperties.txt (UCD 16.0.0).
+    for (prop, static_name) in [
+        ("Lowercase", "LOWERCASE_PROP"),
+        ("Uppercase", "UPPERCASE_PROP"),
+        ("Cased", "CASED_PROP"),
+        ("Case_Ignorable", "CASE_IGNORABLE_PROP"),
+    ] {
+        write_derived(
+            &base,
+            "DerivedCoreProperties.txt",
+            static_name,
+            "(u32, u32)",
+            NonZeroUsize::new(1).unwrap(),
+            &mut writer,
+            |start, end, id, _| {
+                (id.trim() == prop).then_some((start, end))
+            },
+            |writer, mut values| {
+                values.sort_unstable_by_key(|(start, _)| *start);
+                writeln!(writer, "{values:?};").unwrap();
+            },
+        );
+    }
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -645,7 +669,7 @@ fn write_derived<W, P, FW, T>(
 {
     let path = base.join(file_name);
     let reader = BufReader::new(File::open(path).unwrap());
-    writeln!(writer, "static {static_name}: &[{array_type}] = &").unwrap();
+    writeln!(writer, "pub(crate) static {static_name}: &[{array_type}] = &").unwrap();
     parse_unicode_3_2(reader, field, writer, parse, write_vec);
 }
 
@@ -665,6 +689,7 @@ fn parse_unicode_3_2<W, P, FW, T>(
 
     for line in reader.lines().map(Result::unwrap) {
         let line = line.trim();
+        let line = line.strip_prefix('\u{feff}').unwrap_or(line);
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -673,7 +698,7 @@ fn parse_unicode_3_2<W, P, FW, T>(
         let range = fields.next().expect("Unicode data is missing a char range");
         let id = fields
             .nth(field.get().saturating_sub(1))
-            .expect("Unicode data is missing a property");
+            .unwrap_or_else(|| panic!("field {field} missing in line: {line}"));
         let (start, end) = match range.split_once("..") {
             Some((left, right)) => {
                 let start = u32::from_str_radix(left.trim(), 16).unwrap();

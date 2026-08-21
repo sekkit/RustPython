@@ -29,7 +29,7 @@ include!(concat!(
 ));
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum DecompositionType {
+pub(crate) enum DecompositionType {
     Canonical,
     Compat,
     Circle,
@@ -73,7 +73,9 @@ impl DecompositionType {
     }
 }
 
-fn lookup_property<T: Copy>(table: &[(u32, u32, T)], ch: char) -> Option<T> {
+/// Look up a character in a range-indexed property table.
+#[must_use]
+pub(crate) fn lookup_property<T: Copy>(table: &[(u32, u32, T)], ch: char) -> Option<T> {
     let ch = ch as u32;
     table
         .binary_search_by(|&(start, end, _)| {
@@ -87,6 +89,29 @@ fn lookup_property<T: Copy>(table: &[(u32, u32, T)], ch: char) -> Option<T> {
         })
         .ok()
         .map(|i| table[i].2)
+}
+
+/// Check whether a character is in a binary property table (range table).
+#[must_use]
+pub(crate) fn lookup_range(table: &[(u32, u32)], ch: char) -> bool {
+    let c = ch as u32;
+    table
+        .binary_search_by(|&(start, end)| {
+            if c > end {
+                Ordering::Less
+            } else if c < start {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
+/// The General Category of `c` according to the 16.0.0 tables.
+#[must_use]
+pub(crate) fn category_of(c: char) -> GeneralCategory {
+    lookup_property(GENERAL_CATEGORY_LATEST, c).unwrap_or(GeneralCategory::Unassigned)
 }
 
 fn lookup_numeric_val(ch: char, modern: bool) -> Option<f64> {
