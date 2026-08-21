@@ -56,7 +56,21 @@ fn get_constant(vm: &VirtualMachine, constant_id: c_uint) -> PyResult<&PyObject>
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Py_GetConstantBorrowed(constant_id: c_uint) -> *mut PyObject {
-    with_vm(|vm| get_constant(vm, constant_id).map(PyObject::as_raw))
+    with_vm(|vm| {
+        // Handle all constants (0-9) for the borrowed version.
+        // For 5-9, we leak a reference (the caller must not decref).
+        let obj: PyObjectRef = match constant_id {
+            0..=4 => get_constant(vm, constant_id)?.to_owned().into(),
+            5 => vm.ctx.new_int(0).into(),
+            6 => vm.ctx.new_int(1).into(),
+            7 => vm.ctx.empty_str.to_owned().into(),
+            8 => vm.ctx.new_bytes(vec![]).into(),
+            9 => vm.ctx.new_tuple(vec![]).into(),
+            _ => return Err(vm.new_system_error("Invalid constant ID")),
+        };
+        // Leak the reference (borrowed reference).
+        Ok(obj.into_raw().as_ptr())
+    })
 }
 
 #[unsafe(no_mangle)]
