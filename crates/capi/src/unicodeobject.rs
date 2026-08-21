@@ -1050,6 +1050,39 @@ define_unicode_class_func!(rp_va_PyUnicode_IsWhitespace, |c: char| c.is_whitespa
 define_unicode_class_func!(rp_va_PyUnicode_Tolower, |c: char| c.to_lowercase().next().unwrap_or(c) as u32, u32);
 define_unicode_class_func!(rp_va_PyUnicode_Toupper, |c: char| c.to_uppercase().next().unwrap_or(c) as u32, u32);
 
+/// Rust impl of PyUnicode_AsUCS4: copy string to UCS-4 buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_as_ucs4(
+    obj: *mut PyObject,
+    buffer: *mut u32,
+    buflen: isize,
+    copy_null: c_int,
+) -> isize {
+    with_vm(|vm| -> rustpython_vm::PyResult<isize> {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_AsUCS4: string is not valid UTF-8")
+        })?;
+        let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
+        let len = chars.len() as isize;
+        if buffer.is_null() {
+            // If buffer is NULL, return the required length.
+            return Ok(if copy_null != 0 { len + 1 } else { len });
+        }
+        let to_copy = if buflen < 0 {
+            chars.len()
+        } else {
+            (buflen.min(chars.len() as isize)) as usize
+        };
+        unsafe {
+            core::ptr::copy_nonoverlapping(chars.as_ptr(), buffer, to_copy);
+        }
+        if copy_null != 0 && to_copy < buflen as usize {
+            unsafe { *buffer.add(to_copy) = 0 };
+        }
+        Ok(to_copy as isize)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};

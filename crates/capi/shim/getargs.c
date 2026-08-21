@@ -767,6 +767,13 @@ RP_EXPORT void *PyByteArray_Concat(void *a, void *b) {
     return rp_va_bytearray_concat(a, b);
 }
 
+/* PyUnicode_AsUCS4 (Objects/unicodeobject.c) */
+extern intptr_t rp_va_unicode_as_ucs4(void *obj, unsigned int *buffer, intptr_t buflen, int copy_null);
+
+RP_EXPORT intptr_t PyUnicode_AsUCS4(void *obj, unsigned int *buffer, intptr_t buflen, int copy_null) {
+    return rp_va_unicode_as_ucs4(obj, buffer, buflen, copy_null);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
