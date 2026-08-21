@@ -760,6 +760,13 @@ RP_EXPORT int PyBuffer_FromContiguous(void *view, void *buf, intptr_t len, const
     return rp_va_buffer_from_contiguous(view, buf, len, fort);
 }
 
+/* PyByteArray_Concat (Objects/bytearrayobject.c) */
+extern void *rp_va_bytearray_concat(void *a, void *b);
+
+RP_EXPORT void *PyByteArray_Concat(void *a, void *b) {
+    return rp_va_bytearray_concat(a, b);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \

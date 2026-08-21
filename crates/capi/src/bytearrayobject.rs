@@ -71,6 +71,20 @@ pub unsafe extern "C" fn PyByteArray_Resize(bytearray: *mut PyObject, len: isize
     })
 }
 
+/// Rust impl of PyByteArray_Concat: concatenate two bytearray objects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_bytearray_concat(
+    a: *mut PyObject,
+    b: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let a_obj = unsafe { &*a }.to_owned();
+        let b_obj = unsafe { &*b }.to_owned();
+        let result = vm._add(&a_obj, &b_obj)?;
+        Ok(result.into_raw().as_ptr())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;
