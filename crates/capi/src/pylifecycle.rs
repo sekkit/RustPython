@@ -234,6 +234,31 @@ pub unsafe extern "C" fn rp_va_file_write_string(
     })
 }
 
+/// Rust impl of PyFile_GetLine: read a line from a file object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_file_get_line(
+    file: *mut PyObject,
+    n: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let file_obj = unsafe { &*file }.to_owned();
+        // Call file.readline() method.
+        let line = vm.call_method(&file_obj, "readline", ())?;
+        if n == 0 {
+            // Strip trailing newline.
+            let stripped = vm.call_method(&line, "rstrip", (vm.ctx.new_str("\n"),))?;
+            Ok(stripped.into_raw().as_ptr())
+        } else if n > 0 {
+            // Return at most n characters.
+            let sliced = vm.call_method(&line, "__getitem__", (vm.ctx.new_int(0), vm.ctx.new_int(n)))?;
+            Ok(sliced.into_raw().as_ptr())
+        } else {
+            // Return the line as-is (with trailing newline).
+            Ok(line.into_raw().as_ptr())
+        }
+    })
+}
+
 /// Rust impl of Py_DecodeLocale: convert a C string to wchar_t.
 /// Simple implementation: treat as UTF-8 (or ASCII on non-Windows).
 #[unsafe(no_mangle)]

@@ -720,6 +720,13 @@ RP_EXPORT void *PyErr_FormatV(void *exception, const char *format, va_list vargs
     return rp_va_err_format(exception, format, slots, n);
 }
 
+/* PyFile_GetLine (Python/fileobject.c) */
+extern void *rp_va_file_get_line(void *file, int n);
+
+RP_EXPORT void *PyFile_GetLine(void *file, int n) {
+    return rp_va_file_get_line(file, n);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
