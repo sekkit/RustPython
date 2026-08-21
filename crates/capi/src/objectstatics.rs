@@ -1,4 +1,4 @@
-﻿//! C-visible data symbols that CPython defines as static structs.
+//! C-visible data symbols that CPython defines as static structs.
 //!
 //! Extensions take the *address* of these symbols (`&_Py_NoneStruct`,
 //! `&PyUnicode_Type`, ...). The vm's objects live on the heap, so the
@@ -18,9 +18,23 @@
 //! so the vm can translate C-visible pointers to them.
 
 use crate::PyObject;
+use core::mem::offset_of;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use rustpython_vm::builtins::PyType;
+use rustpython_vm::types::PyTypeSlots;
 use rustpython_vm::{AsObject, VirtualMachine};
+
+// Offsets within PyInner<PyType> for CPython-compatible PyTypeObject fields.
+// Payload offset: 48 (SIZEOF_PYOBJECT_HEAD)
+// PyType.slots offset: 40 (base:8 + bases:8 + mro:8 + subclasses:8 + attributes:8)
+// So PyTypeSlots starts at 48 + 40 = 88.
+const SLOTS_BASE: usize = 88;
+const OFFSET_HASH: usize = SLOTS_BASE + offset_of!(PyTypeSlots, hash);
+const OFFSET_CALL: usize = SLOTS_BASE + offset_of!(PyTypeSlots, call);
+const OFFSET_STR: usize = SLOTS_BASE + offset_of!(PyTypeSlots, str);
+const OFFSET_REPR: usize = SLOTS_BASE + offset_of!(PyTypeSlots, repr);
+const OFFSET_GETATTRO: usize = SLOTS_BASE + offset_of!(PyTypeSlots, getattro);
+const OFFSET_SETATTRO: usize = SLOTS_BASE + offset_of!(PyTypeSlots, setattro);
 #[repr(C, align(8))]
 pub struct ObjectHeaderCopy {
     words: [usize; 32],  // 256 bytes â€” covers tp_flags at offset 168
@@ -229,15 +243,29 @@ unsafe fn copy_header(dst: &mut ObjectHeaderCopy, src: *const PyObject, size: us
 ///  112: slots.itemsize (usize)
 ///  120: slots.flags (PyTypeFlags = u64)
 unsafe fn fill_type_stub(dst: &mut ObjectHeaderCopy, src: *const PyObject) {
+    // Read basic fields
     let name_ptr = unsafe { *(src.add(88) as *const *const u8) };
     let basicsize = unsafe { *(src.add(104) as *const usize) };
     let itemsize = unsafe { *(src.add(112) as *const usize) };
     let flags = unsafe { *(src.add(120) as *const u64) };
+    // Read function pointer slots (AtomicCell<Option<fn>> stored as usize)
+    let hash_fn = unsafe { *(src.add(OFFSET_HASH) as *const usize) };
+    let call_fn = unsafe { *(src.add(OFFSET_CALL) as *const usize) };
+    let str_fn = unsafe { *(src.add(OFFSET_STR) as *const usize) };
+    let repr_fn = unsafe { *(src.add(OFFSET_REPR) as *const usize) };
+    let getattro_fn = unsafe { *(src.add(OFFSET_GETATTRO) as *const usize) };
+    let setattro_fn = unsafe { *(src.add(OFFSET_SETATTRO) as *const usize) };
     let words = &mut dst.words;
-    words[3] = name_ptr as usize;   // tp_name at offset 24
-    words[4] = basicsize;           // tp_basicsize at offset 32
-    words[5] = itemsize;            // tp_itemsize at offset 40
-    words[21] = flags as usize;     // tp_flags at offset 168
+    words[3] = name_ptr as usize;    // tp_name at offset 24
+    words[4] = basicsize;            // tp_basicsize at offset 32
+    words[5] = itemsize;             // tp_itemsize at offset 40
+    words[15] = hash_fn;             // tp_hash at offset 120
+    words[16] = call_fn;             // tp_call at offset 128
+    words[17] = str_fn;              // tp_str at offset 136
+    words[18] = repr_fn;             // tp_repr at offset 144
+    words[19] = getattro_fn;         // tp_getattro at offset 152
+    words[20] = setattro_fn;         // tp_setattro at offset 160
+    words[21] = flags as usize;      // tp_flags at offset 168
 }
 
 /// The exported type-stub symbols (this exe's own) plus, when the relay is
