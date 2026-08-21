@@ -19,6 +19,7 @@
 
 use crate::PyObject;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use rustpython_vm::builtins::PyType;
 use rustpython_vm::{AsObject, VirtualMachine};
 #[repr(C, align(8))]
 pub struct ObjectHeaderCopy {
@@ -103,16 +104,19 @@ pub(crate) fn ensure_object_statics(vm: &VirtualMachine) {
             vm.ctx.types.str_type.as_object().as_raw(),
             size,
         );
+        fill_type_stub(&mut PyUnicode_Type, vm.ctx.types.str_type.as_object().as_raw());
         copy_header(
             &mut PyLong_Type,
             vm.ctx.types.int_type.as_object().as_raw(),
             size,
         );
+        fill_type_stub(&mut PyLong_Type, vm.ctx.types.int_type.as_object().as_raw());
         copy_header(
             &mut PyBool_Type,
             vm.ctx.types.bool_type.as_object().as_raw(),
             size,
         );
+        fill_type_stub(&mut PyBool_Type, vm.ctx.types.bool_type.as_object().as_raw());
         copy_header(
             &mut _Py_FalseStruct,
             vm.ctx.false_value.as_object().as_raw(),
@@ -133,32 +137,50 @@ pub(crate) fn ensure_object_statics(vm: &VirtualMachine) {
             vm.ctx.types.float_type.as_object().as_raw(),
             size,
         );
+        fill_type_stub(&mut PyFloat_Type, vm.ctx.types.float_type.as_object().as_raw());
         copy_header(
             &mut PySlice_Type,
             vm.ctx.types.slice_type.as_object().as_raw(),
             size,
         );
+        fill_type_stub(&mut PySlice_Type, vm.ctx.types.slice_type.as_object().as_raw());
         copy_header(
             &mut PyType_Type,
             vm.ctx.types.type_type.as_object().as_raw(),
             size,
         );
+        fill_type_stub(&mut PyType_Type, vm.ctx.types.type_type.as_object().as_raw());
         // ---------- numpy/PyTorch-needed type stubs ----------
         copy_header(&mut PyBaseObject_Type, vm.ctx.types.object_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyBaseObject_Type, vm.ctx.types.object_type.as_object().as_raw());
         copy_header(&mut PyBytes_Type, vm.ctx.types.bytes_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyBytes_Type, vm.ctx.types.bytes_type.as_object().as_raw());
         copy_header(&mut PyCapsule_Type, vm.ctx.types.capsule_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyCapsule_Type, vm.ctx.types.capsule_type.as_object().as_raw());
         copy_header(&mut PyCFunction_Type, vm.ctx.types.builtin_function_or_method_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyCFunction_Type, vm.ctx.types.builtin_function_or_method_type.as_object().as_raw());
         copy_header(&mut PyComplex_Type, vm.ctx.types.complex_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyComplex_Type, vm.ctx.types.complex_type.as_object().as_raw());
         copy_header(&mut PyDict_Type, vm.ctx.types.dict_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyDict_Type, vm.ctx.types.dict_type.as_object().as_raw());
         copy_header(&mut PyDictProxy_Type, vm.ctx.types.mappingproxy_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyDictProxy_Type, vm.ctx.types.mappingproxy_type.as_object().as_raw());
         copy_header(&mut PyFrozenSet_Type, vm.ctx.types.frozenset_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyFrozenSet_Type, vm.ctx.types.frozenset_type.as_object().as_raw());
         copy_header(&mut PyGetSetDescr_Type, vm.ctx.types.getset_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyGetSetDescr_Type, vm.ctx.types.getset_type.as_object().as_raw());
         copy_header(&mut PyList_Type, vm.ctx.types.list_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyList_Type, vm.ctx.types.list_type.as_object().as_raw());
         copy_header(&mut PyMemberDescr_Type, vm.ctx.types.member_descriptor_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyMemberDescr_Type, vm.ctx.types.member_descriptor_type.as_object().as_raw());
         copy_header(&mut PyMemoryView_Type, vm.ctx.types.memoryview_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyMemoryView_Type, vm.ctx.types.memoryview_type.as_object().as_raw());
         copy_header(&mut PyMethodDescr_Type, vm.ctx.types.method_descriptor_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyMethodDescr_Type, vm.ctx.types.method_descriptor_type.as_object().as_raw());
         copy_header(&mut PySet_Type, vm.ctx.types.set_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PySet_Type, vm.ctx.types.set_type.as_object().as_raw());
         copy_header(&mut PyTuple_Type, vm.ctx.types.tuple_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyTuple_Type, vm.ctx.types.tuple_type.as_object().as_raw());
         copy_header(&mut _Py_NotImplementedStruct, vm.ctx.not_implemented.as_object().as_raw(), size);
         // _Py_ascii_whitespace: CPython's " \t\n\r\x0b\x0c" (7 bytes)
         _Py_ascii_whitespace = [
@@ -189,6 +211,35 @@ unsafe fn copy_header(dst: &mut ObjectHeaderCopy, src: *const PyObject, size: us
         let state = dst.words.as_mut_ptr().cast::<usize>();
         *state |= 1usize << (usize::BITS - 3);
     }
+}
+
+/// After copying the object header, fill in CPython-compatible PyTypeObject
+/// fields at the correct offsets so C extensions can read tp_name, tp_basicsize,
+/// tp_itemsize directly from the exported type stubs.
+///
+/// CPython PyTypeObject offsets (64-bit, non-GIL-disabled):
+///   24: tp_name (const char*)
+///   32: tp_basicsize (Py_ssize_t)
+///   40: tp_itemsize (Py_ssize_t)
+///
+/// RustPython layout of PyInner<PyType>:
+///   48: PyType { base(8), bases(8), mro(8), subclasses(8), attributes(8), slots(40+) }
+///   88: slots.name (&'static str = pointer + length)
+///  104: slots.basicsize (usize)
+///  112: slots.itemsize (usize)
+unsafe fn fill_type_stub(dst: &mut ObjectHeaderCopy, src: *const PyObject) {
+    // Read the name pointer (first 8 bytes of the &'static str at offset 88)
+    let name_ptr = unsafe { *(src.add(88) as *const *const u8) };
+    let basicsize = unsafe { *(src.add(104) as *const usize) };
+    let itemsize = unsafe { *(src.add(112) as *const usize) };
+
+    let words = &mut dst.words;
+    // tp_name at offset 24 (words[24/8] = words[3])
+    words[3] = name_ptr as usize;
+    // tp_basicsize at offset 32 (words[32/8] = words[4])
+    words[4] = basicsize;
+    // tp_itemsize at offset 40 (words[40/8] = words[5])
+    words[5] = itemsize;
 }
 
 /// The exported type-stub symbols (this exe's own) plus, when the relay is
