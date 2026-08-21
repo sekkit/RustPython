@@ -778,6 +778,103 @@ pub unsafe extern "C" fn rp_va_err_set_from_windows_err(err: c_int) -> *mut PyOb
     unsafe { rp_va_err_set_exc_from_windows_err(core::ptr::null_mut(), err) }
 }
 
+/// Rust impl of PyErr_SetExcFromWindowsErrWithFilename: set WinError with filename.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err_with_filename(
+    exception: *mut PyObject,
+    err: c_int,
+    filename: *const c_char,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let errno_val = if err == 0 {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        } else {
+            err as i32
+        };
+        let exc_type = if exception.is_null() {
+            vm.ctx.exceptions.os_error.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        let msg = if !filename.is_null() {
+            let fname = unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or("");
+            format!("[WinError {errno_val}] '{}'", fname)
+        } else {
+            format!("[WinError {errno_val}]")
+        };
+        let exc = vm.new_exception_msg(exc_type, msg.into());
+        if !filename.is_null() {
+            let fname = unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or("");
+            exc.as_object().set_attr("filename", vm.ctx.new_str(fname), vm)?;
+        }
+        vm.set_exception(Some(exc));
+        Ok(core::ptr::null_mut())
+    })
+}
+
+/// Rust impl of PyErr_SetExcFromWindowsErrWithFilenameObject: set WinError with filename object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err_with_filename_object(
+    exception: *mut PyObject,
+    err: c_int,
+    filename: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let errno_val = if err == 0 {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        } else {
+            err as i32
+        };
+        let exc_type = if exception.is_null() {
+            vm.ctx.exceptions.os_error.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        let msg = format!("[WinError {errno_val}]");
+        let exc = vm.new_exception_msg(exc_type, msg.into());
+        if !filename.is_null() {
+            let fn_obj = unsafe { &*filename }.to_owned();
+            exc.as_object().set_attr("filename", fn_obj, vm)?;
+        }
+        vm.set_exception(Some(exc));
+        Ok(core::ptr::null_mut())
+    })
+}
+
+/// Rust impl of PyErr_SetExcFromWindowsErrWithFilenameObjects: set WinError with filename objects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err_with_filename_objects(
+    exception: *mut PyObject,
+    err: c_int,
+    filename: *mut PyObject,
+    filename2: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let errno_val = if err == 0 {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        } else {
+            err as i32
+        };
+        let exc_type = if exception.is_null() {
+            vm.ctx.exceptions.os_error.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        let msg = format!("[WinError {errno_val}]");
+        let exc = vm.new_exception_msg(exc_type, msg.into());
+        if !filename.is_null() || !filename2.is_null() {
+            let filename_tuple = vm.ctx.new_tuple(vec![
+                if filename.is_null() { vm.ctx.none() } else { unsafe { &*filename }.to_owned() },
+                if filename2.is_null() { vm.ctx.none() } else { unsafe { &*filename2 }.to_owned() },
+            ]);
+            let filename_obj: rustpython_vm::PyObjectRef = filename_tuple.into();
+            exc.as_object().set_attr("filename", filename_obj, vm)?;
+        }
+        vm.set_exception(Some(exc));
+        Ok(core::ptr::null_mut())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_DisplayException(exc: *mut PyObject) {
     with_vm(|vm| {

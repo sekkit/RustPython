@@ -691,6 +691,23 @@ RP_EXPORT void *PyErr_SetFromErrnoWithFilenameObjects(void *exception, void *fil
     return rp_va_err_set_from_errno_with_filename_objects(exception, filename, filename2);
 }
 
+/* PyErr_SetExcFromWindowsErrWithFilename (Python/errors.c) */
+extern void *rp_va_err_set_exc_from_windows_err_with_filename(void *exception, int err, const char *filename);
+extern void *rp_va_err_set_exc_from_windows_err_with_filename_object(void *exception, int err, void *filename);
+extern void *rp_va_err_set_exc_from_windows_err_with_filename_objects(void *exception, int err, void *filename, void *filename2);
+
+RP_EXPORT void *PyErr_SetExcFromWindowsErrWithFilename(void *exception, int err, const char *filename) {
+    return rp_va_err_set_exc_from_windows_err_with_filename(exception, err, filename);
+}
+
+RP_EXPORT void *PyErr_SetExcFromWindowsErrWithFilenameObject(void *exception, int err, void *filename) {
+    return rp_va_err_set_exc_from_windows_err_with_filename_object(exception, err, filename);
+}
+
+RP_EXPORT void *PyErr_SetExcFromWindowsErrWithFilenameObjects(void *exception, int err, void *filename, void *filename2) {
+    return rp_va_err_set_exc_from_windows_err_with_filename_objects(exception, err, filename, filename2);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
