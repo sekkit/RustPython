@@ -507,6 +507,59 @@ pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename(
     })
 }
 
+/// Rust impl of PyErr_SetFromErrnoWithFilenameObject: set OSError with a filename object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename_object(
+    exception: *mut PyObject,
+    filename: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let errno_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        let exc_type = if exception.is_null() {
+            vm.ctx.exceptions.os_error.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        let msg = format!("[Errno {errno_val}]");
+        let exc = vm.new_exception_msg(exc_type, msg.into());
+        if !filename.is_null() {
+            let fn_obj = unsafe { &*filename }.to_owned();
+            exc.as_object().set_attr("filename", fn_obj, vm)?;
+        }
+        vm.set_exception(Some(exc));
+        Ok(core::ptr::null_mut())
+    })
+}
+
+/// Rust impl of PyErr_SetFromErrnoWithFilenameObjects: set OSError with filename objects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename_objects(
+    exception: *mut PyObject,
+    filename: *mut PyObject,
+    filename2: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let errno_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        let exc_type = if exception.is_null() {
+            vm.ctx.exceptions.os_error.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        let msg = format!("[Errno {errno_val}]");
+        let exc = vm.new_exception_msg(exc_type, msg.into());
+        if !filename.is_null() || !filename2.is_null() {
+            let filename_tuple = vm.ctx.new_tuple(vec![
+                if filename.is_null() { vm.ctx.none() } else { unsafe { &*filename }.to_owned() },
+                if filename2.is_null() { vm.ctx.none() } else { unsafe { &*filename2 }.to_owned() },
+            ]);
+            let filename_obj: rustpython_vm::PyObjectRef = filename_tuple.into();
+            exc.as_object().set_attr("filename", filename_obj, vm)?;
+        }
+        vm.set_exception(Some(exc));
+        Ok(core::ptr::null_mut())
+    })
+}
+
 /// Rust impl of PyErr_ProgramText: read a line from a file for error display.
 /// Returns a UTF-8 string or NULL.
 #[unsafe(no_mangle)]
