@@ -1894,6 +1894,45 @@ pub unsafe extern "C" fn rp_va_unicode_from_format(
     })
 }
 
+/// Rust impl of PyArg_ValidateKeywordArguments: validate keyword argument dict.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_arg_validate_keyword_arguments(dict: *mut PyObject) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if dict.is_null() {
+            return Ok(1);
+        }
+        let dict_obj = unsafe { &*dict }.to_owned();
+        // Check that it's a dict
+        if dict_obj.downcast_ref::<PyDict>().is_none() {
+            return Err(vm.new_type_error("argument must be a dict"));
+        }
+        // For simplicity, we validate that all keys are strings.
+        // Use the Python-level keys() iterator.
+        let keys = vm.call_method(&dict_obj, "keys", ())?;
+        let iter = vm.call_method(&keys, "__iter__", ())?;
+        loop {
+            match vm.call_method(&iter, "__next__", ()) {
+                Ok(key) => {
+                    if key.try_downcast_ref::<PyStr>(vm).is_err() {
+                        return Err(vm.new_type_error("keywords must be strings"));
+                    }
+                }
+                Err(e) => {
+                    // Check if it's StopIteration
+                    let is_stop = vm.call_method(e.as_object(), "__class__", ())
+                        .map(|cls| cls.is(vm.ctx.exceptions.stop_iteration.as_object()))
+                        .unwrap_or(false);
+                    if is_stop {
+                        break;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Ok(1)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;

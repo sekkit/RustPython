@@ -798,6 +798,13 @@ RP_EXPORT long PyLong_AsLongAndOverflow(void *obj, int *overflow) {
     return rp_va_long_as_long_and_overflow(obj, overflow);
 }
 
+/* PyArg_ValidateKeywordArguments (Python/getargs.c) */
+extern int rp_va_arg_validate_keyword_arguments(void *dict);
+
+RP_EXPORT int PyArg_ValidateKeywordArguments(void *dict) {
+    return rp_va_arg_validate_keyword_arguments(dict);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
