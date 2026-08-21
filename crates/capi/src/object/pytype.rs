@@ -9,11 +9,22 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use rustpython_vm::builtins::{PyStr, PyType};
 use rustpython_vm::function::FuncArgs;
 use rustpython_vm::protocol::{CBufferSlots, CPyBuffer};
+use rustpython_vm::types::PyTypeSlots;
 use rustpython_vm::{AsObject, Py, PyObject, PyObjectRef, PyRef, VirtualMachine};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub type PyTypeObject = Py<PyType>;
+
+// Offsets within PyInner<PyType> for CPython-compatible PyTypeObject fields.
+// Payload offset: 48 (SIZEOF_PYOBJECT_HEAD), PyType.slots offset: 40.
+const SLOTS_BASE: usize = 88;
+const STUB_HASH_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlots, hash);
+const STUB_CALL_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlots, call);
+const STUB_STR_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlots, str);
+const STUB_REPR_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlots, repr);
+const STUB_GETATTRO_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlots, getattro);
+const STUB_SETATTRO_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlots, setattro);
 
 /// A global cache mapping real type addresses to CPython-compatible type stubs.
 /// Each stub is a 256-byte allocation with the CPython PyTypeObject layout.
@@ -37,7 +48,7 @@ fn alloc_type_stub(real_type: *const PyTypeObject) -> usize {
     // ob_type at offset 8: pointer to type_type
     // Use the exported stub address for PyType_Type
     // (stored in objectstatics.rs, we can get it from the VM)
-    // For now, leave it as NULL â€” C code rarely dereferences it directly
+    // For now, leave it as NULL Ã¢â‚¬â€ C code rarely dereferences it directly
 
     // tp_name at offset 24
     let name = ty.name();
@@ -59,6 +70,16 @@ fn alloc_type_stub(real_type: *const PyTypeObject) -> usize {
     let flags = ty.slots.flags.bits();
     unsafe { *(stub.add(168) as *mut u64) = flags };
 
+    // tp_hash, tp_call, tp_str, tp_repr, tp_getattro, tp_setattro
+    let ty_ptr = real_type as *const u8;
+    unsafe {
+        *(stub.add(120) as *mut usize) = *(ty_ptr.add(STUB_HASH_OFFSET) as *const usize);
+        *(stub.add(128) as *mut usize) = *(ty_ptr.add(STUB_CALL_OFFSET) as *const usize);
+        *(stub.add(136) as *mut usize) = *(ty_ptr.add(STUB_STR_OFFSET) as *const usize);
+        *(stub.add(144) as *mut usize) = *(ty_ptr.add(STUB_REPR_OFFSET) as *const usize);
+        *(stub.add(152) as *mut usize) = *(ty_ptr.add(STUB_GETATTRO_OFFSET) as *const usize);
+        *(stub.add(160) as *mut usize) = *(ty_ptr.add(STUB_SETATTRO_OFFSET) as *const usize);
+    }
     // Store the real type address at offset 248 (for resolve_type_ptr)
     unsafe { *(stub.add(248) as *mut usize) = real_type as *const _ as usize };
 
@@ -138,7 +159,7 @@ pub unsafe extern "C" fn PyType_IsSubtype(a: *const PyTypeObject, b: *const PyTy
 }
 
 /// The C-visible `ob_type` of a RustPython object (offset 8 of the object
-/// header, where `typ` now lives â€” matching CPython's PyObject layout).
+/// header, where `typ` now lives Ã¢â‚¬â€ matching CPython's PyObject layout).
 /// CPython's inline PyObject_TypeCheck falls back to calling the exported
 /// PyType_IsSubtype with those raw pointers, so resolve them: known payload
 /// vtables map to their real type; the exported type-stub symbols (byte copies
@@ -461,7 +482,7 @@ pub unsafe extern "C" fn PyType_FromSpec(spec: *mut PyType_Spec) -> *mut PyObjec
     })
 }
 
-/// PyType_FromModuleAndSpec (3.9+): (module, spec, userdata) â€” the module
+/// PyType_FromModuleAndSpec (3.9+): (module, spec, userdata) Ã¢â‚¬â€ the module
 /// context is not modeled, the spec is passed through to PyType_FromSpec.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_FromModuleAndSpec(
