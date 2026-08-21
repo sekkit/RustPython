@@ -646,6 +646,13 @@ RP_EXPORT int PyImport_AppendInittab(const char *name, void *(*initfunc)(void)) 
     return rp_va_import_append_inittab(name, initfunc);
 }
 
+/* PyBytes_DecodeEscape (Objects/bytesobject.c) */
+extern void *rp_va_bytes_decode_escape(const char *s, intptr_t size, const char *errors);
+
+RP_EXPORT void *PyBytes_DecodeEscape(const char *s, intptr_t size, const char *errors) {
+    return rp_va_bytes_decode_escape(s, size, errors);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \

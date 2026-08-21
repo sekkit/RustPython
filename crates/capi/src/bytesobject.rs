@@ -190,6 +190,76 @@ pub unsafe extern "C" fn rp_va_bytes_concat_and_del(
     })
 }
 
+/// Rust impl of PyBytes_DecodeEscape: decode escape sequences in a bytes string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_bytes_decode_escape(
+    s: *const c_char,
+    size: isize,
+    errors: *const c_char,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        if s.is_null() {
+            return Err(vm.new_system_error("PyBytes_DecodeEscape called with NULL string"));
+        }
+        let bytes = if size < 0 {
+            unsafe { core::ffi::CStr::from_ptr(s) }.to_bytes()
+        } else {
+            unsafe { core::slice::from_raw_parts(s as *const u8, size as usize) }
+        };
+        let mut result = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                i += 1;
+                match bytes[i] {
+                    b'\n' => { i += 1; continue; }
+                    b'\\' => { result.push(b'\\'); }
+                    b'\'' => { result.push(b'\''); }
+                    b'\"' => { result.push(b'\"'); }
+                    b'a' => { result.push(b'\x07'); }
+                    b'b' => { result.push(b'\x08'); }
+                    b'f' => { result.push(b'\x0C'); }
+                    b'n' => { result.push(b'\n'); }
+                    b'r' => { result.push(b'\r'); }
+                    b't' => { result.push(b'\t'); }
+                    b'v' => { result.push(b'\x0B'); }
+                    b'x' => {
+                        if i + 2 < bytes.len() {
+                            let hex = &bytes[i+1..i+3];
+                            if let Ok(hex_str) = core::str::from_utf8(hex) {
+                                if let Ok(val) = u8::from_str_radix(hex_str, 16) {
+                                    result.push(val);
+                                    i += 2;
+                                }
+                            }
+                        }
+                    }
+                    b'0'..=b'7' => {
+                        let mut octal = (bytes[i] - b'0') as u16;
+                        let mut j = 1;
+                        while j < 3 && i + j < bytes.len() {
+                            let c = bytes[i + j];
+                            if c >= b'0' && c <= b'7' {
+                                octal = octal * 8 + (c - b'0') as u16;
+                                j += 1;
+                            } else { break; }
+                        }
+                        result.push(octal as u8);
+                        i += j - 1;
+                    }
+                    _ => { result.push(b'\\'); result.push(bytes[i]); }
+                }
+                i += 1;
+            } else {
+                result.push(bytes[i]);
+                i += 1;
+            }
+        }
+        let obj: rustpython_vm::PyObjectRef = vm.ctx.new_bytes(result).into();
+        Ok(obj.into_raw().as_ptr())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;
