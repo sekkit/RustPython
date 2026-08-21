@@ -774,6 +774,18 @@ RP_EXPORT intptr_t PyUnicode_AsUCS4(void *obj, unsigned int *buffer, intptr_t bu
     return rp_va_unicode_as_ucs4(obj, buffer, buflen, copy_null);
 }
 
+/* PyUnicode_ReadChar / PyUnicode_WriteChar (Objects/unicodeobject.c) */
+extern unsigned int rp_va_unicode_read_char(void *obj, intptr_t index);
+extern int rp_va_unicode_write_char(void *obj, intptr_t index, unsigned int ch);
+
+RP_EXPORT unsigned int PyUnicode_ReadChar(void *obj, intptr_t index) {
+    return rp_va_unicode_read_char(obj, index);
+}
+
+RP_EXPORT int PyUnicode_WriteChar(void *obj, intptr_t index, unsigned int ch) {
+    return rp_va_unicode_write_char(obj, index, ch);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
