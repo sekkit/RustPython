@@ -1,4 +1,4 @@
-//! C-visible data symbols that CPython defines as static structs.
+﻿//! C-visible data symbols that CPython defines as static structs.
 //!
 //! Extensions take the *address* of these symbols (`&_Py_NoneStruct`,
 //! `&PyUnicode_Type`, ...). The vm's objects live on the heap, so the
@@ -23,63 +23,63 @@ use rustpython_vm::builtins::PyType;
 use rustpython_vm::{AsObject, VirtualMachine};
 #[repr(C, align(8))]
 pub struct ObjectHeaderCopy {
-    words: [usize; 16],
+    words: [usize; 32],  // 256 bytes â€” covers tp_flags at offset 168
 }
 
 #[unsafe(no_mangle)]
-pub static mut _Py_NoneStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut _Py_NoneStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyUnicode_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyUnicode_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyLong_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyLong_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyBool_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyBool_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut _Py_FalseStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut _Py_FalseStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut _Py_TrueStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut _Py_TrueStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut _Py_EllipsisObject: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut _Py_EllipsisObject: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyFloat_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyFloat_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PySlice_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PySlice_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyType_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyType_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 // ---------- numpy/PyTorch-needed type stubs ----------
 #[unsafe(no_mangle)]
-pub static mut PyBaseObject_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyBaseObject_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyBytes_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyBytes_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyCapsule_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyCapsule_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyCFunction_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyCFunction_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyComplex_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyComplex_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyDict_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyDict_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyDictProxy_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyDictProxy_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyFrozenSet_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyFrozenSet_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyGetSetDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyGetSetDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyList_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyList_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyMemberDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyMemberDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyMemoryView_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyMemoryView_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyMethodDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyMethodDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PySet_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PySet_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
-pub static mut PyTuple_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut PyTuple_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 // ---------- data object stubs ----------
 #[unsafe(no_mangle)]
-pub static mut _Py_NotImplementedStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+pub static mut _Py_NotImplementedStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
 pub static mut _Py_ascii_whitespace: [u8; 128] = [0; 128];
 
@@ -227,23 +227,21 @@ unsafe fn copy_header(dst: &mut ObjectHeaderCopy, src: *const PyObject, size: us
 ///   88: slots.name (&'static str = pointer + length)
 ///  104: slots.basicsize (usize)
 ///  112: slots.itemsize (usize)
+///  120: slots.flags (PyTypeFlags = u64)
 unsafe fn fill_type_stub(dst: &mut ObjectHeaderCopy, src: *const PyObject) {
-    // Read the name pointer (first 8 bytes of the &'static str at offset 88)
     let name_ptr = unsafe { *(src.add(88) as *const *const u8) };
     let basicsize = unsafe { *(src.add(104) as *const usize) };
     let itemsize = unsafe { *(src.add(112) as *const usize) };
-
+    let flags = unsafe { *(src.add(120) as *const u64) };
     let words = &mut dst.words;
-    // tp_name at offset 24 (words[24/8] = words[3])
-    words[3] = name_ptr as usize;
-    // tp_basicsize at offset 32 (words[32/8] = words[4])
-    words[4] = basicsize;
-    // tp_itemsize at offset 40 (words[40/8] = words[5])
-    words[5] = itemsize;
+    words[3] = name_ptr as usize;   // tp_name at offset 24
+    words[4] = basicsize;           // tp_basicsize at offset 32
+    words[5] = itemsize;            // tp_itemsize at offset 40
+    words[21] = flags as usize;     // tp_flags at offset 168
 }
 
 /// The exported type-stub symbols (this exe's own) plus, when the relay is
-/// loaded, the relay's copies — the addresses extensions actually resolve
+/// loaded, the relay's copies â€” the addresses extensions actually resolve
 /// their data imports to. `StubKind` mirrors the ordering in
 /// bench/make_python_dll_shims.ps1.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
