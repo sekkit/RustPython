@@ -632,6 +632,20 @@ RP_EXPORT int PyFile_WriteString(const char *str, void *file) {
     return rp_va_file_write_string(str, file);
 }
 
+/* PyImport_AddModuleObject (Python/import.c) */
+extern void *rp_va_import_add_module_object(void *name);
+
+RP_EXPORT void *PyImport_AddModuleObject(void *name) {
+    return rp_va_import_add_module_object(name);
+}
+
+/* PyImport_AppendInittab (Python/import.c) */
+extern int rp_va_import_append_inittab(const char *name, void *(*initfunc)(void));
+
+RP_EXPORT int PyImport_AppendInittab(const char *name, void *(*initfunc)(void)) {
+    return rp_va_import_append_inittab(name, initfunc);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \

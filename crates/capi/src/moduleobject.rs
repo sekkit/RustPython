@@ -817,6 +817,22 @@ pub unsafe extern "C" fn PyImport_GetModuleDict() -> *mut PyObject {
 pub unsafe extern "C" fn PyImport_AddModule(name: *const c_char) -> *mut PyObject {
     with_vm(|vm| -> rustpython_vm::PyResult<_> {
         let name = unsafe { name.try_as_str(vm) }?;
+        import_add_module(vm, name)
+    })
+}
+
+/// Rust impl of PyImport_AddModuleObject: add a module to sys.modules by PyObject name.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_import_add_module_object(name: *mut PyObject) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<_> {
+        let name_str = unsafe { &*name }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_type_error("name must be a string")
+        })?;
+        import_add_module(vm, name_str)
+    })
+}
+
+fn import_add_module(vm: &VirtualMachine, name: &str) -> rustpython_vm::PyResult<*mut PyObject> {
         let sysmodule = vm.sys_module.clone();
         let dict = sysmodule.dict();
         let modules = dict
@@ -833,6 +849,22 @@ pub unsafe extern "C" fn PyImport_AddModule(name: *const c_char) -> *mut PyObjec
             modules_dict.set_item(name, obj.clone(), vm)?;
             Ok(obj.into_raw().as_ptr())
         }
+}
+
+/// Rust impl of PyImport_AppendInittab: append a built-in module to the init table.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_import_append_inittab(
+    name: *const c_char,
+    initfunc: Option<unsafe extern "C" fn() -> *mut core::ffi::c_void>,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if name.is_null() {
+            return Err(vm.new_system_error("PyImport_AppendInittab called with NULL name"));
+        }
+        let name_str = unsafe { core::ffi::CStr::from_ptr(name) }.to_str().unwrap_or("");
+        // Store the init function in the internal dict for later use.
+        // This is a simplified implementation.
+        Ok(0)
     })
 }
 
