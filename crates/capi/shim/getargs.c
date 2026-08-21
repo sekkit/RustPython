@@ -727,6 +727,25 @@ RP_EXPORT void *PyFile_GetLine(void *file, int n) {
     return rp_va_file_get_line(file, n);
 }
 
+/* PyImport_ExecCodeModule / ExecCodeModuleObject / ExecCodeModuleWithPathnames (Python/import.c) */
+extern void *rp_va_import_exec_code_module_object(void *name, void *co, void *pathname);
+extern void *rp_va_import_exec_code_module_with_pathnames(const char *name, void *co, const char *pathname, const char *orig_pathname);
+
+RP_EXPORT void *PyImport_ExecCodeModuleObject(void *name, void *co, void *pathname) {
+    return rp_va_import_exec_code_module_object(name, co, pathname);
+}
+
+RP_EXPORT void *PyImport_ExecCodeModuleWithPathnames(const char *name, void *co, const char *pathname, const char *orig_pathname) {
+    return rp_va_import_exec_code_module_with_pathnames(name, co, pathname, orig_pathname);
+}
+
+/* PyImport_ExecCodeModule (Python/import.c) */
+extern void *rp_va_import_exec_code_module(const char *name, void *co);
+
+RP_EXPORT void *PyImport_ExecCodeModule(const char *name, void *co) {
+    return rp_va_import_exec_code_module(name, co);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
