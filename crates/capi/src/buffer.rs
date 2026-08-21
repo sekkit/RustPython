@@ -444,3 +444,36 @@ pub unsafe extern "C" fn rp_va_buffer_fill_contiguous_strides(
     }
     0
 }
+
+/// Rust impl of PyBuffer_FromContiguous: copy data to/from a contiguous buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_buffer_from_contiguous(
+    view: *mut Py_buffer,
+    buf: *mut c_void,
+    len: isize,
+    fort: *const c_char,
+) -> c_int {
+    if view.is_null() || buf.is_null() {
+        return -1;
+    }
+    let view = unsafe { &*view };
+    if view.shape.is_null() {
+        // 1-D buffer: direct copy.
+        if view.len != len {
+            return -1;
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf as *const u8, view.buf as *mut u8, len as usize);
+        }
+        return 0;
+    }
+    // For N-D buffers, use the simple contiguous path.
+    let _ = fort;
+    if view.len != len {
+        return -1;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(buf as *const u8, view.buf as *mut u8, len as usize);
+    }
+    0
+}

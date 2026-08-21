@@ -753,6 +753,13 @@ RP_EXPORT void *PyImport_GetImporter(void *path) {
     return rp_va_import_get_importer(path);
 }
 
+/* PyBuffer_FromContiguous (Objects/buffer.c) */
+extern int rp_va_buffer_from_contiguous(void *view, void *buf, intptr_t len, const char *fort);
+
+RP_EXPORT int PyBuffer_FromContiguous(void *view, void *buf, intptr_t len, const char *fort) {
+    return rp_va_buffer_from_contiguous(view, buf, len, fort);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
