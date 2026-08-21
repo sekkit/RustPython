@@ -786,6 +786,18 @@ RP_EXPORT int PyUnicode_WriteChar(void *obj, intptr_t index, unsigned int ch) {
     return rp_va_unicode_write_char(obj, index, ch);
 }
 
+/* PyLong_AsLongLongAndOverflow / PyLong_AsLongAndOverflow (Objects/longobject.c) */
+extern long long rp_va_long_as_long_long_and_overflow(void *obj, int *overflow);
+extern long rp_va_long_as_long_and_overflow(void *obj, int *overflow);
+
+RP_EXPORT long long PyLong_AsLongLongAndOverflow(void *obj, int *overflow) {
+    return rp_va_long_as_long_long_and_overflow(obj, overflow);
+}
+
+RP_EXPORT long PyLong_AsLongAndOverflow(void *obj, int *overflow) {
+    return rp_va_long_as_long_and_overflow(obj, overflow);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \

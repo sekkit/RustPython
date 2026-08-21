@@ -277,6 +277,64 @@ pub unsafe extern "C" fn PyLong_AsLongLong(obj: *mut PyObject) -> c_longlong {
     })
 }
 
+/// Rust impl of PyLong_AsLongLongAndOverflow: convert to long long with overflow detection.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_long_as_long_long_and_overflow(
+    obj: *mut PyObject,
+    overflow: *mut c_int,
+) -> c_longlong {
+    with_vm::<PyResult<c_longlong>, _>(|vm| {
+        let result: Result<c_longlong, _> = unsafe { &*obj }
+            .to_owned()
+            .try_index(vm)?
+            .as_bigint()
+            .try_into();
+        match result {
+            Ok(val) => {
+                if let Some(ov) = unsafe { overflow.as_mut() } {
+                    *ov = 0;
+                }
+                Ok(val)
+            }
+            Err(_) => {
+                if let Some(ov) = unsafe { overflow.as_mut() } {
+                    *ov = 1;
+                }
+                Ok(-1)
+            }
+        }
+    })
+}
+
+/// Rust impl of PyLong_AsLongAndOverflow: convert to long with overflow detection.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_long_as_long_and_overflow(
+    obj: *mut PyObject,
+    overflow: *mut c_int,
+) -> c_long {
+    with_vm::<PyResult<c_long>, _>(|vm| {
+        let result: Result<c_long, _> = unsafe { &*obj }
+            .to_owned()
+            .try_index(vm)?
+            .as_bigint()
+            .try_into();
+        match result {
+            Ok(val) => {
+                if let Some(ov) = unsafe { overflow.as_mut() } {
+                    *ov = 0;
+                }
+                Ok(val)
+            }
+            Err(_) => {
+                if let Some(ov) = unsafe { overflow.as_mut() } {
+                    *ov = 1;
+                }
+                Ok(-1)
+            }
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsSize_t(obj: *mut PyObject) -> usize {
     with_vm::<PyResult<usize>, _>(|vm| {
