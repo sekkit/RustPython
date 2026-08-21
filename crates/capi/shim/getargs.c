@@ -667,6 +667,18 @@ RP_EXPORT void *PyErr_SetImportErrorSubclass(void *exception, void *msg, void *n
     return rp_va_err_set_import_error_subclass(exception, msg, name, path);
 }
 
+/* PyErr_SetExcFromWindowsErr / PyErr_SetFromWindowsErr (Python/errors.c) */
+extern void *rp_va_err_set_exc_from_windows_err(void *exception, int err);
+extern void *rp_va_err_set_from_windows_err(int err);
+
+RP_EXPORT void *PyErr_SetExcFromWindowsErr(void *exception, int err) {
+    return rp_va_err_set_exc_from_windows_err(exception, err);
+}
+
+RP_EXPORT void *PyErr_SetFromWindowsErr(int err) {
+    return rp_va_err_set_from_windows_err(err);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \

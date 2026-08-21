@@ -695,6 +695,36 @@ pub unsafe extern "C" fn rp_va_err_set_import_error_subclass(
     })
 }
 
+/// Rust impl of PyErr_SetExcFromWindowsErr: set an OSError based on a Windows error code.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err(
+    exception: *mut PyObject,
+    err: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let errno_val = if err == 0 {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        } else {
+            err as i32
+        };
+        let exc_type = if exception.is_null() {
+            vm.ctx.exceptions.os_error.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        let msg = format!("[WinError {errno_val}]");
+        let exc = vm.new_exception_msg(exc_type, msg.into());
+        vm.set_exception(Some(exc));
+        Ok(core::ptr::null_mut())
+    })
+}
+
+/// Rust impl of PyErr_SetFromWindowsErr: set an OSError from GetLastError().
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_from_windows_err(err: c_int) -> *mut PyObject {
+    unsafe { rp_va_err_set_exc_from_windows_err(core::ptr::null_mut(), err) }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_DisplayException(exc: *mut PyObject) {
     with_vm(|vm| {
