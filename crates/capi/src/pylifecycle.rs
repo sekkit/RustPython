@@ -193,6 +193,47 @@ pub extern "C" fn rp_va_leave_recursive_call() {
     })
 }
 
+/// Rust impl of PyFile_WriteObject: write an object to a file.
+/// Uses repr(obj) if flags include Py_PRINT_RAW (0), else str(obj).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_file_write_object(
+    obj: *mut PyObject,
+    file: *mut PyObject,
+    flags: c_int,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        let obj = unsafe { &*obj }.to_owned();
+        let file_obj = unsafe { &*file }.to_owned();
+        // CPython: if flags & Py_PRINT_RAW (0), use str(obj), else repr(obj).
+        // Py_PRINT_RAW = 1 in CPython. But 0 means "not raw", i.e., repr.
+        let result = if flags == 0 {
+            vm.call_method(&obj, "__repr__", ())?
+        } else {
+            vm.call_method(&obj, "__str__", ())?
+        };
+        vm.call_method(&file_obj, "write", (result,))?;
+        Ok(0)
+    })
+}
+
+/// Rust impl of PyFile_WriteString: write a C string to a file.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_file_write_string(
+    str_: *const c_char,
+    file: *mut PyObject,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        let s = if str_.is_null() {
+            return Err(vm.new_system_error("PyFile_WriteString called with NULL string"));
+        } else {
+            unsafe { core::ffi::CStr::from_ptr(str_) }.to_str().unwrap_or("")
+        };
+        let file_obj = unsafe { &*file }.to_owned();
+        vm.call_method(&file_obj, "write", (vm.ctx.new_str(s),))?;
+        Ok(0)
+    })
+}
+
 /// Rust impl of Py_DecodeLocale: convert a C string to wchar_t.
 /// Simple implementation: treat as UTF-8 (or ASCII on non-Windows).
 #[unsafe(no_mangle)]

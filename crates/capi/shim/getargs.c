@@ -620,6 +620,18 @@ RP_EXPORT int PyBuffer_FillContiguousStrides(int ndim, intptr_t *shape, intptr_t
     return rp_va_buffer_fill_contiguous_strides(ndim, shape, strides, itemsize, fortran);
 }
 
+/* PyFile_WriteObject / PyFile_WriteString (Python/fileobject.c) */
+extern int rp_va_file_write_object(void *obj, void *file, int flags);
+extern int rp_va_file_write_string(const char *str, void *file);
+
+RP_EXPORT int PyFile_WriteObject(void *obj, void *file, int flags) {
+    return rp_va_file_write_object(obj, file, flags);
+}
+
+RP_EXPORT int PyFile_WriteString(const char *str, void *file) {
+    return rp_va_file_write_string(str, file);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
