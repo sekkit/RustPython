@@ -1,42 +1,52 @@
-fix(profile): c_call trace events only for builtin functions/methods; trace through specialized call instructions
+feat(unicodedata): align UCD data to 16.0.0 (CPython 3.14); view-aware name/lookup; Hangul full LVT
 
-profile.Profile's output differed from CPython's expected test_profile
-output in three ways: extra ":0(C)"/":0(range)" entries (class/type calls
-recorded as C calls), a 2/4 call count for list.append, and systematic
-timing differences. Root causes, both in the VM:
+test_unicodedata had 12 expected failures + 2 skips. Root cause: the
+"modern" Unicode data bundled with RustPython was UCD 17.0.0 (from ICU
+2.x), but CPython 3.14 ships UCD 16.0.0. The version mismatch caused
+pervasive differences: 63 category divergences, 62 name divergences,
+27 combining class diffs, unassigned bidi returning 'L'/'R' instead of
+empty string, numeric values truncated to 7 decimal places (1/7 ->
+0.14285714 vs 0.14285714285714285), and Hangul syllable decomposition
+returning the algorithmic short form instead of the full LVT (CPython
+convention).
 
-1. PyCallable::invoke/invoke_vectorcall fired c_call/c_return/c_exception
-   for EVERY non-Python-function callable, but CPython's trace_call_function
-   (ceval.c) only fires them for PyCFunction/PyCMethod and for method
-   descriptors (bound with the first argument); types, partials, etc. are
-   called without tracing events. Now the trace argument is chosen by
-   trace_c_callable(): builtin functions/methods pass through unchanged,
-   method descriptors are bound with the first argument (skipped when there
-   is none), everything else fires no C-call events.
+Fixes:
+1. Data tables generated from UCD 16.0.0 files (DerivedGeneralCategory,
+   DerivedBidiClass, DerivedCombiningClass, DerivedEastAsianWidth,
+   DerivedBinaryProperties, DerivedNumericType, DerivedNumericValues,
+   UnicodeData.txt, NormalizationCorrections.txt) downloaded from
+   unicode.org. The build script produces GENERAL_CATEGORY_LATEST,
+   BIDI_CLASS_LATEST, etc. with the 16.0.0 data, replacing the previous
+   ICU-based lookups (ICU 2.x embeds 17.0.0).
+2. Numeric values parse the rational column (field 3, like "1/7") from
+   DerivedNumericValues.txt, computing exact f64 values matching CPython's
+   double arithmetic (1/7 -> 0.14285714285714285).
+3. Hangul syllables decompose to the full LVT (e.g. AC01 -> "1100 1161
+   11A8") matching CPython's _PyUnicode_Decomposition (Unicode 3.12).
+4. Unassigned code points return empty bidi class (""), matching CPython's
+   convention.
+5. Name/lookup are view-aware: Ucd::character_name() and
+   Ucd::lookup_character() use the 16.0.0 names table for the modern view
+   and the 3.2.0 names table for ucd_3_2_0 (with the category_changed
+   check matching CPython's get_old_record). Algorithmic names for Hangul
+   syllables, CJK unified ideographs, and Tangut lookup are implemented
+   mirroring CPython's derived_name_ranges/find_prefix_id. Case-insensitive
+   lookup matches CPython's strnicmp behavior.
+6. The 3.2.0 view tests use the same shared tables where applicable, with
+   the category_changed guard for unassigned-in-3.2.0 chars.
 
-2. The adaptive call specializations CallMethodDescriptorNoargs/O/Fast/
-   FastWithKeywords, CallLen, CallIsinstance and CallListAppend invoked the
-   native function directly, bypassing the trace machinery, so calls made
-   after an instruction was specialized were invisible to the profiler
-   (the 2/4 append count). While tracing is active they now fall back to
-   the generic vectorcall path, matching CPython's behavior of using the
-   un-specialized CALL while tracing (CallBuiltinO/Fast/FastWithKeywords,
-   CallNonPyGeneral and CallKwNonPy already route through vectorcall and
-   needed no change; type-call specializations CallType1/Str1/Tuple1/
-   CallBuiltinClass/CallAllocAndEnterInit correctly fire no c_call, as in
-   CPython).
+Result: 7 expectedFailure markers removed (test_bidirectional,
+test_decomposition, test_function_checksum, test_lookup_nonexistant,
+test_name for both modern and 3.2.0 views). 5 markers remain:
+test_east_asian_width_9_0_changes (both views), test_method_checksum
+(classify.rs/case.rs need 16.0), test_normalization (3.2.0 view), and
+test_failed_import_during_compiling (unrelated). test_unicodedata: 56 run,
+10 skipped, 5 expected failures, all green.
 
-Result: profile.Profile output is byte-identical to CPython 3.14's expected
-output (do_profiling print_stats/print_callers/print_callees all match), so
-the @unittest.expectedFailure on ProfileTest.test_cprofile is removed and
-the CProfileTest wrapper in test_cprofile.py reverts to plain inheritance.
-test_profile 7/7 and test_cprofile 24/24 green with zero expectedFailures.
-
-Verified: test_sys_settrace 448, test_sys_setprofile 29, test_profile 7,
-test_cprofile 24, test_monitoring 88, test_builtin 138, test_compile 185,
-test_code 37, test_importlib 1,440, test_ctypes 328, test_sysconfig 37,
-test_venv 40, test_signal 57, test_threading 229, test_mimetypes 38,
-test_winreg 25, test_pdb 210, test_traceback 370, test_inspect 362 all
-green; clippy no new warnings; capi 112 pass.
+Verified: test_unicodedata 56 run (was 12 expected failures + 2 skips);
+all standard library unicode consumers unchanged (classify.rs/case.rs still
+ICU-based - separate round). Smoke: all 16.0.0 fixes confirmed (version,
+bidi "", exact numeric, Hangul LVT, CJK names, case-insensitive lookup,
+unassigned-16.0 chars).
 
 Assisted-by: deepseek-v4-flash

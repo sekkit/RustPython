@@ -14,7 +14,7 @@ use std::{
     thread,
 };
 
-use icu_properties::props::{EnumeratedProperty, GeneralCategory, NumericType};
+use icu_properties::props::GeneralCategory;
 
 fn generate_unicode_3_2() {
     let path = PathBuf::from(env::var("OUT_DIR").unwrap())
@@ -159,12 +159,34 @@ fn generate_numeric_type() {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let mut writer = BufWriter::new(File::create(&path).unwrap());
 
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let ucd32 = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("unicode")
         .join("ucd32");
+    let latest = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("unicode")
+        .join("latest");
 
+    // Build a map from the 16.0.0 DerivedNumericType.txt so that the
+    // 3.2.0 DIFF table compares against the modern UCD version.
+    let mut modern_map = Vec::<(u32, u32, String)>::new();
     write_derived(
-        &base,
+        &latest,
+        "DerivedNumericType.txt",
+        "NUMERIC_TYPE_LATEST", // dummy — we only need the parsed values
+        "(u32, u32, NumericType)",
+        NonZeroUsize::new(1).unwrap(),
+        &mut io::sink(),
+        |start, end, id, _| {
+            Some((start, end, id.to_owned()))
+        },
+        |_writer, values| {
+            modern_map = values;
+        },
+    );
+
+    // The 3.2.0 DIFF table: entries whose type differs from the 16.0.0 type.
+    write_derived(
+        &ucd32,
         "DerivedNumericType-3.2.0.txt",
         "NUMERIC_TYPE_DIFF",
         "(u32, u32, NumericType)",
@@ -172,14 +194,10 @@ fn generate_numeric_type() {
         &mut writer,
         |start, end, id, _| {
             let id = parse_numeric_type_str(id);
-            let differs = (start..=end).any(|c| match char::from_u32(c) {
-                Some(c) => {
-                    let modern = parse_numeric_type_val(NumericType::for_char(c));
-                    modern != id
-                }
-                None => true,
+            let differs = (start..=end).any(|c| {
+                let modern_id = lookup_modern_type(c, &modern_map);
+                modern_id != id
             });
-
             if differs {
                 Some((start, end, id))
             } else {
@@ -195,6 +213,15 @@ fn generate_numeric_type() {
             writeln!(writer, "];").unwrap();
         },
     );
+}
+
+fn lookup_modern_type(c: u32, map: &[(u32, u32, String)]) -> &str {
+    for (start, end, id) in map {
+        if c >= *start && c <= *end {
+            return id;
+        }
+    }
+    "None"
 }
 
 fn generate_numeric_value() {
@@ -741,16 +768,6 @@ fn parse_bidi(id: &str) -> &'static str {
         "RLI" => "BidiClass::RightToLeftIsolate",
         "PDI" => "BidiClass::PopDirectionalIsolate",
         invalid => unreachable!("Unicode data contains valid properties: {invalid}"),
-    }
-}
-
-fn parse_numeric_type_val(val: NumericType) -> &'static str {
-    match val {
-        NumericType::None => "none",
-        NumericType::Decimal => "decimal",
-        NumericType::Digit => "digit",
-        NumericType::Numeric => "numeric",
-        _ => unreachable!("Unicode data contains valid properties"),
     }
 }
 

@@ -15,8 +15,8 @@ use alloc::{
 };
 
 use icu_properties::props::{
-    BidiClass, CanonicalCombiningClass, EastAsianWidth, GeneralCategory, NamedEnumeratedProperty,
-    NumericType,
+    BidiClass, CanonicalCombiningClass, EastAsianWidth, GeneralCategory,
+    NamedEnumeratedProperty, NumericType,
 };
 use rustpython_wtf8::CodePoint;
 

@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
     let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     let capi_enabled = std::env::var_os("CARGO_FEATURE_CAPI").is_some();
 
