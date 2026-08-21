@@ -1,16 +1,86 @@
-use crate::methodobject::{PyMethodDef, build_method_def};
+﻿use crate::methodobject::{PyMethodDef, build_method_def};
 use crate::moduleobject::{Py_slot_end, Py_slot_invalid, PySlot};
 use crate::object::define_py_check;
 use crate::pystate::with_vm;
 use crate::util::CStrExt;
 use core::ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void};
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use rustpython_vm::builtins::{PyStr, PyType};
 use rustpython_vm::function::FuncArgs;
 use rustpython_vm::protocol::{CBufferSlots, CPyBuffer};
 use rustpython_vm::{AsObject, Py, PyObject, PyObjectRef, PyRef, VirtualMachine};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 pub type PyTypeObject = Py<PyType>;
+
+/// A global cache mapping real type addresses to CPython-compatible type stubs.
+/// Each stub is a 256-byte allocation with the CPython PyTypeObject layout.
+static TYPE_STUB_CACHE: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
+
+/// Allocate a 256-byte stub with the CPython PyTypeObject layout.
+/// Fields are filled from the real RustPython type object.
+fn alloc_type_stub(real_type: *const PyTypeObject) -> usize {
+    // Allocate 256 bytes of zeroed memory
+    let layout = core::alloc::Layout::from_size_align(256, 8).unwrap();
+    let stub = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if stub.is_null() {
+        alloc::alloc::handle_alloc_error(layout);
+    }
+    let stub_addr = stub as usize;
+
+    // Fill the stub with CPython-compatible fields
+    let ty = unsafe { &*real_type };
+    // ob_refcnt at offset 0: set to a high value (immortal)
+    unsafe { *(stub as *mut usize) = usize::MAX };
+    // ob_type at offset 8: pointer to type_type
+    // Use the exported stub address for PyType_Type
+    // (stored in objectstatics.rs, we can get it from the VM)
+    // For now, leave it as NULL â€” C code rarely dereferences it directly
+
+    // tp_name at offset 24
+    let name = ty.name();
+    let name_bytes = name.as_bytes();
+    // Allocate a null-terminated C string for the name
+    let c_name = std::ffi::CString::new(name_bytes).unwrap();
+    let name_ptr = c_name.into_raw();
+    unsafe { *(stub.add(24) as *mut *const c_char) = name_ptr };
+
+    // tp_basicsize at offset 32
+    let basicsize = ty.slots.basicsize;
+    unsafe { *(stub.add(32) as *mut usize) = basicsize };
+
+    // tp_itemsize at offset 40
+    let itemsize = ty.slots.itemsize;
+    unsafe { *(stub.add(40) as *mut usize) = itemsize };
+
+    // tp_flags at offset 168
+    let flags = ty.slots.flags.bits();
+    unsafe { *(stub.add(168) as *mut u64) = flags };
+
+    // Store the real type address at offset 248 (for resolve_type_ptr)
+    unsafe { *(stub.add(248) as *mut usize) = real_type as *const _ as usize };
+
+    // Leak the CString so it lives forever
+    // Leaked via into_raw() above
+
+    stub_addr
+}
+
+/// Get or create a CPython-compatible type stub for the given real type.
+fn get_or_create_stub(real_type: *const PyTypeObject) -> usize {
+    let real_addr = real_type as *const _ as usize;
+    let mut cache = TYPE_STUB_CACHE.lock().unwrap();
+    if let Some(ref map) = *cache {
+        if let Some(&stub) = map.get(&real_addr) {
+            return stub;
+        }
+    }
+    let stub_addr = alloc_type_stub(real_type);
+    cache.get_or_insert_with(HashMap::new).insert(real_addr, stub_addr);
+    stub_addr
+}
 
 // CPython 3.15 (PEP 793) type slot ids.
 // Names intentionally mirror the C identifiers.
@@ -31,7 +101,14 @@ define_py_check!(exact fn PyType_CheckExact, types.type_type);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_TYPE(op: *mut PyObject) -> *const PyTypeObject {
-    unsafe { (*op).class() }
+    let real_type = unsafe { (*op).class() };
+    let real_addr = real_type as *const _ as usize;
+    // Check if the type is an exported static type (already has a stub)
+    // or a dynamic type that needs a new stub
+    // For static types, the address is the real type (stub is at objectstatics)
+    // For dynamic types, we create a CPython-compatible stub
+    let stub_addr = get_or_create_stub(real_type);
+    stub_addr as *const PyTypeObject
 }
 
 #[unsafe(no_mangle)]
@@ -61,7 +138,7 @@ pub unsafe extern "C" fn PyType_IsSubtype(a: *const PyTypeObject, b: *const PyTy
 }
 
 /// The C-visible `ob_type` of a RustPython object (offset 8 of the object
-/// header, where `typ` now lives — matching CPython's PyObject layout).
+/// header, where `typ` now lives â€” matching CPython's PyObject layout).
 /// CPython's inline PyObject_TypeCheck falls back to calling the exported
 /// PyType_IsSubtype with those raw pointers, so resolve them: known payload
 /// vtables map to their real type; the exported type-stub symbols (byte copies
@@ -97,6 +174,15 @@ fn resolve_type_ptr(
     if is_type_stub_addr(addr, StubKind::Bool) {
         return Ok(vm.ctx.types.bool_type.to_owned());
     }
+    // Check the dynamic type stub cache (stub addr -> real type addr)
+    if let Some(real_addr) = resolve_dynamic_stub_addr(addr) {
+        let obj = unsafe {
+            rustpython_vm::PyObjectRef::from_raw(NonNull::new_unchecked(real_addr as *mut PyObject))
+        };
+        return obj
+            .downcast::<PyType>()
+            .map_err(|_| vm.new_system_error("PyType_IsSubtype: stub does not point to a type"));
+    }
     // Not a vtable: assume a real type object (possibly one of our exported
     // header stubs, which mirror the type's header bytes).
     let obj = unsafe { (&*(ptr as *mut PyObject)).to_owned() };
@@ -105,6 +191,19 @@ fn resolve_type_ptr(
     })
 }
 
+/// Look up a dynamic type stub address to find the real type address.
+/// Returns the real type address if the given address is a known stub.
+fn resolve_dynamic_stub_addr(stub_addr: usize) -> Option<usize> {
+    let cache = TYPE_STUB_CACHE.lock().unwrap();
+    if let Some(ref map) = *cache {
+        for (&real, &stub) in map.iter() {
+            if stub == stub_addr {
+                return Some(real);
+            }
+        }
+    }
+    None
+}
 /// (payload vtable address, real type object pointer) pairs for the common
 /// builtin types, captured once from fresh instances.
 fn vtable_probes(vm: &VirtualMachine) -> Vec<(usize, *mut u8)> {
@@ -362,7 +461,7 @@ pub unsafe extern "C" fn PyType_FromSpec(spec: *mut PyType_Spec) -> *mut PyObjec
     })
 }
 
-/// PyType_FromModuleAndSpec (3.9+): (module, spec, userdata) — the module
+/// PyType_FromModuleAndSpec (3.9+): (module, spec, userdata) â€” the module
 /// context is not modeled, the spec is passed through to PyType_FromSpec.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_FromModuleAndSpec(
