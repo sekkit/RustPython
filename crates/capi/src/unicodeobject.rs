@@ -1132,6 +1132,22 @@ pub unsafe extern "C" fn rp_va_unicode_write_char(
     })
 }
 
+/// Rust impl of PyUnicode_EncodeLocale: encode string using locale encoding.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_unicode_encode_locale(
+    obj: *mut PyObject,
+    _errors: c_int,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let s = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_EncodeLocale: string is not valid UTF-8")
+        })?;
+        let bytes = s.as_bytes().to_vec();
+        let result: rustpython_vm::PyObjectRef = vm.ctx.new_bytes(bytes).into();
+        Ok(result.into_raw().as_ptr())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};

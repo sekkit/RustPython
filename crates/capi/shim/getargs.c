@@ -812,6 +812,13 @@ RP_EXPORT void *PyImport_ReloadModule(void *module) {
     return rp_va_import_reload_module(module);
 }
 
+/* PyUnicode_EncodeLocale (Objects/unicodeobject.c) */
+extern void *rp_va_unicode_encode_locale(void *obj, int errors);
+
+RP_EXPORT void *PyUnicode_EncodeLocale(void *obj, int errors) {
+    return rp_va_unicode_encode_locale(obj, errors);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
