@@ -1,4 +1,4 @@
-//! Essential types for object models
+﻿//! Essential types for object models
 //!
 //! +-------------------------+--------------+-----------------------+
 //! |       Management        |       Typed      |      Untyped      |
@@ -327,6 +327,21 @@ unsafe impl Link for GcLink {
     }
 }
 
+/// GC metadata stored as a prefix before PyInner.
+/// This keeps the PyInner header small (matching CPython's PyObject size)
+/// while allowing RustPython's GC to track all objects.
+#[repr(C, align(8))]
+pub(super) struct GcPrefix {
+    /// GC bits for free-threading (like ob_gc_bits)
+    pub(super) gc_bits: PyAtomic<u8>,
+    /// GC generation index (0-2=gen, GC_PERMANENT=permanent, GC_UNTRACKED=not tracked).
+    pub(super) gc_generation: PyAtomic<u8>,
+    // padding: 6 bytes
+    /// Intrusive linked list pointers for GC generational tracking
+    pub(super) gc_pointers: Pointers<PyObject>,
+    /// Virtual method table for type dispatch
+    pub(super) vtable: &'static PyObjVTable,
+}
 /// Extension fields for objects that need dict or member slots.
 /// Allocated as a prefix before PyInner when needed (prefix allocation pattern).
 /// Access via `PyInner::ext_ref()` using negative offset from the object pointer.
@@ -383,7 +398,7 @@ const _: () = assert!(core::mem::align_of::<WeakRefList>() >= core::mem::align_o
 #[repr(C)]
 pub(super) struct PyInner<T> {
     pub(super) ref_count: RefCount,
-    /// __class__ member — at offset 8 matching CPython's PyObject.ob_type,
+    /// __class__ member â€” at offset 8 matching CPython's PyObject.ob_type,
     /// so C extensions compiled for CPython read the correct type pointer.
     pub(super) typ: PyAtomicRef<PyType>,
     /// GC bits for free-threading (like ob_gc_bits)
@@ -633,7 +648,7 @@ impl WeakRefList {
         }
 
         // Allocate OUTSIDE the stripe lock. PyRef::new_ref may trigger
-        // maybe_collect → GC → WeakRefList::clear on another object that
+        // maybe_collect â†’ GC â†’ WeakRefList::clear on another object that
         // hashes to the same stripe, which would deadlock on the spinlock.
         let weak_payload = PyWeak {
             pointers: Pointers::new(),
@@ -1760,7 +1775,7 @@ impl PyObject {
             slot_del: fn(&PyObject, &VirtualMachine) -> PyResult<()>,
         ) -> Result<(), ()> {
             let ret = crate::vm::thread::with_vm(zelf, |vm| {
-                // Temporarily resurrect (0→2) so ref_count stays positive
+                // Temporarily resurrect (0â†’2) so ref_count stays positive
                 // during __del__, preventing safe_inc from seeing 0.
                 zelf.0.ref_count.inc_by(2);
 
@@ -1915,7 +1930,7 @@ impl PyObject {
         }
 
         // 2. Clear dict and member slots (subtype_clear)
-        // Detach the dict via Py_CLEAR(*_PyObject_GetDictPtr(self)) — NULL
+        // Detach the dict via Py_CLEAR(*_PyObject_GetDictPtr(self)) â€” NULL
         // the pointer without clearing dict contents. The dict may still be
         // referenced by other live objects (e.g. function.__globals__).
         let (flags, member_count) = obj.0.read_type_flags();
@@ -2019,8 +2034,8 @@ const STACKREF_BORROW_TAG: usize = 1;
 /// A tagged stack reference to a Python object.
 ///
 /// Uses the lowest bit of the pointer to distinguish owned vs borrowed:
-/// - bit 0 = 0 → **owned**: refcount was incremented; Drop will decrement.
-/// - bit 0 = 1 → **borrowed**: no refcount change; Drop is a no-op.
+/// - bit 0 = 0 â†’ **owned**: refcount was incremented; Drop will decrement.
+/// - bit 0 = 1 â†’ **borrowed**: no refcount change; Drop is a no-op.
 ///
 /// Same size as `PyObjectRef` (one pointer-width).  `PyObject` is at least
 /// 8-byte aligned, so the low bit is always available for tagging.
@@ -2034,7 +2049,7 @@ pub struct PyStackRef {
 
 impl PyStackRef {
     /// Create an owned stack reference, consuming the `PyObjectRef`.
-    /// Refcount is NOT incremented — ownership is transferred.
+    /// Refcount is NOT incremented â€” ownership is transferred.
     #[inline(always)]
     #[must_use]
     pub fn new_owned(obj: PyObjectRef) -> Self {
@@ -2082,8 +2097,8 @@ impl PyStackRef {
 
     /// Convert to an owned `PyObjectRef`.
     ///
-    /// * If **borrowed** → increments refcount, forgets self.
-    /// * If **owned** → reconstructs `PyObjectRef` from the raw pointer, forgets self.
+    /// * If **borrowed** â†’ increments refcount, forgets self.
+    /// * If **owned** â†’ reconstructs `PyObjectRef` from the raw pointer, forgets self.
     #[inline(always)]
     #[must_use]
     pub fn to_pyobj(self) -> PyObjectRef {
