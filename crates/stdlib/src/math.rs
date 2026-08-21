@@ -1,4 +1,4 @@
-pub(crate) use math::module_def;
+﻿pub(crate) use math::module_def;
 
 use crate::vm::{VirtualMachine, builtins::PyBaseExceptionRef};
 
@@ -6,7 +6,7 @@ use crate::vm::{VirtualMachine, builtins::PyBaseExceptionRef};
 mod math {
     use crate::vm::{
         AsObject, PyObject, PyObjectRef, PyRef, PyResult, VirtualMachine,
-        builtins::{PyFloat, PyInt, PyIntRef, PyStrInterned, try_bigint_to_f64, try_f64_to_bigint},
+        builtins::{PyBool, PyFloat, PyInt, PyIntRef, PyStrInterned, try_bigint_to_f64, try_f64_to_bigint},
         function::{ArgIndex, ArgIntoFloat, ArgIterable, Either, OptionalArg, PosArgs},
         identifier,
     };
@@ -677,14 +677,18 @@ mod math {
                     let q_is_exact_float = q_i.class().is(vm.ctx.types.float_type);
                     let p_is_exact_int = p_i.class().is(vm.ctx.types.int_type);
                     let q_is_exact_int = q_i.class().is(vm.ctx.types.int_type);
-                    let p_is_exact_numeric = p_is_exact_float || p_is_exact_int;
-                    let q_is_exact_numeric = q_is_exact_float || q_is_exact_int;
+                    let p_is_exact_bool = p_i.class().is(vm.ctx.types.bool_type);
+                    let q_is_exact_bool = q_i.class().is(vm.ctx.types.bool_type);
+                    let p_is_exact_numeric = p_is_exact_float || p_is_exact_int || p_is_exact_bool;
+                    let q_is_exact_numeric = q_is_exact_float || q_is_exact_int || q_is_exact_bool;
                     let has_exact_float = p_is_exact_float || q_is_exact_float;
 
                     // Only use float path if at least one is exact float and both are exact int/float
                     if has_exact_float && p_is_exact_numeric && q_is_exact_numeric {
                         let p_flt = if let Some(f) = p_i.downcast_ref::<PyFloat>() {
                             Some(f.to_f64())
+                        } else if let Some(b) = p_i.downcast_ref::<PyBool>() {
+                            Some(if b.0.as_bigint().to_u8().unwrap_or(0) != 0 { 1.0 } else { 0.0 })
                         } else if let Some(i) = p_i.downcast_ref::<PyInt>() {
                             // PyLong_AsDouble fails for integers too large for f64
                             try_bigint_to_f64(i.as_bigint(), vm).ok()
@@ -694,6 +698,8 @@ mod math {
 
                         let q_flt = if let Some(f) = q_i.downcast_ref::<PyFloat>() {
                             Some(f.to_f64())
+                        } else if let Some(b) = q_i.downcast_ref::<PyBool>() {
+                            Some(if b.0.as_bigint().to_u8().unwrap_or(0) != 0 { 1.0 } else { 0.0 })
                         } else if let Some(i) = q_i.downcast_ref::<PyInt>() {
                             // PyLong_AsDouble fails for integers too large for f64
                             try_bigint_to_f64(i.as_bigint(), vm).ok()
