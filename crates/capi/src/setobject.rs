@@ -10,7 +10,9 @@ use rustpython_vm::builtins::{PyFrozenSet, PySet};
 use rustpython_vm::function::ArgIterable;
 
 define_py_check!(fn PySet_Check, types.set_type);
+define_py_check!(exact fn PySet_CheckExact, types.set_type);
 define_py_check!(fn PyFrozenSet_Check, types.frozenset_type);
+define_py_check!(exact fn PyFrozenSet_CheckExact, types.frozenset_type);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_New(iterable: *mut PyObject) -> *mut PyObject {
