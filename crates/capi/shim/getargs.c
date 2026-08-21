@@ -660,6 +660,13 @@ RP_EXPORT void *PyCallIter_New(void *callable, void *sentinel) {
     return rp_va_calliter_new(callable, sentinel);
 }
 
+/* PyErr_SetImportErrorSubclass (Python/errors.c) */
+extern void *rp_va_err_set_import_error_subclass(void *exception, void *msg, void *name, void *path);
+
+RP_EXPORT void *PyErr_SetImportErrorSubclass(void *exception, void *msg, void *name, void *path) {
+    return rp_va_err_set_import_error_subclass(exception, msg, name, path);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \

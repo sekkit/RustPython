@@ -662,6 +662,39 @@ pub unsafe extern "C" fn rp_va_err_set_import_error(
     })
 }
 
+/// Rust impl of PyErr_SetImportErrorSubclass: set an ImportError with a custom exception class.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_err_set_import_error_subclass(
+    exception: *mut PyObject,
+    msg: *mut PyObject,
+    name: *mut PyObject,
+    path: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        let exc_type = if exception.is_null() {
+            vm.ctx.exceptions.import_error.to_owned()
+        } else {
+            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+        };
+        let msg_obj = unsafe { &*msg }.to_owned();
+        let name_obj = if name.is_null() {
+            vm.ctx.none().to_owned()
+        } else {
+            unsafe { &*name }.to_owned()
+        };
+        let path_obj = if path.is_null() {
+            vm.ctx.none().to_owned()
+        } else {
+            unsafe { &*path }.to_owned()
+        };
+        let exc = vm.invoke_exception(&exc_type, vec![msg_obj])?;
+        exc.as_object().set_attr("name", name_obj, vm)?;
+        exc.as_object().set_attr("path", path_obj, vm)?;
+        vm.set_exception(Some(exc));
+        Ok(core::ptr::null_mut())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_DisplayException(exc: *mut PyObject) {
     with_vm(|vm| {
