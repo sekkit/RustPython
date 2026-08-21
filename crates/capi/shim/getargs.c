@@ -805,6 +805,13 @@ RP_EXPORT int PyArg_ValidateKeywordArguments(void *dict) {
     return rp_va_arg_validate_keyword_arguments(dict);
 }
 
+/* PyImport_ReloadModule (Python/import.c) */
+extern void *rp_va_import_reload_module(void *module);
+
+RP_EXPORT void *PyImport_ReloadModule(void *module) {
+    return rp_va_import_reload_module(module);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \

@@ -133,6 +133,19 @@ pub unsafe extern "C" fn rp_va_import_exec_code_module_with_pathnames(
     })
 }
 
+/// Rust impl of PyImport_ReloadModule: reload a module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_import_reload_module(module: *mut PyObject) -> *mut PyObject {
+    with_vm(|vm| {
+        let module_obj = unsafe { &*module }.to_owned();
+        // Use importlib.reload(module).
+        let importlib = vm.import("importlib", 0)?;
+        let reload_func = importlib.get_attr("reload", vm)?;
+        let result = vm.invoke(&reload_func, (module_obj,))?;
+        Ok(result.into_raw().as_ptr())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::prelude::*;
