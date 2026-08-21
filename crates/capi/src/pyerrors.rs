@@ -9,6 +9,7 @@ use rustpython_vm::builtins::{PyBaseException, PyTuple, PyType};
 use rustpython_vm::convert::IntoObject;
 use rustpython_vm::exceptions::ExceptionZoo;
 use rustpython_vm::{AsObject, PyObjectRef, PyRef, PyResult};
+use std::ffi::CString;
 
 macro_rules! define_exception_statics {
     ($( $(#[$meta:meta])* $export:ident => $exc:ident ),* $(,)?) => {
@@ -774,6 +775,42 @@ pub unsafe extern "C" fn PyException_GetTraceback(exc: *mut PyObject) -> *mut Py
             .map(|tb| tb.into_object().into_raw().as_ptr())
             .unwrap_or_default();
         Ok(tb)
+    })
+}
+
+/// Rust impl of PyException_GetArgs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_exception_get_args(exc: *mut PyObject) -> *mut PyObject {
+    with_vm(|vm| {
+        let exc = unsafe { &*exc }.try_downcast_ref::<PyBaseException>(vm)?;
+        let args = exc.as_object().get_attr("args", vm)?;
+        Ok(args.into_raw().as_ptr())
+    })
+}
+
+/// Rust impl of PyException_SetArgs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_exception_set_args(exc: *mut PyObject, args: *mut PyObject) -> c_int {
+    with_vm(|vm| {
+        let exc = unsafe { &*exc }.try_downcast_ref::<PyBaseException>(vm)?;
+        let args_obj = unsafe { &*args }.to_owned();
+        exc.as_object().set_attr("args", args_obj, vm)?;
+        Ok(0)
+    })
+}
+
+/// Rust impl of PyExceptionClass_Name.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_exception_class_name(exc: *mut PyObject) -> *const c_char {
+    with_vm(|vm| {
+        let exc_type = unsafe { &*exc }.try_downcast_ref::<PyType>(vm)?;
+        let name = exc_type.name().to_string();
+        let c = CString::new(name).unwrap_or_default();
+        let ptr = c.as_ptr();
+        // Leak the CString to give a stable pointer.
+        // This is safe because the exception class name is constant.
+        let _ = core::mem::ManuallyDrop::new(c);
+        Ok(ptr)
     })
 }
 

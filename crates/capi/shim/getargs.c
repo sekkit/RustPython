@@ -750,6 +750,23 @@ RP_EXPORT void *PyErr_ProgramText(const char *filename, int lineno) {
     return rp_va_err_program_text(filename, lineno);
 }
 
+/* PyException_GetArgs / PyException_SetArgs / PyExceptionClass_Name (Objects/exceptions.c) */
+extern void *rp_va_exception_get_args(void *exc);
+extern int rp_va_exception_set_args(void *exc, void *args);
+extern const char *rp_va_exception_class_name(void *exc);
+
+RP_EXPORT void *PyException_GetArgs(void *exc) {
+    return rp_va_exception_get_args(exc);
+}
+
+RP_EXPORT int PyException_SetArgs(void *exc, void *args) {
+    return rp_va_exception_set_args(exc, args);
+}
+
+RP_EXPORT const char *PyExceptionClass_Name(void *exc) {
+    return rp_va_exception_class_name(exc);
+}
+
 /* PyTuple_Pack (Objects/tupleobject.c): build a tuple from n object pointers.
  * The Rust implementation transfers ownership of the item references. */
 void *rp_va_tuple_pack(const uintptr_t *slots, int nslots);
