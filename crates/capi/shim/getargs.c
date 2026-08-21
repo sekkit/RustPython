@@ -708,6 +708,18 @@ RP_EXPORT void *PyErr_SetExcFromWindowsErrWithFilenameObjects(void *exception, i
     return rp_va_err_set_exc_from_windows_err_with_filename_objects(exception, err, filename, filename2);
 }
 
+/* PyErr_FormatV (Python/errors.c) — va_list format for exceptions. */
+/* Reuses the existing rp_va_err_format function. */
+extern void *rp_va_err_format(void *exception, const char *format, const uintptr_t *slots, int nslots);
+
+RP_EXPORT void *PyErr_FormatV(void *exception, const char *format, va_list vargs) {
+    uintptr_t slots[RP_MAX_SLOTS];
+    int n = rp_count_printf_slots(format == NULL ? "" : format);
+    if (n > RP_MAX_SLOTS) { n = RP_MAX_SLOTS; }
+    for (int i = 0; i < n; i++) { slots[i] = va_arg(vargs, uintptr_t); }
+    return rp_va_err_format(exception, format, slots, n);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
