@@ -141,3 +141,19 @@ mod tests {
         })
     }
 }
+
+/// Rust impl of PyCallIter_New: create a call iterator (iter(callable, sentinel)).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_calliter_new(
+    callable: *mut PyObject,
+    sentinel: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let callable_obj = unsafe { &*callable }.to_owned();
+        let sentinel_obj = unsafe { &*sentinel }.to_owned();
+        // Use Python's built-in iter(callable, sentinel) via the builtins module.
+        let iter_func = vm.builtins.get_attr("iter", vm)?;
+        let result = vm.invoke(&iter_func, (callable_obj, sentinel_obj))?;
+        Ok(result.into_raw().as_ptr())
+    })
+}

@@ -653,6 +653,13 @@ RP_EXPORT void *PyBytes_DecodeEscape(const char *s, intptr_t size, const char *e
     return rp_va_bytes_decode_escape(s, size, errors);
 }
 
+/* PyCallIter_New (Objects/iterobject.c) */
+extern void *rp_va_calliter_new(void *callable, void *sentinel);
+
+RP_EXPORT void *PyCallIter_New(void *callable, void *sentinel) {
+    return rp_va_calliter_new(callable, sentinel);
+}
+
 /* Unicode character classification functions (Objects/unicodeobject.c).
  * Each wraps a Rust implementation via the rp_va_ prefix. */
 #define UNICODE_CLASS_FUNC(name) \
