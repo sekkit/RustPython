@@ -514,41 +514,24 @@ fn core_frozen_inits() -> impl Iterator<Item = (&'static str, FrozenModule)> {
     // Collect frozen module entries
     let mut entries: Vec<_> = iter.collect();
 
-    // Add test module aliases
+    // Add test module aliases and submodules
     if let Some(hello_code) = entries
         .iter()
         .find(|(n, _)| *n == "__hello__")
         .map(|(_, m)| m.code)
     {
-        entries.push((
-            "__hello_alias__",
-            FrozenModule {
-                code: hello_code,
-                package: false,
-            },
-        ));
-        entries.push((
-            "__phello_alias__",
-            FrozenModule {
-                code: hello_code,
-                package: true,
-            },
-        ));
-        entries.push((
-            "__phello_alias__.spam",
-            FrozenModule {
-                code: hello_code,
-                package: false,
-            },
-        ));
-        entries.push((
-            "__hello_only__",
-            FrozenModule {
-                code: hello_code,
-                package: false,
-            },
-        ));
+        // Aliases for test_importlib
+        entries.push(("__hello_alias__", FrozenModule { code: hello_code, package: false }));
+        entries.push(("__phello_alias__", FrozenModule { code: hello_code, package: true }));
+        entries.push(("__phello_alias__.spam", FrozenModule { code: hello_code, package: false }));
+        entries.push(("__hello_only__", FrozenModule { code: hello_code, package: false }));
+        // __phello__ submodules (needed by test_importlib frozen tests)
+        entries.push(("__phello__", FrozenModule { code: hello_code, package: true }));
+        entries.push(("__phello__.spam", FrozenModule { code: hello_code, package: false }));
+        entries.push(("__phello__.ham", FrozenModule { code: hello_code, package: true }));
+        entries.push(("__phello__.ham.eggs", FrozenModule { code: hello_code, package: false }));
     }
+    // __init__ aliases for frozen packages
     if let Some(code) = entries
         .iter()
         .find(|(n, _)| *n == "__phello__")
