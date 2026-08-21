@@ -975,3 +975,39 @@ mod tests {
     }
 }
 
+/// Rust impl of PyModule_AddFunctions: add an array of methods to a module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_module_add_functions(
+    module: *mut PyObject,
+    methods: *const crate::methodobject::PyMethodDef,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<c_int> {
+        if module.is_null() || methods.is_null() {
+            return Err(vm.new_system_error("Bad internal call"));
+        }
+        let module = unsafe { &*module }.to_owned();
+        let mut i = 0;
+        loop {
+            let md = unsafe { &*methods.add(i) };
+            if md.ml_name.is_null() {
+                break;
+            }
+            let name = unsafe { core::ffi::CStr::from_ptr(md.ml_name) }.to_str().unwrap_or("");
+            let def = crate::methodobject::build_method_def(vm, md, false)?;
+            let func = def.build_function(vm, None);
+            module.set_attr(name, func, vm)?;
+            i += 1;
+        }
+        Ok(0)
+    })
+}
+
+/// Rust impl of PyModule_AddFunction: add a single method to a module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rp_va_module_add_function(
+    module: *mut PyObject,
+    method: *const crate::methodobject::PyMethodDef,
+) -> c_int {
+    unsafe { rp_va_module_add_functions(module, method) }
+}
+

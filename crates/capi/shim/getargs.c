@@ -994,3 +994,15 @@ RP_EXPORT void *PyTuple_Pack(intptr_t n, ...) {
     va_end(ap);
     return rp_va_tuple_pack(slots, count);
 }
+
+/* PyModule_AddFunctions / PyModule_AddFunction (Objects/moduleobject.c) */
+extern int rp_va_module_add_functions(void *module, const void *methods);
+extern int rp_va_module_add_function(void *module, const void *method);
+
+RP_EXPORT int PyModule_AddFunctions(void *module, const void *methods) {
+    return rp_va_module_add_functions(module, methods);
+}
+
+RP_EXPORT int PyModule_AddFunction(void *module, const void *method) {
+    return rp_va_module_add_function(module, method);
+}
