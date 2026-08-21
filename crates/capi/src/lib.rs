@@ -28,6 +28,7 @@ pub mod listobject;
 pub mod longobject;
 pub mod memoryobject;
 pub mod methodobject;
+pub mod missing_api;
 mod modulesupport;
 pub mod moduleobject;
 pub mod object;

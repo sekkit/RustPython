@@ -45,6 +45,42 @@ pub static mut PyFloat_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16
 pub static mut PySlice_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
 #[unsafe(no_mangle)]
 pub static mut PyType_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+// ---------- numpy/PyTorch-needed type stubs ----------
+#[unsafe(no_mangle)]
+pub static mut PyBaseObject_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyBytes_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyCapsule_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyCFunction_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyComplex_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyDict_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyDictProxy_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyFrozenSet_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyGetSetDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyList_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyMemberDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyMemoryView_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyMethodDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PySet_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut PyTuple_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+// ---------- data object stubs ----------
+#[unsafe(no_mangle)]
+pub static mut _Py_NotImplementedStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 16] };
+#[unsafe(no_mangle)]
+pub static mut _Py_ascii_whitespace: [u8; 128] = [0; 128];
 
 static STATICS_REFRESHED: AtomicBool = AtomicBool::new(false);
 
@@ -107,6 +143,34 @@ pub(crate) fn ensure_object_statics(vm: &VirtualMachine) {
             vm.ctx.types.type_type.as_object().as_raw(),
             size,
         );
+        // ---------- numpy/PyTorch-needed type stubs ----------
+        copy_header(&mut PyBaseObject_Type, vm.ctx.types.object_type.as_object().as_raw(), size);
+        copy_header(&mut PyBytes_Type, vm.ctx.types.bytes_type.as_object().as_raw(), size);
+        copy_header(&mut PyCapsule_Type, vm.ctx.types.capsule_type.as_object().as_raw(), size);
+        copy_header(&mut PyCFunction_Type, vm.ctx.types.builtin_function_or_method_type.as_object().as_raw(), size);
+        copy_header(&mut PyComplex_Type, vm.ctx.types.complex_type.as_object().as_raw(), size);
+        copy_header(&mut PyDict_Type, vm.ctx.types.dict_type.as_object().as_raw(), size);
+        copy_header(&mut PyDictProxy_Type, vm.ctx.types.mappingproxy_type.as_object().as_raw(), size);
+        copy_header(&mut PyFrozenSet_Type, vm.ctx.types.frozenset_type.as_object().as_raw(), size);
+        copy_header(&mut PyGetSetDescr_Type, vm.ctx.types.getset_type.as_object().as_raw(), size);
+        copy_header(&mut PyList_Type, vm.ctx.types.list_type.as_object().as_raw(), size);
+        copy_header(&mut PyMemberDescr_Type, vm.ctx.types.member_descriptor_type.as_object().as_raw(), size);
+        copy_header(&mut PyMemoryView_Type, vm.ctx.types.memoryview_type.as_object().as_raw(), size);
+        copy_header(&mut PyMethodDescr_Type, vm.ctx.types.method_descriptor_type.as_object().as_raw(), size);
+        copy_header(&mut PySet_Type, vm.ctx.types.set_type.as_object().as_raw(), size);
+        copy_header(&mut PyTuple_Type, vm.ctx.types.tuple_type.as_object().as_raw(), size);
+        copy_header(&mut _Py_NotImplementedStruct, vm.ctx.not_implemented.as_object().as_raw(), size);
+        // _Py_ascii_whitespace: CPython's " \t\n\r\x0b\x0c" (7 bytes)
+        _Py_ascii_whitespace = [
+            0x20, 0x09, 0x0a, 0x0d, 0x0b, 0x0c, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
         // Tell the vm where the None stub lives so it can translate C-returned
         // `Py_None` pointers into the real None object.
         rustpython_vm::import::register_none_stub_addr(core::ptr::addr_of!(_Py_NoneStruct) as usize);

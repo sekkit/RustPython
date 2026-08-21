@@ -82,7 +82,7 @@ Write-Host "relaying $($exports.Count) symbols from $exe"
 
 # Classify symbols: data (needs real storage in the relay) vs functions
 # (jmp thunks through slots). Keep in sync with crates/capi/src/objectstatics.rs.
-$data128 = @('_Py_NoneStruct', 'PyUnicode_Type', 'PyLong_Type', 'PyBool_Type', '_Py_FalseStruct', '_Py_TrueStruct', '_Py_EllipsisObject', 'PyFloat_Type', 'PySlice_Type', 'PyType_Type')
+$data128 = @('_Py_NoneStruct', 'PyUnicode_Type', 'PyLong_Type', 'PyBool_Type', '_Py_FalseStruct', '_Py_TrueStruct', '_Py_EllipsisObject', 'PyFloat_Type', 'PySlice_Type', 'PyType_Type', 'PyBaseObject_Type', 'PyBytes_Type', 'PyCapsule_Type', 'PyCFunction_Type', 'PyComplex_Type', 'PyDict_Type', 'PyDictProxy_Type', 'PyFrozenSet_Type', 'PyGetSetDescr_Type', 'PyList_Type', 'PyMemberDescr_Type', 'PyMemoryView_Type', 'PyMethodDescr_Type', 'PySet_Type', 'PyTuple_Type', '_Py_NotImplementedStruct', '_Py_ascii_whitespace')
 $data8 = @($exports | Where-Object { $_ -match '^PyExc_' })
 $functions = @($exports | Where-Object { $_ -notin $data128 -and $_ -notin $data8 })
 Write-Host "  functions: $($functions.Count), PyExc_* data: $($data8.Count), header stubs: $($data128.Count)"

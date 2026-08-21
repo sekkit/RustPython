@@ -243,19 +243,82 @@ mod _imp {
         let symbol = format!("{prefix}_{encoded}\0");
 
         #[cfg(windows)]
-        let handle = rustpython_host_env::ctypes::open_library(origin.as_str());
+        let handle: Result<usize, _> = {
+            // Use CPython's LoadLibraryEx flags: LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
+            // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR (bpo-36085). This respects
+            // AddDllDirectory paths and prefers DLLs adjacent to the PYD.
+            // We use extern "system" FFI to avoid a windows-sys dependency.
+            use std::ffi::OsStr;
+            use std::os::windows::ffi::OsStrExt;
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn LoadLibraryExW(
+                    lpFileName: *const u16,
+                    hFile: *mut core::ffi::c_void,
+                    dwFlags: u32,
+                ) -> *mut core::ffi::c_void;
+                fn GetLastError() -> u32;
+            }
+            const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x00001000;
+            const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x00000100;
+            let os_str = OsStr::new(origin.as_str());
+            let wide: Vec<u16> = os_str.encode_wide().chain(Some(0)).collect();
+            let hmod = unsafe {
+                LoadLibraryExW(
+                    wide.as_ptr(),
+                    core::ptr::null_mut(),
+                    LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+                )
+            };
+            if hmod.is_null() {
+                let err = unsafe { GetLastError() };
+                Err(vm.new_import_error(
+                    format!("cannot load extension module '{}': LoadLibraryExW failed (error {})",
+                        name.as_str(), err),
+                    name.clone().into_wtf8(),
+                ))
+            } else {
+                Ok(hmod as usize)
+            }
+        };
         #[cfg(all(unix, not(target_os = "wasi")))]
         let handle = rustpython_host_env::ctypes::open_library_with_mode(
             origin.as_str(),
             rustpython_host_env::ctypes::dlopen_mode(None),
         );
-        let handle = handle.map_err(|e| {
+        let handle = handle.map_err(|_e| {
             vm.new_import_error(
-                format!("cannot load extension module '{}': {e}", name.as_str()),
+                format!("cannot load extension module '{}'", name.as_str()),
                 name.clone().into_wtf8(),
             )
         })?;
 
+        #[cfg(windows)]
+        let addr = {
+            // Use GetProcAddress with the raw HMODULE.
+            use std::ffi::CString;
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn GetProcAddress(
+                    hModule: *mut core::ffi::c_void,
+                    lpProcName: *const u8,
+                ) -> *mut core::ffi::c_void;
+            }
+            let hmod = handle as *mut core::ffi::c_void;
+            let funcname = symbol.trim_end_matches('\0');
+            // GetProcAddress takes ANSI (C string), not wide.
+            let cname = CString::new(funcname).unwrap_or_default();
+            let ptr = unsafe { GetProcAddress(hmod, cname.as_ptr().cast()) };
+            if !ptr.is_null() {
+                ptr as usize
+            } else {
+                return Err(vm.new_import_error(
+                    format!("dynamic module does not define module export function ({})", funcname),
+                    name.clone().into_wtf8(),
+                ));
+            }
+        };
+        #[cfg(not(windows))]
         let addr = rustpython_host_env::ctypes::lookup_function_symbol_addr(handle, symbol.as_bytes())
             .map_err(|_| {
                 vm.new_import_error(

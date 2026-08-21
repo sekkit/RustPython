@@ -93,6 +93,7 @@ define_exception_statics! {
     PyExc_UserWarning => user_warning,
     PyExc_FutureWarning => future_warning,
     PyExc_ImportWarning => import_warning,
+    PyExc_IOError => os_error,
     PyExc_UnicodeWarning => unicode_warning,
     PyExc_BytesWarning => bytes_warning,
     PyExc_ResourceWarning => resource_warning,
@@ -952,7 +953,21 @@ pub unsafe extern "C" fn PyErr_NewException(
             ));
         }
 
-        Ok(vm.ctx.new_exception_type(module, name, Some(bases)))
+        let exc = vm.ctx.new_exception_type(module, name, Some(bases));
+
+        // CPython: add the exception to the module's namespace so it can be
+        // accessed as `module.ExceptionName`. Get the module from sys.modules
+        // (it may be partially initialized during import).
+        if !module.is_empty() {
+            if let Ok(sys_modules) = vm.sys_module.get_attr("modules", vm) {
+                if let Ok(module_obj) = sys_modules.get_item(module, vm) {
+                    let exc_obj: rustpython_vm::PyObjectRef = exc.clone().into();
+                    let _ = module_obj.set_attr(name, exc_obj, vm);
+                }
+            }
+        }
+
+        Ok(exc)
     })
 }
 

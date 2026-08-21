@@ -6,6 +6,7 @@ use crate::{
 };
 use core::ffi::{CStr, c_void};
 use core::sync::atomic::AtomicPtr;
+use std::ffi::CString;
 
 /// PyCapsule - a container for C pointers.
 /// In RustPython, this is a minimal implementation for compatibility.
@@ -14,7 +15,7 @@ use core::sync::atomic::AtomicPtr;
 pub struct PyCapsule {
     ptr: AtomicPtr<c_void>,
     context: AtomicPtr<c_void>,
-    name: Option<&'static CStr>,
+    name: Option<CString>,
     destructor: Option<unsafe extern "C" fn(_: *mut PyObject)>,
 }
 
@@ -30,6 +31,20 @@ impl PyCapsule {
     pub fn new(
         ptr: *mut c_void,
         name: Option<&'static CStr>,
+        destructor: Option<unsafe extern "C" fn(_: *mut PyObject)>,
+    ) -> Self {
+        Self {
+            ptr: ptr.into(),
+            context: core::ptr::null_mut::<c_void>().into(),
+            name: name.map(CString::from),
+            destructor,
+        }
+    }
+
+    /// Create a capsule with an owned name string (safe for runtime-generated names).
+    pub fn new_owned_name(
+        ptr: *mut c_void,
+        name: Option<CString>,
         destructor: Option<unsafe extern "C" fn(_: *mut PyObject)>,
     ) -> Self {
         Self {
@@ -59,7 +74,7 @@ impl PyCapsule {
     }
 
     pub fn name(&self) -> Option<&CStr> {
-        self.name
+        self.name.as_deref()
     }
 
     pub fn destructor(&self) -> Option<unsafe extern "C" fn(_: *mut PyObject)> {

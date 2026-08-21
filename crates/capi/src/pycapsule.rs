@@ -19,8 +19,12 @@ pub extern "C" fn PyCapsule_New(
         if pointer.is_null() {
             return Err(vm.new_value_error("PyCapsule_New called with null pointer"));
         }
-        let name = NonNull::new(name.cast_mut()).map(|ptr| unsafe { CStr::from_ptr(ptr.as_ptr()) });
-        Ok(vm.ctx.new_capsule(pointer, name, destructor))
+        // Copy the name string so it's not a dangling reference.
+        let name = NonNull::new(name.cast_mut()).map(|ptr| {
+            let cstr = unsafe { CStr::from_ptr(ptr.as_ptr()) };
+            cstr.to_owned()
+        });
+        Ok(vm.ctx.new_capsule_owned_name(pointer, name, destructor))
     })
 }
 

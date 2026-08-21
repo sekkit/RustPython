@@ -5,6 +5,13 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 use core::ptr::NonNull;
 pub use pytype::*;
 use rustpython_vm::builtins::{PyStr, object_generic_set_dict, object_get_dict};
+
+/// CPython's PyVarObject (object header with a size field).
+#[repr(C)]
+pub struct PyVarObject {
+    pub ob_base: crate::PyObject,
+    pub ob_size: isize,
+}
 use rustpython_vm::bytecode::ComparisonOperator;
 use rustpython_vm::function::PySetterValue;
 use rustpython_vm::types::{PyComparisonOp, hash_not_implemented};

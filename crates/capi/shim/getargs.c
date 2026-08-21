@@ -103,9 +103,14 @@ static int rp_count_slots(const char *format) {
     const char *p;
     for (p = format; *p; p++) {
         char c = *p;
+        /* ':' and ';' terminate the format string: everything after is the
+         * function name / custom error message, not conversion codes. */
+        if (c == ':' || c == ';') {
+            break;
+        }
         if (c == ' ' || c == '(' || c == ')' || c == '[' || c == ']' ||
             c == '{' || c == '}' || c == ',' ||
-            c == '|' || c == '$' || c == ':' || c == ';') {
+            c == '|' || c == '$') {
             continue;
         }
         if (c == 'O') {
@@ -311,6 +316,19 @@ RP_EXPORT void *PyUnicode_FromFormat(const char *format, ...) {
     }
     va_end(ap);
     return rp_va_unicode_from_format(format, slots, n);
+}
+
+/* PyUnicode_FromFormatV (Objects/unicodeobject.c): va_list variant. */
+void *rp_va_unicode_from_format_v(const char *format, const uintptr_t *slots, int nslots);
+
+RP_EXPORT void *PyUnicode_FromFormatV(const char *format, va_list ap) {
+    uintptr_t slots[RP_MAX_SLOTS];
+    int n = rp_count_printf_slots(format == NULL ? "" : format);
+    if (n > RP_MAX_SLOTS) { n = RP_MAX_SLOTS; }
+    for (int i = 0; i < n; i++) {
+        slots[i] = va_arg(ap, uintptr_t);
+    }
+    return rp_va_unicode_from_format_v(format, slots, n);
 }
 
 /* PyRun_SimpleString (Python/pythonrun.c): execute a C string as Python
@@ -1005,4 +1023,46 @@ RP_EXPORT int PyModule_AddFunctions(void *module, const void *methods) {
 
 RP_EXPORT int PyModule_AddFunction(void *module, const void *method) {
     return rp_va_module_add_function(module, method);
+}
+
+/* PyOS_snprintf (Include/pyport.h): printf-style to a buffer. */
+extern int rp_va_os_snprintf(char *buf, size_t size, const char *format,
+                             const uintptr_t *slots, int nslots);
+
+RP_EXPORT int PyOS_snprintf(char *buf, size_t size, const char *format, ...) {
+    va_list ap;
+    uintptr_t slots[RP_MAX_SLOTS];
+    int n;
+    va_start(ap, format);
+    n = rp_count_printf_slots(format == NULL ? "" : format);
+    if (n > RP_MAX_SLOTS) { n = RP_MAX_SLOTS; }
+    for (int i = 0; i < n; i++) { slots[i] = va_arg(ap, uintptr_t); }
+    va_end(ap);
+    return rp_va_os_snprintf(buf, size, format, slots, n);
+}
+
+/* PyArg_VaParseTupleAndKeywords (Python/getargs.c) — va_list variant.
+ * The va_list is already captured by the caller; we pass it through as slots
+ * (the va_list pointer is opaque, but on x64 MSVC it's a pointer to the stack
+ * area, so casting it as a pointer to uintptr_t slots works). */
+extern int rp_va_parse_tuple_and_keywords_va(void *args, void *kwdict, const char *format,
+                                             const char *const *kwlist,
+                                             const uintptr_t *slots, int nslots);
+
+RP_EXPORT int PyArg_VaParseTupleAndKeywords(void *args, void *kwdict, const char *format,
+                                            const char *const *kwlist, va_list ap) {
+    /* On x64 MSVC, va_list is a pointer to the stack area. We can read the
+     * slots directly from it. The number of slots is format-dependent. */
+    int n = rp_count_slots(format == NULL ? "" : format);
+    if (n > RP_MAX_SLOTS) { n = RP_MAX_SLOTS; }
+    /* Copy the va_list-contents into slots. */
+    uintptr_t slots[RP_MAX_SLOTS];
+    if (n > 0 && ap != NULL) {
+        /* va_list is a char* on x64 MSVC; we read the args that were already
+         * packed there by the caller's va_start. */
+        for (int i = 0; i < n; i++) {
+            slots[i] = va_arg(ap, uintptr_t);
+        }
+    }
+    return rp_va_parse_tuple_and_keywords_va(args, kwdict, format, kwlist, slots, n);
 }

@@ -710,6 +710,15 @@ impl Context {
     ) -> PyRef<PyCapsule> {
         PyCapsule::new(ptr, name, destructor).into_ref(self)
     }
+
+    pub fn new_capsule_owned_name(
+        &self,
+        ptr: *mut c_void,
+        name: Option<std::ffi::CString>,
+        destructor: Option<unsafe extern "C" fn(_: *mut PyObject)>,
+    ) -> PyRef<PyCapsule> {
+        PyCapsule::new_owned_name(ptr, name, destructor).into_ref(self)
+    }
 }
 
 impl AsRef<Self> for Context {
