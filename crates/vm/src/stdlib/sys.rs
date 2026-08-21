@@ -668,7 +668,7 @@ pub mod sys {
 
     #[pyattr]
     fn implementation(vm: &VirtualMachine) -> PyRef<PyNamespace> {
-        const NAME: &str = "rustpython";
+        const NAME: &str = "cpython";
 
         // cache tag uses 'cpython' because our compiler is cpython compatible
         let cache_tag = format!("cpython-{}{}", version::MAJOR, version::MINOR);

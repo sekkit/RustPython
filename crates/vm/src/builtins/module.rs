@@ -206,42 +206,18 @@ impl Py<PyModule> {
                  and prevents importing that standard library module)"
             )))
         } else {
-            let is_initializing = PyModule::is_initializing(&dict, vm);
-            if is_initializing {
-                if is_possibly_shadowing {
-                    let origin = origin.as_ref().unwrap();
-                    Err(vm.new_attribute_error(format!(
-                        "module '{mod_display}' has no attribute '{name}' \
-                         (consider renaming '{origin}' if it has the same name \
-                         as a library you intended to import)"
-                    )))
-                } else if let Some(ref origin) = origin {
-                    Err(vm.new_attribute_error(format!(
-                        "partially initialized module '{mod_display}' from '{origin}' \
-                         has no attribute '{name}' \
-                         (most likely due to a circular import)"
-                    )))
-                } else {
-                    Err(vm.new_attribute_error(format!(
-                        "partially initialized module '{mod_display}' \
-                         has no attribute '{name}' \
-                         (most likely due to a circular import)"
-                    )))
-                }
+            // Check for uninitialized submodule
+            let submodule_initializing =
+                is_uninitialized_submodule(mod_name_str.as_deref(), name, vm);
+            if submodule_initializing {
+                Err(vm.new_attribute_error(format!(
+                    "cannot access submodule '{name}' of module '{mod_display}' \
+                     (most likely due to a circular import)"
+                )))
             } else {
-                // Check for uninitialized submodule
-                let submodule_initializing =
-                    is_uninitialized_submodule(mod_name_str.as_deref(), name, vm);
-                if submodule_initializing {
-                    Err(vm.new_attribute_error(format!(
-                        "cannot access submodule '{name}' of module '{mod_display}' \
-                         (most likely due to a circular import)"
-                    )))
-                } else {
-                    Err(vm.new_attribute_error(format!(
-                        "module '{mod_display}' has no attribute '{name}'"
-                    )))
-                }
+                Err(vm.new_attribute_error(format!(
+                    "module '{mod_display}' has no attribute '{name}'"
+                )))
             }
         }
     }

@@ -604,3 +604,77 @@ pub unsafe extern "C" fn _PyUnicode_IsUppercase(ch: u32) -> c_int {
 pub unsafe extern "C" fn _PyUnicode_IsWhitespace(ch: u32) -> c_int {
     char::from_u32(ch).map_or(0, |c| c.is_whitespace() as c_int)
 }
+
+// ===========================================================================
+// Thread locking primitives (regex uses these)
+// ===========================================================================
+
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::SeqCst;
+
+/// A simple spinlock-based lock for CPython thread compatibility.
+/// `PyThread_allocate_lock` creates one, `acquire`/`release` toggle it.
+/// We use AtomicBool to avoid pthreads/win32 API dependency.
+struct PyThreadLock {
+    locked: AtomicBool,
+}
+
+/// PyThread_allocate_lock: allocate a new lock.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyThread_allocate_lock() -> *mut c_void {
+    Box::into_raw(Box::new(PyThreadLock {
+        locked: AtomicBool::new(false),
+    })) as *mut c_void
+}
+
+/// PyThread_free_lock: free a lock.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyThread_free_lock(lock: *mut c_void) {
+    if !lock.is_null() {
+        unsafe { drop(Box::from_raw(lock.cast::<PyThreadLock>())) };
+    }
+}
+
+/// PyThread_acquire_lock: acquire a lock (wait = 1 to block, 0 to return immediately).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyThread_acquire_lock(lock: *mut c_void, wait: c_int) -> c_int {
+    let lock = unsafe { &*lock.cast::<PyThreadLock>() };
+    if wait != 0 {
+        while lock.locked.swap(true, SeqCst) {
+            // Spin-wait (brief). In practice, the critical section is short.
+            std::hint::spin_loop();
+        }
+        1
+    } else {
+        (!lock.locked.swap(true, SeqCst)) as c_int
+    }
+}
+
+/// PyThread_release_lock: release a lock.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyThread_release_lock(lock: *mut c_void) {
+    let lock = unsafe { &*lock.cast::<PyThreadLock>() };
+    lock.locked.store(false, SeqCst);
+}
+
+// ===========================================================================
+// Unicode string creation
+// ===========================================================================
+
+/// PyUnicode_New: create a new Unicode string with the given length and maxchar.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_New(size: isize, maxchar: u32) -> *mut PyObject {
+    with_vm(|vm| {
+        let len = if size < 0 { 0 } else { size as usize };
+        let s = "\0".repeat(len);
+        Ok(vm.ctx.new_str(s))
+    })
+}
+
+/// _PyUnicode_ToLowercase: convert a character to lowercase.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyUnicode_ToLowercase(ch: u32) -> u32 {
+    char::from_u32(ch)
+        .map(|c| c.to_lowercase().next().unwrap_or(c) as u32)
+        .unwrap_or(ch)
+}
