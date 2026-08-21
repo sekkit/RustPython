@@ -654,10 +654,6 @@ class UnicodeFunctionsTest(unittest.TestCase):
             self.assertEqual(eaw(char), 'A')
             self.assertIs(self.db.name(char, None), None)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; + N
-    def test_east_asian_width_9_0_changes(self):
-        return super().test_east_asian_width_9_0_changes()
-
 
 class Unicode_3_2_0_FunctionsTest(UnicodeFunctionsTest):
     db = unicodedata.ucd_3_2_0

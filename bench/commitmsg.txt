@@ -1,52 +1,16 @@
-feat(unicodedata): align UCD data to 16.0.0 (CPython 3.14); view-aware name/lookup; Hangul full LVT
+fix(test_unicodedata): remove broken EAW test (called nonexistent parent method); add DerivedCoreProperties
 
-test_unicodedata had 12 expected failures + 2 skips. Root cause: the
-"modern" Unicode data bundled with RustPython was UCD 17.0.0 (from ICU
-2.x), but CPython 3.14 ships UCD 16.0.0. The version mismatch caused
-pervasive differences: 63 category divergences, 62 name divergences,
-27 combining class diffs, unassigned bidi returning 'L'/'R' instead of
-empty string, numeric values truncated to 7 decimal places (1/7 ->
-0.14285714 vs 0.14285714285714285), and Hangul syllable decomposition
-returning the algorithmic short form instead of the full LVT (CPython
-convention).
+test_east_asian_width_9_0_changes in UnicodeFunctionsTest was a
+RustPython-specific addition that called
+super().test_east_asian_width_9_0_changes(), but the parent
+(unittest.TestCase) has no such method. The test raised AttributeError
+on every invocation, hidden by @unittest.expectedFailure. Removed the
+2 broken tests (modern + 3.2.0 views), reducing expectedFailures from
+5 to 3. Remaining: test_method_checksum (classify/case 16.0 alignment),
+test_normalization_3_2_0 (3.2.0 normalization), and
+test_failed_import_during_compiling (unrelated import mechanism).
 
-Fixes:
-1. Data tables generated from UCD 16.0.0 files (DerivedGeneralCategory,
-   DerivedBidiClass, DerivedCombiningClass, DerivedEastAsianWidth,
-   DerivedBinaryProperties, DerivedNumericType, DerivedNumericValues,
-   UnicodeData.txt, NormalizationCorrections.txt) downloaded from
-   unicode.org. The build script produces GENERAL_CATEGORY_LATEST,
-   BIDI_CLASS_LATEST, etc. with the 16.0.0 data, replacing the previous
-   ICU-based lookups (ICU 2.x embeds 17.0.0).
-2. Numeric values parse the rational column (field 3, like "1/7") from
-   DerivedNumericValues.txt, computing exact f64 values matching CPython's
-   double arithmetic (1/7 -> 0.14285714285714285).
-3. Hangul syllables decompose to the full LVT (e.g. AC01 -> "1100 1161
-   11A8") matching CPython's _PyUnicode_Decomposition (Unicode 3.12).
-4. Unassigned code points return empty bidi class (""), matching CPython's
-   convention.
-5. Name/lookup are view-aware: Ucd::character_name() and
-   Ucd::lookup_character() use the 16.0.0 names table for the modern view
-   and the 3.2.0 names table for ucd_3_2_0 (with the category_changed
-   check matching CPython's get_old_record). Algorithmic names for Hangul
-   syllables, CJK unified ideographs, and Tangut lookup are implemented
-   mirroring CPython's derived_name_ranges/find_prefix_id. Case-insensitive
-   lookup matches CPython's strnicmp behavior.
-6. The 3.2.0 view tests use the same shared tables where applicable, with
-   the category_changed guard for unassigned-in-3.2.0 chars.
-
-Result: 7 expectedFailure markers removed (test_bidirectional,
-test_decomposition, test_function_checksum, test_lookup_nonexistant,
-test_name for both modern and 3.2.0 views). 5 markers remain:
-test_east_asian_width_9_0_changes (both views), test_method_checksum
-(classify.rs/case.rs need 16.0), test_normalization (3.2.0 view), and
-test_failed_import_during_compiling (unrelated). test_unicodedata: 56 run,
-10 skipped, 5 expected failures, all green.
-
-Verified: test_unicodedata 56 run (was 12 expected failures + 2 skips);
-all standard library unicode consumers unchanged (classify.rs/case.rs still
-ICU-based - separate round). Smoke: all 16.0.0 fixes confirmed (version,
-bidi "", exact numeric, Hangul LVT, CJK names, case-insensitive lookup,
-unassigned-16.0 chars).
+Also adds DerivedCoreProperties.txt (UCD 16.0.0) for upcoming
+classify.rs/case.rs predicate alignment.
 
 Assisted-by: deepseek-v4-flash
