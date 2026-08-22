@@ -442,6 +442,7 @@ class TestNamedTuple(unittest.TestCase):
         self.assertIs(P.n.__doc__, Q.p.__doc__)
 
     @support.cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; _tuplegetter repr differs
     def test_field_repr(self):
         Point = namedtuple('Point', 'x y')
         self.assertEqual(repr(Point.x), "_tuplegetter(0, 'Alias for field number 0')")
@@ -676,6 +677,7 @@ class TestNamedTuple(unittest.TestCase):
         self.assertEqual(a.__dict__, {'w': 5})
 
     @support.cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; property subclass pickling not supported
     def test_field_descriptor(self):
         Point = namedtuple('Point', 'x y')
         p = Point(11, 22)
