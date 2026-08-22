@@ -68,6 +68,7 @@ class MyDict(dict):
 class TestImportTime(unittest.TestCase):
 
     @cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; os imported eagerly at startup
     def test_lazy_import(self):
         import_helper.ensure_lazy_imports(
             "functools", {"os", "weakref", "typing", "annotationlib", "warnings"}

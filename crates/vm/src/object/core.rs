@@ -308,7 +308,7 @@ pub(crate) const GC_PERMANENT: u8 = 3;
 pub(crate) struct GcLink;
 
 // SAFETY: PyObject (PyInner<Erased>) is heap-allocated and pinned in memory
-// once created. gc_pointers is at a fixed offset in PyInner.
+// once created. gc_pointers lives in the GcPrefix immediately before PyInner.
 unsafe impl Link for GcLink {
     type Handle = NonNull<PyObject>;
     type Target = PyObject;
@@ -404,6 +404,13 @@ pub(super) struct PyInner<T> {
     pub(super) payload: T,
 }
 pub const SIZEOF_PYOBJECT_HEAD: usize = core::mem::size_of::<PyInner<()>>();
+// PyInner is now a minimal header matching CPython's PyObject: ref_count
+// (pointer-width) at offset 0 and typ/ob_type (pointer-width) at offset 8,
+// so the header is exactly two pointer-widths on any target.
+const _: () = assert!(
+    SIZEOF_PYOBJECT_HEAD == core::mem::size_of::<usize>() * 2,
+    "PyInner header must match CPython's PyObject layout (two pointer-widths)"
+);
 /// Size of the GcPrefix allocated immediately before every PyInner.
 /// Exposed publicly so the C-API crate can locate an object's vtable at
 /// `ptr - SIZEOF_GCPREFIX`.
@@ -440,8 +447,9 @@ impl<T> PyInner<T> {
     /// Access the ObjExt prefix at a negative offset from this PyInner.
     /// Returns None if this object was allocated without dict/slots.
     ///
-    /// Layout: [ObjExt?][WeakRefList?][PyInner]
-    /// ObjExt offset depends on whether WeakRefList is also present.
+    /// Layout: [ObjExt?][WeakRefList?][GcPrefix][PyInner]
+    /// The GcPrefix sits immediately before the PyInner, so ObjExt's offset
+    /// adds SIZEOF_GCPREFIX and depends on whether WeakRefList is also present.
     #[inline(always)]
     pub(super) fn ext_ref(&self) -> Option<&ObjExt> {
         let (flags, member_count) = self.read_type_flags();
@@ -451,20 +459,21 @@ impl<T> PyInner<T> {
         }
         let has_weakref = flags.has_feature(crate::types::PyTypeFlags::HAS_WEAKREF);
         let offset = if has_weakref {
-            WEAKREF_OFFSET + EXT_OFFSET
+            SIZEOF_GCPREFIX + WEAKREF_OFFSET + EXT_OFFSET
         } else {
-            EXT_OFFSET
+            SIZEOF_GCPREFIX + EXT_OFFSET
         };
         let self_addr = (self as *const Self as *const u8).addr();
         let ext_ptr = core::ptr::with_exposed_provenance::<ObjExt>(self_addr.wrapping_sub(offset));
         Some(unsafe { &*ext_ptr })
     }
 
-    /// Access the WeakRefList prefix at a fixed negative offset from this PyInner.
+    /// Access the WeakRefList prefix at a negative offset from this PyInner.
     /// Returns None if the type does not support weakrefs.
     ///
-    /// Layout: [ObjExt?][WeakRefList?][PyInner]
-    /// WeakRefList is always immediately before PyInner (fixed WEAKREF_OFFSET).
+    /// Layout: [ObjExt?][WeakRefList?][GcPrefix][PyInner]
+    /// The GcPrefix sits between WeakRefList and PyInner, so WeakRefList's
+    /// offset is WEAKREF_OFFSET + SIZEOF_GCPREFIX.
     #[inline(always)]
     pub(super) fn weakref_list_ref(&self) -> Option<&WeakRefList> {
         let (flags, _) = self.read_type_flags();
@@ -473,7 +482,7 @@ impl<T> PyInner<T> {
         }
         let self_addr = (self as *const Self as *const u8).addr();
         let ptr = core::ptr::with_exposed_provenance::<WeakRefList>(
-            self_addr.wrapping_sub(WEAKREF_OFFSET),
+            self_addr.wrapping_sub(SIZEOF_GCPREFIX + WEAKREF_OFFSET),
         );
         Some(unsafe { &*ptr })
     }
@@ -1962,9 +1971,9 @@ impl PyObject {
         if has_ext {
             let has_weakref = flags.has_feature(crate::types::PyTypeFlags::HAS_WEAKREF);
             let offset = if has_weakref {
-                WEAKREF_OFFSET + EXT_OFFSET
+                SIZEOF_GCPREFIX + WEAKREF_OFFSET + EXT_OFFSET
             } else {
-                EXT_OFFSET
+                SIZEOF_GCPREFIX + EXT_OFFSET
             };
             let self_addr = (ptr as *const u8).addr();
             let ext_ptr =
@@ -2687,7 +2696,6 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
                 alloc_ptr.add(inner_offset) as *mut MaybeUninit<PyInner<PyType>>
             }
         };
-
         let type_type_ptr = alloc_type_with_prefixes();
         unsafe {
             type_type_ptr.write(partially_init!(
