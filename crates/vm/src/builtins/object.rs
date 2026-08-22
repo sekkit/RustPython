@@ -494,7 +494,7 @@ impl PyBaseObject {
 
     #[pymethod]
     fn __sizeof__(zelf: PyObjectRef) -> usize {
-        zelf.class().slots.basicsize
+        crate::object::SIZEOF_PYOBJECT_HEAD + zelf.class().slots.basicsize
     }
 }
 

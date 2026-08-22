@@ -531,7 +531,9 @@ impl PyInt {
 
     #[pymethod]
     fn __sizeof__(&self) -> usize {
-        core::mem::size_of::<Self>() + (((self.value.bits() + 7) & !7) / 8) as usize
+        crate::object::SIZEOF_PYOBJECT_HEAD
+            + core::mem::size_of::<Self>()
+            + (((self.value.bits() + 7) & !7) / 8) as usize
     }
 
     #[pymethod]

@@ -734,7 +734,9 @@ impl PyStr {
 
     #[pymethod]
     fn __sizeof__(&self) -> usize {
-        core::mem::size_of::<Self>() + self.byte_len() * core::mem::size_of::<u8>()
+        crate::object::SIZEOF_PYOBJECT_HEAD
+            + core::mem::size_of::<Self>()
+            + self.byte_len() * core::mem::size_of::<u8>()
     }
 
     fn __mul__(zelf: PyRef<Self>, value: ArgSize, vm: &VirtualMachine) -> PyResult<PyRef<Self>> {

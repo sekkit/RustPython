@@ -426,7 +426,7 @@ impl PyDict {
 
     #[pymethod]
     fn __sizeof__(&self) -> usize {
-        core::mem::size_of::<Self>() + self.entries.sizeof()
+        crate::object::SIZEOF_PYOBJECT_HEAD + core::mem::size_of::<Self>() + self.entries.sizeof()
     }
 
     fn __contains__(&self, key: PyObjectRef, vm: &VirtualMachine) -> PyResult<bool> {

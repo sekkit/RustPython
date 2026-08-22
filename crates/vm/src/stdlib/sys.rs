@@ -972,7 +972,7 @@ pub mod sys {
         let sizeof = || -> PyResult<usize> {
             let res = vm.call_special_method(&args.obj, identifier!(vm, __sizeof__), ())?;
             let res = res.try_index(vm)?.try_to_primitive::<usize>(vm)?;
-            Ok(res + core::mem::size_of::<PyObject>())
+            Ok(res) // __sizeof__ now includes the header
         };
         sizeof()
             .map(|x| vm.ctx.new_int(x).into())

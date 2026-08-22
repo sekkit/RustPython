@@ -232,7 +232,7 @@ impl PyBytes {
 
     #[pymethod]
     fn __sizeof__(&self) -> usize {
-        size_of::<Self>() + self.len() * size_of::<u8>()
+        crate::object::SIZEOF_PYOBJECT_HEAD + size_of::<Self>() + self.len() * size_of::<u8>()
     }
 
     #[pyslot]

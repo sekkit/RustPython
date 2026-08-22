@@ -252,7 +252,8 @@ impl PyList {
 
     #[pymethod]
     fn __sizeof__(&self) -> usize {
-        core::mem::size_of::<Self>()
+        crate::object::SIZEOF_PYOBJECT_HEAD
+            + core::mem::size_of::<Self>()
             + self.elements.read().capacity() * core::mem::size_of::<PyObjectRef>()
     }
 
@@ -481,7 +482,11 @@ impl Initializer for PyList {
 
     fn init(zelf: PyRef<Self>, iterable: Self::Args, vm: &VirtualMachine) -> PyResult<()> {
         let mut elements = if let OptionalArg::Present(iterable) = iterable {
-            iterable.try_to_value(vm)?
+            let mut v: Vec<PyObjectRef> = iterable.try_to_value(vm)?;
+            // Avoid over-allocation: shrink capacity to the exact length so
+            // sys.getsizeof(list(iterable)) matches sys.getsizeof(list)
+            v.shrink_to_fit();
+            v
         } else {
             vec![]
         };

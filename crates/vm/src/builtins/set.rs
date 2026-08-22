@@ -657,7 +657,7 @@ impl PySet {
 
     #[pymethod]
     fn __sizeof__(&self) -> usize {
-        core::mem::size_of::<Self>() + self.inner.sizeof()
+        crate::object::SIZEOF_PYOBJECT_HEAD + core::mem::size_of::<Self>() + self.inner.sizeof()
     }
 
     #[pymethod]
@@ -1150,7 +1150,7 @@ impl PyFrozenSet {
 
     #[pymethod]
     fn __sizeof__(&self) -> usize {
-        core::mem::size_of::<Self>() + self.inner.sizeof()
+        crate::object::SIZEOF_PYOBJECT_HEAD + core::mem::size_of::<Self>() + self.inner.sizeof()
     }
 
     #[pymethod]
