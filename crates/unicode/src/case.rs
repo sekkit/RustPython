@@ -43,6 +43,12 @@ pub fn is_ucd_16_only_case(c: char) -> bool {
 /// mapping.
 #[must_use]
 pub fn to_lowercase_16(s: &str) -> String {
+    let has_ucd16_only = s.chars().any(is_ucd_16_only_case);
+    if !has_ucd16_only {
+        // String-level to_lowercase applies the context-dependent final-sigma
+        // rule (U+03A3 -> U+03C2 at word end), matching CPython.
+        return s.to_lowercase();
+    }
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if is_ucd_16_only_case(c) {

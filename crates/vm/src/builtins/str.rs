@@ -1070,13 +1070,22 @@ impl PyStr {
     }
 
     #[pymethod]
-    fn replace(&self, args: ReplaceArgs) -> Wtf8Buf {
+    fn replace(
+        zelf: PyRef<Self>,
+        args: ReplaceArgs,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyStrRef> {
         use core::cmp::Ordering;
 
-        let s = self.as_wtf8();
+        let s = zelf.as_wtf8();
         let ReplaceArgs { old, new, count } = args;
 
-        match count.cmp(&0) {
+        // Identity optimization: return self when old == new (only for exact str)
+        if old.as_wtf8() == new.as_wtf8() && zelf.class().is(vm.ctx.types.str_type) {
+            return Ok(zelf);
+        }
+
+        let result = match count.cmp(&0) {
             Ordering::Less => s.replace(old.as_wtf8(), new.as_wtf8()),
             Ordering::Equal => s.to_owned(),
             Ordering::Greater => {
@@ -1091,7 +1100,8 @@ impl PyStr {
                     s.replacen(old.as_wtf8(), new.as_wtf8(), count as usize)
                 }
             }
-        }
+        };
+        Ok(vm.ctx.new_str(result))
     }
 
     #[pymethod]
@@ -1198,7 +1208,7 @@ impl PyStr {
         iterable: ArgIterable<PyStrRef>,
         vm: &VirtualMachine,
     ) -> PyResult<PyStrRef> {
-        // Fast path: exact list/tuple of exact str — skip the
+        // Fast path: exact list/tuple of exact str â€” skip the
         // iterator protocol and per-element conversion entirely.
         let obj = iterable.as_object();
         if let Some(list) = obj.downcast_ref_if_exact::<PyList>(vm) {
@@ -1417,12 +1427,20 @@ impl PyStr {
     }
 
     #[pymethod]
-    fn expandtabs(&self, args: anystr::ExpandTabsArgs, vm: &VirtualMachine) -> PyResult<String> {
+    fn expandtabs(
+        zelf: PyRef<Self>,
+        args: anystr::ExpandTabsArgs,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyStrRef> {
         // TODO: support WTF-8
-        Ok(rustpython_common::str::expandtabs(
-            self.try_as_utf8(vm)?.as_str(),
-            args.tabsize(),
-        ))
+        let s = zelf.try_as_utf8(vm)?;
+        let expanded = rustpython_common::str::expandtabs(s.as_str(), args.tabsize());
+        if expanded == s.as_str() && zelf.class().is(vm.ctx.types.str_type) {
+            // Identity optimization only for exact str (not subclasses)
+            Ok(zelf)
+        } else {
+            Ok(vm.ctx.new_str(expanded))
+        }
     }
 
     #[pymethod]
@@ -2604,7 +2622,7 @@ impl AsRef<str> for PyStrInterned {
     }
 }
 
-/// Interned PyUtf8Str — guaranteed UTF-8 at type level.
+/// Interned PyUtf8Str â€” guaranteed UTF-8 at type level.
 /// Same layout as `PyStrInterned` due to `#[repr(transparent)]` on both
 /// `PyInterned<T>` and `PyUtf8Str`.
 pub type PyUtf8StrInterned = PyInterned<PyUtf8Str>;
@@ -2616,7 +2634,7 @@ impl PyUtf8StrInterned {
         Py::<PyUtf8Str>::as_str(self)
     }
 
-    /// View as `PyStrInterned` (widening: UTF-8 → WTF-8).
+    /// View as `PyStrInterned` (widening: UTF-8 â†’ WTF-8).
     #[inline]
     pub fn as_interned_str(&self) -> &PyStrInterned {
         // Safety: PyUtf8Str is #[repr(transparent)] over PyStr,
@@ -2663,11 +2681,11 @@ mod tests {
             ("Format,This-As*Title;String", "fOrMaT,thIs-aS*titLe;String"),
             ("Getint", "getInt"),
             // spell-checker:disable-next-line
-            ("Greek Ωppercases ...", "greek ωppercases ..."),
+            ("Greek Î©ppercases ...", "greek Ï‰ppercases ..."),
             // spell-checker:disable-next-line
-            ("Greek ῼitlecases ...", "greek ῳitlecases ..."),
+            ("Greek á¿¼itlecases ...", "greek á¿³itlecases ..."),
             // Latin Extended-B digraphs: uppercase forms map to titlecase forms
-            // (e.g. U+01F1 'DZ' -> U+01F2 'Dz', U+01C4 'DŽ' -> U+01C5 'Dž').
+            // (e.g. U+01F1 'DZ' -> U+01F2 'Dz', U+01C4 'DÅ½' -> U+01C5 'DÅ¾').
             ("\u{01F2}", "\u{01F1}"),
             ("\u{01C5}", "\u{01C4}"),
         ];
@@ -2684,9 +2702,9 @@ mod tests {
             "A\nTitlecased Line",
             "A Titlecased, Line",
             // spell-checker:disable-next-line
-            "Greek Ωppercases ...",
+            "Greek Î©ppercases ...",
             // spell-checker:disable-next-line
-            "Greek ῼitlecases ...",
+            "Greek á¿¼itlecases ...",
         ];
 
         for s in pos {
@@ -2712,7 +2730,7 @@ mod tests {
         Interpreter::without_stdlib(Default::default()).enter(|vm| {
             let table = vm.ctx.new_dict();
             table
-                .set_item("a", vm.ctx.new_str("🎅").into(), vm)
+                .set_item("a", vm.ctx.new_str("ðŸŽ…").into(), vm)
                 .unwrap();
             table.set_item("b", vm.ctx.none(), vm).unwrap();
             table
@@ -2723,7 +2741,7 @@ mod tests {
                     .unwrap();
             let text = PyStr::from("abc");
             let translated = text.translate(translated, vm).unwrap();
-            assert_eq!(translated, Wtf8Buf::from("🎅xda"));
+            assert_eq!(translated, Wtf8Buf::from("ðŸŽ…xda"));
             let translated = text.translate(vm.ctx.new_int(3).into(), vm);
             assert_eq!("TypeError", &*translated.unwrap_err().class().name(),);
         })
