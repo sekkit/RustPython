@@ -22,10 +22,17 @@ pub unsafe extern "C" fn Py_NewRef(op: *mut PyObject) -> *mut PyObject {
 /// _Py_Dealloc: called by CPython's inline Py_DECREF when the C-visible
 /// refcount reaches zero. Our objects carry the immortal flag bit from the
 /// C side (see crates/common/src/refcount.rs), so inline decrefs are no-ops
-/// and this is normally unreachable; drop the Rust reference like _Py_DecRef.
+/// and this is normally unreachable for native objects; for foreign (raw
+/// buffer) objects we must free the libc-allocated memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _Py_Dealloc(op: *mut PyObject) {
-    unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(op))) };
+    if crate::objimpl::is_foreign_object(op as *const u8) {
+        // Foreign object: free the raw buffer allocated by _PyObject_New.
+        crate::objimpl::unregister_foreign_object(op as *const u8);
+        unsafe { libc::free(op as *mut core::ffi::c_void) };
+    } else {
+        unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(op))) };
+    }
 }
 
 #[unsafe(no_mangle)]
