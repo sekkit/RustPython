@@ -772,3 +772,83 @@ pub unsafe extern "C" fn _PyUnicode_ToLowercase(ch: u32) -> u32 {
         .map(|c| c.to_lowercase().next().unwrap_or(c) as u32)
         .unwrap_or(ch)
 }
+
+#[cfg(test)]
+mod exception_type_alloc_tests {
+    use super::*;
+
+    #[test]
+    fn pyobject_new_on_exception_type_creates_real_exception() {
+        pyo3::Python::attach(|_py| {
+            with_vm(|vm| {
+                // Mimics PyErr_NewException("regex.error", NULL, NULL).
+                let exc_type = vm.ctx.new_exception_type("regex", "error", None);
+                let typeobj = exc_type
+                    .as_object()
+                    .as_raw()
+                    .cast_mut()
+                    .cast::<crate::object::PyTypeObject>();
+                let raw = unsafe { _PyObject_New(typeobj) };
+                assert!(!raw.is_null());
+                let obj = unsafe { &*raw };
+                let exc = obj
+                    .downcast_ref::<rustpython_vm::builtins::PyBaseException>()
+                    .expect(
+                        "_PyObject_New on an extension exception type must produce a real \
+                         PyBaseException instance, not a raw buffer",
+                    );
+                assert_eq!(exc.args().as_slice().len(), 0);
+                assert!(obj.class().is_subtype(vm.ctx.exceptions.exception_type));
+            })
+        })
+    }
+
+    #[test]
+    fn pytype_generic_new_on_exception_type_honors_args() {
+        pyo3::Python::attach(|_py| {
+            with_vm(|vm| {
+                let exc_type = vm.ctx.new_exception_type("extmod", "ExtError", None);
+                let typeobj = exc_type
+                    .as_object()
+                    .as_raw()
+                    .cast_mut()
+                    .cast::<crate::object::PyTypeObject>();
+                let msg: PyObjectRef = vm.ctx.new_str("kaboom").into();
+                let tuple = vm.ctx.new_tuple(vec![msg]);
+                let args = tuple.as_object().as_raw().cast_mut().cast::<PyObject>();
+                let raw = unsafe { PyType_GenericNew(typeobj, args, core::ptr::null_mut()) };
+                assert!(!raw.is_null());
+                let obj = unsafe { &*raw };
+                let exc = obj
+                    .downcast_ref::<rustpython_vm::builtins::PyBaseException>()
+                    .expect(
+                        "PyType_GenericNew on an extension exception type must produce a real \
+                         PyBaseException instance",
+                    );
+                assert_eq!(exc.args().as_slice().len(), 1);
+                assert_eq!(
+                    exc.args().as_slice()[0].downcast_ref::<PyStr>().unwrap().to_str(),
+                    Some("kaboom")
+                );
+            })
+        })
+    }
+
+    #[test]
+    fn pyobject_new_on_plain_type_keeps_raw_buffer_contract() {
+        pyo3::Python::attach(|_py| {
+            with_vm(|vm| {
+                // A stub obtained through Py_TYPE carries tp_basicsize at
+                // offset 32, like the static structs C extensions pass in.
+                let s = vm.ctx.new_str("x");
+                let stub =
+                    unsafe { crate::object::Py_TYPE(s.as_object().as_raw().cast_mut()) } as usize;
+                let raw = unsafe { _PyObject_New(stub as *mut crate::object::PyTypeObject) };
+                assert!(!raw.is_null());
+                // CPython-compatible header: ob_type points back at the stub.
+                let ob_type = unsafe { *(raw as *const usize).add(1) };
+                assert_eq!(ob_type, stub);
+            })
+        })
+    }
+}

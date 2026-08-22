@@ -32,13 +32,12 @@ use core::ffi::{c_char, c_void};
 use core::ptr::NonNull;
 
 use rustpython_vm::builtins::PyStr;
-use rustpython_vm::{AsObject, PyObject, PyObjectRef, VirtualMachine};
+use rustpython_vm::{AsObject, PyObject, PyObjectRef};
 
 use crate::descrobject::PyGetSetDef;
 use crate::methodobject::{PyMethodDef, build_method_def};
 use crate::objectstatics::{StubKind, is_type_stub_addr};
 use crate::pystate::with_vm;
-use crate::util::CStrExt;
 
 /// `tp_call` slot: `PyObject *(*)(PyObject *self, PyObject *args, PyObject *kwds)`
 type CCallFunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
@@ -261,7 +260,7 @@ pub unsafe fn foreign_getattr(obj: *mut PyObject, name: *mut PyObject) -> *mut P
             let ret = unsafe { get(obj, entry.closure) };
             return match NonNull::new(ret) {
                 Some(ptr) => Ok(ptr.as_ptr()),
-                None => Err(unsafe { vm.take_raised_exception() }.unwrap_or_else(|| {
+                None => Err(vm.take_raised_exception().unwrap_or_else(|| {
                     vm.new_system_error(
                         "foreign getter returned NULL, but there was no exception set",
                     )
@@ -462,7 +461,7 @@ mod tests {
             _args: *mut PyObject,
         ) -> *mut PyObject {
             // METH_NOARGS: args is NULL; return a real int for the call check.
-            unsafe { pyo3::ffi::PyLong_FromLong(4242) }
+            unsafe { pyo3::ffi::PyLong_FromLong(4242) }.cast()
         }
 
         const METH_VARARGS: std::ffi::c_int = 0x0001;
@@ -498,7 +497,7 @@ mod tests {
                 let methods = [
                     PyMethodDef {
                         ml_name: c"twice".as_ptr(),
-                        ml_meth: pyo3::ffi::PyMethodDefPointer {
+                        ml_meth: crate::methodobject::PyMethodPointer {
                             PyCFunction: Some(fake_noargs_method),
                         },
                         ml_flags: METH_NOARGS,
@@ -506,7 +505,7 @@ mod tests {
                     },
                     PyMethodDef {
                         ml_name: core::ptr::null(),
-                        ml_meth: pyo3::ffi::PyMethodDefPointer { PyCFunction: None },
+                        ml_meth: crate::methodobject::PyMethodPointer { PyCFunction: None },
                         ml_flags: METH_VARARGS,
                         ml_doc: core::ptr::null(),
                     },
