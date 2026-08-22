@@ -25,10 +25,10 @@ use rustpython_vm::types::PyTypeSlots;
 use rustpython_vm::{AsObject, VirtualMachine};
 
 // Offsets within PyInner<PyType> for CPython-compatible PyTypeObject fields.
-// Payload offset: 48 (SIZEOF_PYOBJECT_HEAD)
-// PyType.slots offset: 40 (base:8 + bases:8 + mro:8 + subclasses:8 + attributes:8)
-// So PyTypeSlots starts at 48 + 40 = 88.
-const SLOTS_BASE: usize = 88;
+// PyInner header is now 16 bytes (ref_count + typ) matching CPython's PyObject,
+// so the payload starts at SIZEOF_PYOBJECT_HEAD.
+const SLOTS_BASE: usize =
+    rustpython_vm::object::SIZEOF_PYOBJECT_HEAD + offset_of!(PyType, slots);
 const OFFSET_HASH: usize = SLOTS_BASE + offset_of!(PyTypeSlots, hash);
 const OFFSET_CALL: usize = SLOTS_BASE + offset_of!(PyTypeSlots, call);
 const OFFSET_STR: usize = SLOTS_BASE + offset_of!(PyTypeSlots, str);
@@ -237,17 +237,17 @@ unsafe fn copy_header(dst: &mut ObjectHeaderCopy, src: *const PyObject, size: us
 ///   40: tp_itemsize (Py_ssize_t)
 ///
 /// RustPython layout of PyInner<PyType>:
-///   48: PyType { base(8), bases(8), mro(8), subclasses(8), attributes(8), slots(40+) }
-///   88: slots.name (&'static str = pointer + length)
-///  104: slots.basicsize (usize)
-///  112: slots.itemsize (usize)
-///  120: slots.flags (PyTypeFlags = u64)
+///   SIZEOF_PYOBJECT_HEAD (16): PyType { base(8), bases(8), mro(8), subclasses(8), attributes(8), slots(40+) }
+///   then PyType.slots (SLOTS_BASE) holds name, basicsize, itemsize, flags in order.
 unsafe fn fill_type_stub(dst: &mut ObjectHeaderCopy, src: *const PyObject) {
+    // `name` is pub(crate) in PyTypeSlots, so derive its offset from the
+    // immediately following field (basicsize) minus the size of a &'static str.
+    let name_offset = offset_of!(PyTypeSlots, basicsize) - core::mem::size_of::<&'static str>();
     // Read basic fields
-    let name_ptr = unsafe { *(src.add(88) as *const *const u8) };
-    let basicsize = unsafe { *(src.add(104) as *const usize) };
-    let itemsize = unsafe { *(src.add(112) as *const usize) };
-    let flags = unsafe { *(src.add(120) as *const u64) };
+    let name_ptr = unsafe { *(src.add(SLOTS_BASE + name_offset) as *const *const u8) };
+    let basicsize = unsafe { *(src.add(SLOTS_BASE + offset_of!(PyTypeSlots, basicsize)) as *const usize) };
+    let itemsize = unsafe { *(src.add(SLOTS_BASE + offset_of!(PyTypeSlots, itemsize)) as *const usize) };
+    let flags = unsafe { *(src.add(SLOTS_BASE + offset_of!(PyTypeSlots, flags)) as *const u64) };
     // Read function pointer slots (AtomicCell<Option<fn>> stored as usize)
     let hash_fn = unsafe { *(src.add(OFFSET_HASH) as *const usize) };
     let call_fn = unsafe { *(src.add(OFFSET_CALL) as *const usize) };

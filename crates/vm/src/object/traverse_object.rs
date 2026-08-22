@@ -71,7 +71,7 @@ unsafe impl Traverse for PyInner<Erased> {
             ext.slots.traverse(tracer_fn);
         }
 
-        if let Some(f) = self.vtable.trace {
+        if let Some(f) = self.gc_prefix().vtable.trace {
             unsafe {
                 let zelf = &*(self as *const Self as *const PyObject);
                 f(zelf, tracer_fn)

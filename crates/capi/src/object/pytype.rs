@@ -1,4 +1,4 @@
-﻿use crate::methodobject::{PyMethodDef, build_method_def};
+use crate::methodobject::{PyMethodDef, build_method_def};
 use crate::moduleobject::{Py_slot_end, Py_slot_invalid, PySlot};
 use crate::object::define_py_check;
 use crate::pystate::with_vm;
@@ -8,6 +8,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use rustpython_vm::builtins::{PyStr, PyType};
 use rustpython_vm::function::FuncArgs;
+use rustpython_vm::object::SIZEOF_GCPREFIX;
 use rustpython_vm::protocol::{CBufferSlots, CPyBuffer};
 use rustpython_vm::types::PyTypeSlots;
 use rustpython_vm::{AsObject, Py, PyObject, PyObjectRef, PyRef, VirtualMachine};
@@ -17,8 +18,9 @@ use std::sync::Mutex;
 pub type PyTypeObject = Py<PyType>;
 
 // Offsets within PyInner<PyType> for CPython-compatible PyTypeObject fields.
-// Payload offset: 48 (SIZEOF_PYOBJECT_HEAD), PyType.slots offset: 40.
-const SLOTS_BASE: usize = 88;
+// Payload offset: SIZEOF_PYOBJECT_HEAD (16 now), plus PyType.slots offset.
+const SLOTS_BASE: usize =
+    rustpython_vm::object::SIZEOF_PYOBJECT_HEAD + core::mem::offset_of!(PyType, slots);
 const STUB_HASH_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlots, hash);
 const STUB_CALL_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlots, call);
 const STUB_STR_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlots, str);
@@ -234,10 +236,14 @@ fn vtable_probes(vm: &VirtualMachine) -> Vec<(usize, *mut u8)> {
     };
 
     fn probe<T: PyPayload>(obj: PyObjectRef, ty: PyRef<PyType>) -> (usize, *mut u8) {
-        // vtable is at offset 40 of PyInner (after ref_count, typ, gc_bits,
-        // gc_generation, padding, gc_pointers). typ is at offset 8 (matching
-        // CPython's ob_type).
-        let vtable = unsafe { *((obj.as_object().as_raw() as *const u8).add(40) as *const usize) };
+        // The payload vtable lives in the GcPrefix, which is allocated
+        // immediately BEFORE the PyInner (the new 16-byte header), so read it
+        // at a negative offset of SIZEOF_GCPREFIX from the object pointer.
+        // typ remains at offset 8 (matching CPython's ob_type).
+        let vtable = unsafe {
+            let ptr = (obj.as_object().as_raw() as *const u8).sub(SIZEOF_GCPREFIX);
+            *(ptr as *const usize)
+        };
         (vtable, ty.as_object().as_raw().cast_mut().cast())
     }
 

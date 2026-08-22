@@ -188,7 +188,7 @@ pub(super) unsafe fn default_dealloc<T: PyPayload>(obj: *mut PyObject) {
         return; // deferred to queue
     }
 
-    let vtable = obj_ref.0.vtable;
+    let vtable = obj_ref.0.gc_prefix().vtable;
 
     // Untrack from GC BEFORE deallocation.
     // Must happen before memory is freed because intrusive list removal
@@ -323,7 +323,7 @@ unsafe impl Link for GcLink {
 
     unsafe fn pointers(target: NonNull<PyObject>) -> NonNull<Pointers<PyObject>> {
         let inner_ptr = target.as_ptr() as *mut PyInner<Erased>;
-        unsafe { NonNull::new_unchecked(&raw mut (*inner_ptr).gc_pointers) }
+        unsafe { NonNull::new_unchecked(&raw mut (*inner_ptr).gc_prefix_mut().gc_pointers) }
     }
 }
 
@@ -398,34 +398,28 @@ const _: () = assert!(core::mem::align_of::<WeakRefList>() >= core::mem::align_o
 #[repr(C)]
 pub(super) struct PyInner<T> {
     pub(super) ref_count: RefCount,
-    /// __class__ member â€” at offset 8 matching CPython's PyObject.ob_type,
+    /// __class__ member ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â at offset 8 matching CPython's PyObject.ob_type,
     /// so C extensions compiled for CPython read the correct type pointer.
     pub(super) typ: PyAtomicRef<PyType>,
-    /// GC bits for free-threading (like ob_gc_bits)
-    pub(super) gc_bits: PyAtomic<u8>,
-    /// GC generation index (0-2=gen, GC_PERMANENT=permanent, GC_UNTRACKED=not tracked).
-    /// Uses PyAtomic for interior mutability (writes happen through &self under list locks).
-    pub(super) gc_generation: PyAtomic<u8>,
-    /// Intrusive linked list pointers for GC generational tracking
-    pub(super) gc_pointers: Pointers<PyObject>,
-
-    pub(super) vtable: &'static PyObjVTable,
-
     pub(super) payload: T,
 }
-pub(crate) const SIZEOF_PYOBJECT_HEAD: usize = core::mem::size_of::<PyInner<()>>();
+pub const SIZEOF_PYOBJECT_HEAD: usize = core::mem::size_of::<PyInner<()>>();
+/// Size of the GcPrefix allocated immediately before every PyInner.
+/// Exposed publicly so the C-API crate can locate an object's vtable at
+/// `ptr - SIZEOF_GCPREFIX`.
+pub const SIZEOF_GCPREFIX: usize = core::mem::size_of::<GcPrefix>();
 
 impl<T> PyInner<T> {
     /// Access the GcPrefix allocated before this PyInner.
     /// The GcPrefix is always present (allocated for every object).
     #[inline(always)]
-    fn gc_prefix(&self) -> &GcPrefix {
+    pub(super) fn gc_prefix(&self) -> &GcPrefix {
         let gc_size = core::mem::size_of::<GcPrefix>();
         unsafe { &*((self as *const Self as *const u8).sub(gc_size) as *const GcPrefix) }
     }
     /// Access the mutable GcPrefix allocated before this PyInner.
     #[inline(always)]
-    fn gc_prefix_mut(&mut self) -> &mut GcPrefix {
+    pub(super) fn gc_prefix_mut(&mut self) -> &mut GcPrefix {
         let gc_size = core::mem::size_of::<GcPrefix>();
         unsafe { &mut *((self as *mut Self as *mut u8).sub(gc_size) as *mut GcPrefix) }
     }
@@ -664,7 +658,7 @@ impl WeakRefList {
         }
 
         // Allocate OUTSIDE the stripe lock. PyRef::new_ref may trigger
-        // maybe_collect â†’ GC â†’ WeakRefList::clear on another object that
+        // maybe_collect ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ GC ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ WeakRefList::clear on another object that
         // hashes to the same stripe, which would deadlock on the spinlock.
         let weak_payload = PyWeak {
             pointers: Pointers::new(),
@@ -1112,7 +1106,7 @@ impl InstanceDict {
 
 impl<T: PyPayload> PyInner<T> {
     /// Deallocate a PyInner, handling optional prefix(es).
-    /// Layout: [ObjExt?][WeakRefList?][PyInner<T>]
+    /// Layout: [ObjExt?][WeakRefList?][GcPrefix][PyInner<T>]
     ///
     /// # Safety
     /// `ptr` must be a valid pointer from `PyInner::new` and must not be used after this call.
@@ -1126,48 +1120,48 @@ impl<T: PyPayload> PyInner<T> {
             // until a QSBR grace period passes; destructors still run now.
             let published = (*ptr).ref_count.is_published();
 
-            if has_ext || has_weakref {
-                // Reconstruct the same layout used in new()
-                let mut layout = core::alloc::Layout::from_size_align(0, 1).unwrap();
+            // Reconstruct the same layout used in new(): the GcPrefix always
+            // precedes PyInner (immediately before it), so it must be included
+            // even when there are no ObjExt/WeakRefList prefixes.
+            let mut layout = core::alloc::Layout::from_size_align(0, 1).unwrap();
 
-                if has_ext {
-                    layout = layout
-                        .extend(core::alloc::Layout::new::<ObjExt>())
-                        .unwrap()
-                        .0;
-                }
-                if has_weakref {
-                    layout = layout
-                        .extend(core::alloc::Layout::new::<WeakRefList>())
-                        .unwrap()
-                        .0;
-                }
-                let (combined, inner_offset) =
-                    layout.extend(core::alloc::Layout::new::<Self>()).unwrap();
-                let combined = combined.pad_to_align();
+            if has_ext {
+                layout = layout
+                    .extend(core::alloc::Layout::new::<ObjExt>())
+                    .unwrap()
+                    .0;
+            }
+            if has_weakref {
+                layout = layout
+                    .extend(core::alloc::Layout::new::<WeakRefList>())
+                    .unwrap()
+                    .0;
+            }
+            layout = layout
+                .extend(core::alloc::Layout::new::<GcPrefix>())
+                .unwrap()
+                .0;
+            let (combined, inner_offset) =
+                layout.extend(core::alloc::Layout::new::<Self>()).unwrap();
+            let combined = combined.pad_to_align();
 
-                let alloc_ptr = (ptr as *mut u8).sub(inner_offset);
+            let alloc_ptr = (ptr as *mut u8).sub(inner_offset);
 
-                // Drop PyInner (payload, typ, etc.)
-                core::ptr::drop_in_place(ptr);
+            // Drop PyInner (payload, typ, etc.)
+            core::ptr::drop_in_place(ptr);
 
-                // Drop ObjExt if present (dict, slots)
-                if has_ext {
-                    core::ptr::drop_in_place(alloc_ptr as *mut ObjExt);
-                }
-                // WeakRefList has no Drop (just raw pointers), no drop_in_place needed
+            // Drop ObjExt if present (dict, slots)
+            if has_ext {
+                core::ptr::drop_in_place(alloc_ptr as *mut ObjExt);
+            }
+            // WeakRefList has no Drop (just raw pointers), no drop_in_place needed
+            // GcPrefix has no Drop (just atomics and a static reference), no
+            // drop_in_place needed.
 
-                if published {
-                    crate::object::qsbr::free_delayed(alloc_ptr, combined);
-                } else {
-                    alloc::alloc::dealloc(alloc_ptr, combined);
-                }
-            } else if published {
-                let layout = core::alloc::Layout::new::<Self>();
-                core::ptr::drop_in_place(ptr);
-                crate::object::qsbr::free_delayed(ptr as *mut u8, layout);
+            if published {
+                crate::object::qsbr::free_delayed(alloc_ptr, combined);
             } else {
-                drop(Box::from_raw(ptr));
+                alloc::alloc::dealloc(alloc_ptr, combined);
             }
         }
     }
@@ -1176,7 +1170,11 @@ impl<T: PyPayload> PyInner<T> {
 impl<T: PyPayload + core::fmt::Debug> PyInner<T> {
     /// Allocate a new PyInner, optionally with prefix(es).
     /// Returns a raw pointer to the PyInner (NOT the allocation start).
-    /// Layout: [ObjExt?][WeakRefList?][PyInner<T>]
+    /// Layout: [ObjExt?][WeakRefList?][GcPrefix][PyInner<T>]
+    ///
+    /// The GcPrefix is always allocated and placed immediately before the
+    /// PyInner so that `PyInner::gc_prefix()` (which reads `self - sizeof(GcPrefix)`)
+    /// stays correct regardless of whether ObjExt/WeakRefList prefixes are present.
     fn new(payload: T, typ: PyTypeRef, dict: Option<PyDictRef>) -> *mut Self {
         let member_count = typ.slots.member_count;
         let needs_ext = typ
@@ -1194,77 +1192,77 @@ impl<T: PyPayload + core::fmt::Debug> PyInner<T> {
             typ.name()
         );
 
-        if needs_ext || needs_weakref {
-            // Build layout left-to-right: [ObjExt?][WeakRefList?][PyInner]
-            let mut layout = core::alloc::Layout::from_size_align(0, 1).unwrap();
+        // Build layout left-to-right: [ObjExt?][WeakRefList?][GcPrefix][PyInner]
+        let mut layout = core::alloc::Layout::from_size_align(0, 1).unwrap();
 
-            let ext_start = if needs_ext {
-                let (combined, offset) =
-                    layout.extend(core::alloc::Layout::new::<ObjExt>()).unwrap();
-                layout = combined;
-                Some(offset)
-            } else {
-                None
-            };
-
-            let weakref_start = if needs_weakref {
-                let (combined, offset) = layout
-                    .extend(core::alloc::Layout::new::<WeakRefList>())
-                    .unwrap();
-                layout = combined;
-                Some(offset)
-            } else {
-                None
-            };
-
-            let (combined, inner_offset) =
-                layout.extend(core::alloc::Layout::new::<Self>()).unwrap();
-            let combined = combined.pad_to_align();
-
-            let alloc_ptr = unsafe { alloc::alloc::alloc(combined) };
-            if alloc_ptr.is_null() {
-                alloc::alloc::handle_alloc_error(combined);
-            }
-            // Expose provenance so ext_ref()/weakref_list_ref() can reconstruct
-            alloc_ptr.expose_provenance();
-
-            unsafe {
-                if let Some(offset) = ext_start {
-                    let ext_ptr = alloc_ptr.add(offset) as *mut ObjExt;
-                    let has_dict = typ
-                        .slots
-                        .flags
-                        .has_feature(crate::types::PyTypeFlags::HAS_DICT);
-                    ext_ptr.write(ObjExt::new(dict, member_count, has_dict));
-                }
-
-                if let Some(offset) = weakref_start {
-                    let weakref_ptr = alloc_ptr.add(offset) as *mut WeakRefList;
-                    weakref_ptr.write(WeakRefList::new());
-                }
-
-                let inner_ptr = alloc_ptr.add(inner_offset) as *mut Self;
-                inner_ptr.write(Self {
-                    ref_count: RefCount::new(),
-                    vtable: PyObjVTable::of::<T>(),
-                    gc_bits: Radium::new(0),
-                    gc_generation: Radium::new(GC_UNTRACKED),
-                    gc_pointers: Pointers::new(),
-                    typ: PyAtomicRef::from(typ),
-                    payload,
-                });
-                inner_ptr
-            }
+        let ext_start = if needs_ext {
+            let (combined, offset) =
+                layout.extend(core::alloc::Layout::new::<ObjExt>()).unwrap();
+            layout = combined;
+            Some(offset)
         } else {
-            Box::into_raw(Box::new(Self {
-                ref_count: RefCount::new(),
-                vtable: PyObjVTable::of::<T>(),
+            None
+        };
+
+        let weakref_start = if needs_weakref {
+            let (combined, offset) = layout
+                .extend(core::alloc::Layout::new::<WeakRefList>())
+                .unwrap();
+            layout = combined;
+            Some(offset)
+        } else {
+            None
+        };
+
+        let (gc_combined, gc_offset) = layout
+            .extend(core::alloc::Layout::new::<GcPrefix>())
+            .unwrap();
+        layout = gc_combined;
+
+        let (combined, inner_offset) = layout
+            .extend(core::alloc::Layout::new::<Self>())
+            .unwrap();
+        let combined = combined.pad_to_align();
+
+        let alloc_ptr = unsafe { alloc::alloc::alloc(combined) };
+        if alloc_ptr.is_null() {
+            alloc::alloc::handle_alloc_error(combined);
+        }
+        // Expose provenance so ext_ref()/weakref_list_ref() can reconstruct
+        alloc_ptr.expose_provenance();
+
+        unsafe {
+            if let Some(offset) = ext_start {
+                let ext_ptr = alloc_ptr.add(offset) as *mut ObjExt;
+                let has_dict = typ
+                    .slots
+                    .flags
+                    .has_feature(crate::types::PyTypeFlags::HAS_DICT);
+                ext_ptr.write(ObjExt::new(dict, member_count, has_dict));
+            }
+
+            if let Some(offset) = weakref_start {
+                let weakref_ptr = alloc_ptr.add(offset) as *mut WeakRefList;
+                weakref_ptr.write(WeakRefList::new());
+            }
+
+            // GcPrefix is immediately before PyInner (inner_ptr - sizeof(GcPrefix));
+            // gc_offset is its offset from the allocation start.
+            let gc_ptr = alloc_ptr.add(gc_offset) as *mut GcPrefix;
+            gc_ptr.write(GcPrefix {
                 gc_bits: Radium::new(0),
                 gc_generation: Radium::new(GC_UNTRACKED),
                 gc_pointers: Pointers::new(),
+                vtable: PyObjVTable::of::<T>(),
+            });
+
+            let inner_ptr = alloc_ptr.add(inner_offset) as *mut Self;
+            inner_ptr.write(Self {
+                ref_count: RefCount::new(),
                 typ: PyAtomicRef::from(typ),
                 payload,
-            }))
+            });
+            inner_ptr
         }
     }
 }
@@ -1304,7 +1302,16 @@ impl<T: PyPayload> Drop for FreeList<T> {
         // MAX_FREELIST per type per thread.
         for ptr in self.items.drain(..) {
             unsafe {
-                alloc::alloc::dealloc(ptr as *mut u8, core::alloc::Layout::new::<PyInner<T>>());
+                // Freelist entries are exact base types allocated by
+                // `PyInner::new`, which always reserves a 32-byte GcPrefix
+                // immediately before the PyInner. Free the whole allocation
+                // (GcPrefix + PyInner) without running the payload destructor.
+                let alloc_ptr = (ptr as *mut u8).sub(SIZEOF_GCPREFIX);
+                let (combined, _) = core::alloc::Layout::new::<GcPrefix>()
+                    .extend(core::alloc::Layout::new::<PyInner<T>>())
+                    .unwrap();
+                let combined = combined.pad_to_align();
+                alloc::alloc::dealloc(alloc_ptr, combined);
             }
         }
     }
@@ -1590,7 +1597,7 @@ impl PyObject {
     #[deprecated(note = "use downcastable instead")]
     #[inline(always)]
     pub fn payload_is<T: PyPayload>(&self) -> bool {
-        self.0.vtable.typeid == T::PAYLOAD_TYPE_ID
+        self.0.gc_prefix().vtable.typeid == T::PAYLOAD_TYPE_ID
     }
 
     /// Force to return payload as T.
@@ -1673,7 +1680,7 @@ impl PyObject {
 
     #[inline]
     pub(crate) fn typeid(&self) -> TypeId {
-        self.0.vtable.typeid
+        self.0.gc_prefix().vtable.typeid
     }
 
     /// Check if this object can be downcast to T.
@@ -1738,7 +1745,7 @@ impl PyObject {
     /// _PyGC_FINALIZED in Py_GIL_DISABLED mode.
     #[inline]
     pub fn gc_finalized(&self) -> bool {
-        GcBits::from_bits_retain(self.0.gc_bits.load(Ordering::Relaxed)).contains(GcBits::FINALIZED)
+        GcBits::from_bits_retain(self.0.gc_prefix().gc_bits.load(Ordering::Relaxed)).contains(GcBits::FINALIZED)
     }
 
     /// Mark the object as finalized. Should be called before __del__.
@@ -1751,20 +1758,20 @@ impl PyObject {
     /// Set a GC bit atomically.
     #[inline]
     pub(crate) fn set_gc_bit(&self, bit: GcBits) {
-        self.0.gc_bits.fetch_or(bit.bits(), Ordering::Relaxed);
+        self.0.gc_prefix().gc_bits.fetch_or(bit.bits(), Ordering::Relaxed);
     }
 
     /// Get the GC generation index for this object.
     #[inline]
     pub(crate) fn gc_generation(&self) -> u8 {
-        self.0.gc_generation.load(Ordering::Relaxed)
+        self.0.gc_prefix().gc_generation.load(Ordering::Relaxed)
     }
 
     /// Set the GC generation index for this object.
     /// Must only be called while holding the generation list's write lock.
     #[inline]
     pub(crate) fn set_gc_generation(&self, generation: u8) {
-        self.0.gc_generation.store(generation, Ordering::Relaxed);
+        self.0.gc_prefix().gc_generation.store(generation, Ordering::Relaxed);
     }
 
     /// _PyObject_GC_TRACK
@@ -1777,6 +1784,7 @@ impl PyObject {
     #[inline]
     pub(crate) fn clear_gc_tracked(&self) {
         self.0
+            .gc_prefix()
             .gc_bits
             .fetch_and(!GcBits::TRACKED.bits(), Ordering::Relaxed);
     }
@@ -1791,7 +1799,7 @@ impl PyObject {
             slot_del: fn(&PyObject, &VirtualMachine) -> PyResult<()>,
         ) -> Result<(), ()> {
             let ret = crate::vm::thread::with_vm(zelf, |vm| {
-                // Temporarily resurrect (0â†’2) so ref_count stays positive
+                // Temporarily resurrect (0ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢2) so ref_count stays positive
                 // during __del__, preventing safe_inc from seeing 0.
                 zelf.0.ref_count.inc_by(2);
 
@@ -1840,7 +1848,7 @@ impl PyObject {
     /// _Py_Dealloc: dispatch to type's dealloc
     #[inline(never)]
     unsafe fn drop_slow(ptr: NonNull<Self>) {
-        let dealloc = unsafe { ptr.as_ref().0.vtable.dealloc };
+        let dealloc = unsafe { ptr.as_ref().0.gc_prefix().vtable.dealloc };
         unsafe { dealloc(ptr.as_ptr()) }
     }
 
@@ -1864,7 +1872,7 @@ impl PyObject {
 
     /// _PyObject_GC_IS_TRACKED
     pub fn is_gc_tracked(&self) -> bool {
-        GcBits::from_bits_retain(self.0.gc_bits.load(Ordering::Relaxed)).contains(GcBits::TRACKED)
+        GcBits::from_bits_retain(self.0.gc_prefix().gc_bits.load(Ordering::Relaxed)).contains(GcBits::TRACKED)
     }
 
     /// Get the referents (objects directly referenced) of this object.
@@ -1941,12 +1949,12 @@ impl PyObject {
         let obj = unsafe { &*ptr };
 
         // 1. Clear payload-specific references (vtable.clear / tp_clear)
-        if let Some(clear_fn) = obj.0.vtable.clear {
+        if let Some(clear_fn) = obj.0.gc_prefix().vtable.clear {
             unsafe { clear_fn(ptr, &mut result) };
         }
 
         // 2. Clear dict and member slots (subtype_clear)
-        // Detach the dict via Py_CLEAR(*_PyObject_GetDictPtr(self)) â€” NULL
+        // Detach the dict via Py_CLEAR(*_PyObject_GetDictPtr(self)) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â NULL
         // the pointer without clearing dict contents. The dict may still be
         // referenced by other live objects (e.g. function.__globals__).
         let (flags, member_count) = obj.0.read_type_flags();
@@ -1993,7 +2001,7 @@ impl PyObject {
     /// Check if this object has clear capability (tp_clear)
     // Py_TPFLAGS_HAVE_GC types have tp_clear
     pub fn gc_has_clear(&self) -> bool {
-        self.0.vtable.clear.is_some()
+        self.0.gc_prefix().vtable.clear.is_some()
             || self
                 .0
                 .ext_ref()
@@ -2035,7 +2043,7 @@ impl fmt::Debug for PyObject {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // SAFETY: the vtable contains functions that accept payload types that always match up
         // with the payload of the object
-        unsafe { (self.0.vtable.debug)(self, f) }
+        unsafe { (self.0.gc_prefix().vtable.debug)(self, f) }
     }
 }
 
@@ -2050,8 +2058,8 @@ const STACKREF_BORROW_TAG: usize = 1;
 /// A tagged stack reference to a Python object.
 ///
 /// Uses the lowest bit of the pointer to distinguish owned vs borrowed:
-/// - bit 0 = 0 â†’ **owned**: refcount was incremented; Drop will decrement.
-/// - bit 0 = 1 â†’ **borrowed**: no refcount change; Drop is a no-op.
+/// - bit 0 = 0 ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ **owned**: refcount was incremented; Drop will decrement.
+/// - bit 0 = 1 ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ **borrowed**: no refcount change; Drop is a no-op.
 ///
 /// Same size as `PyObjectRef` (one pointer-width).  `PyObject` is at least
 /// 8-byte aligned, so the low bit is always available for tagging.
@@ -2065,7 +2073,7 @@ pub struct PyStackRef {
 
 impl PyStackRef {
     /// Create an owned stack reference, consuming the `PyObjectRef`.
-    /// Refcount is NOT incremented â€” ownership is transferred.
+    /// Refcount is NOT incremented ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ownership is transferred.
     #[inline(always)]
     #[must_use]
     pub fn new_owned(obj: PyObjectRef) -> Self {
@@ -2113,8 +2121,8 @@ impl PyStackRef {
 
     /// Convert to an owned `PyObjectRef`.
     ///
-    /// * If **borrowed** â†’ increments refcount, forgets self.
-    /// * If **owned** â†’ reconstructs `PyObjectRef` from the raw pointer, forgets self.
+    /// * If **borrowed** ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ increments refcount, forgets self.
+    /// * If **owned** ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ reconstructs `PyObjectRef` from the raw pointer, forgets self.
     #[inline(always)]
     #[must_use]
     pub fn to_pyobj(self) -> PyObjectRef {
@@ -2397,7 +2405,7 @@ impl<T: PyPayload + crate::object::MaybeTraverse + core::fmt::Debug> PyRef<T> {
             let inner = cached.as_ptr() as *mut PyInner<T>;
             unsafe {
                 core::ptr::write(&mut (*inner).ref_count, RefCount::new());
-                (*inner).gc_bits.store(0, Ordering::Relaxed);
+                (*inner).gc_prefix().gc_bits.store(0, Ordering::Relaxed);
                 core::ptr::drop_in_place(&mut (*inner).payload);
                 core::ptr::write(&mut (*inner).payload, payload);
                 // Freelist only stores exact base types (push-side filter),
@@ -2643,13 +2651,15 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
         };
         // Both type_type and object_type are instances of `type`, which has
         // HAS_DICT and HAS_WEAKREF, so they need both ObjExt and WeakRefList prefixes.
-        // Layout: [ObjExt][WeakRefList][PyInner<PyType>]
+        // Layout: [ObjExt][WeakRefList][GcPrefix][PyInner<PyType>]
         let alloc_type_with_prefixes = || -> *mut MaybeUninit<PyInner<PyType>> {
             let inner_layout = core::alloc::Layout::new::<MaybeUninit<PyInner<PyType>>>();
             let ext_layout = core::alloc::Layout::new::<ObjExt>();
             let weakref_layout = core::alloc::Layout::new::<WeakRefList>();
+            let gc_layout = core::alloc::Layout::new::<GcPrefix>();
 
             let (layout, weakref_offset) = ext_layout.extend(weakref_layout).unwrap();
+            let (layout, gc_offset) = layout.extend(gc_layout).unwrap();
             let (combined, inner_offset) = layout.extend(inner_layout).unwrap();
             let combined = combined.pad_to_align();
 
@@ -2666,6 +2676,14 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
                 let weakref_ptr = alloc_ptr.add(weakref_offset) as *mut WeakRefList;
                 weakref_ptr.write(WeakRefList::new());
 
+                let gc_ptr = alloc_ptr.add(gc_offset) as *mut GcPrefix;
+                gc_ptr.write(GcPrefix {
+                    gc_bits: Radium::new(0),
+                    gc_generation: Radium::new(GC_UNTRACKED),
+                    gc_pointers: Pointers::new(),
+                    vtable: PyObjVTable::of::<PyType>(),
+                });
+
                 alloc_ptr.add(inner_offset) as *mut MaybeUninit<PyInner<PyType>>
             }
         };
@@ -2675,10 +2693,6 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
             type_type_ptr.write(partially_init!(
                 PyInner::<PyType> {
                     ref_count: RefCount::new(),
-                    vtable: PyObjVTable::of::<PyType>(),
-                    gc_bits: Radium::new(0),
-                    gc_generation: Radium::new(GC_UNTRACKED),
-                    gc_pointers: Pointers::new(),
                     payload: type_payload,
                 },
                 Uninit { typ }
@@ -2690,10 +2704,6 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
             object_type_ptr.write(partially_init!(
                 PyInner::<PyType> {
                     ref_count: RefCount::new(),
-                    vtable: PyObjVTable::of::<PyType>(),
-                    gc_bits: Radium::new(0),
-                    gc_generation: Radium::new(GC_UNTRACKED),
-                    gc_pointers: Pointers::new(),
                     payload: object_payload,
                 },
                 Uninit { typ },

@@ -38,7 +38,7 @@ unsafe impl crate::object::Traverse for PySlice {
             out.push(start);
         }
         // stop is not Option, so it will be freed when payload is dropped
-        // (via drop_in_place on freelist pop, or Box::from_raw on dealloc)
+        // (via drop_in_place on freelist pop, or on dealloc)
         if let Some(step) = self.step.take() {
             out.push(step);
         }
