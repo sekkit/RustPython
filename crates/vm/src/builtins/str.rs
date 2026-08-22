@@ -128,7 +128,7 @@ impl fmt::Debug for PyStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PyStr")
             .field("value", &self.as_wtf8())
-            .field("kind", &self.data.kind())
+            .field("kind", &self.data().kind())
             .field("hash", &self.hash)
             .finish()
     }
@@ -560,13 +560,24 @@ impl PyStr {
         }
     }
 
+    /// Accessor for the string's [`StrData`] payload.
+    ///
+    /// Exposes the WTF-8 bytes, kind and length bookkeeping in one place. This
+    /// indirection is kept so that the storage location of the payload can move
+    /// (e.g. to a CPython-compatible trailing allocation) without touching
+    /// callers.
+    #[inline]
+    pub const fn data(&self) -> &StrData {
+        &self.data
+    }
+
     #[inline]
     pub const fn as_wtf8(&self) -> &Wtf8 {
-        self.data.as_wtf8()
+        self.data().as_wtf8()
     }
 
     pub const fn as_bytes(&self) -> &[u8] {
-        self.data.as_wtf8().as_bytes()
+        self.data().as_wtf8().as_bytes()
     }
 
     /// The CPython-compatible character count stored in the header field
@@ -584,7 +595,7 @@ impl PyStr {
     }
 
     pub fn to_str(&self) -> Option<&str> {
-        self.data.as_str()
+        self.data().as_str()
     }
 
     /// Returns `&str`
@@ -608,7 +619,7 @@ impl PyStr {
                 .unwrap();
             Err(vm.new_unicode_encode_error_real(
                 identifier!(vm, utf_8).to_owned(),
-                vm.ctx.new_str(self.data.clone()),
+                vm.ctx.new_str(self.data().clone()),
                 start,
                 start + 1,
                 vm.ctx.new_str("surrogates not allowed"),
@@ -629,12 +640,12 @@ impl PyStr {
     }
 
     pub const fn kind(&self) -> StrKind {
-        self.data.kind()
+        self.data().kind()
     }
 
     #[inline]
     pub fn as_str_kind(&self) -> PyKindStr<'_> {
-        self.data.as_str_kind()
+        self.data().as_str_kind()
     }
 
     pub const fn is_utf8(&self) -> bool {
@@ -769,31 +780,31 @@ impl PyStr {
 
     #[inline]
     pub fn byte_len(&self) -> usize {
-        self.data.len()
+        self.data().len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.data().is_empty()
     }
 
     #[inline]
     pub fn char_len(&self) -> usize {
-        self.data.char_len()
+        self.data().char_len()
     }
 
     /// The byte offset the `index`-th character starts at, or the string's byte
     /// length if `index` is at or past its end.
     #[inline]
     pub fn char_index_to_byte(&self, index: usize) -> usize {
-        self.data.char_index_to_byte(index)
+        self.data().char_index_to_byte(index)
     }
 
     /// The character index of the character starting at byte offset `bytepos`,
     /// which must be a character boundary at or before the end.
     #[inline]
     pub fn byte_to_char_index(&self, bytepos: usize) -> usize {
-        self.data.byte_to_char_index(bytepos)
+        self.data().byte_to_char_index(bytepos)
     }
 
     #[pymethod]
@@ -1004,7 +1015,7 @@ impl PyStr {
     #[pymethod]
     fn endswith(&self, options: anystr::StartsEndsWithArgs, vm: &VirtualMachine) -> PyResult<bool> {
         let (affix, substr) = match options.prepare(self.as_wtf8(), self.len(), |s, r| {
-            &s[self.data.char_range_to_bytes(r)]
+            &s[self.data().char_range_to_bytes(r)]
         }) {
             Some(x) => x,
             None => return Ok(false),
@@ -1025,7 +1036,7 @@ impl PyStr {
         vm: &VirtualMachine,
     ) -> PyResult<bool> {
         let (affix, substr) = match options.prepare(self.as_wtf8(), self.len(), |s, r| {
-            &s[self.data.char_range_to_bytes(r)]
+            &s[self.data().char_range_to_bytes(r)]
         }) {
             Some(x) => x,
             None => return Ok(false),
@@ -1055,22 +1066,22 @@ impl PyStr {
 
     #[pymethod]
     fn isalnum(&self) -> bool {
-        !self.data.is_empty() && self.char_all(unicode::classify::is_alnum)
+        !self.data().is_empty() && self.char_all(unicode::classify::is_alnum)
     }
 
     #[pymethod]
     fn isnumeric(&self) -> bool {
-        !self.data.is_empty() && self.char_all(unicode::classify::is_numeric)
+        !self.data().is_empty() && self.char_all(unicode::classify::is_numeric)
     }
 
     #[pymethod]
     fn isdigit(&self) -> bool {
-        !self.data.is_empty() && self.char_all(unicode::classify::is_digit)
+        !self.data().is_empty() && self.char_all(unicode::classify::is_digit)
     }
 
     #[pymethod]
     fn isdecimal(&self) -> bool {
-        !self.data.is_empty() && self.char_all(unicode::classify::is_decimal)
+        !self.data().is_empty() && self.char_all(unicode::classify::is_decimal)
     }
 
     pub fn __mod__(&self, values: PyObjectRef, vm: &VirtualMachine) -> PyResult<Wtf8Buf> {
@@ -1138,7 +1149,7 @@ impl PyStr {
 
     #[pymethod]
     fn isalpha(&self) -> bool {
-        !self.data.is_empty() && self.char_all(unicode::classify::is_alpha)
+        !self.data().is_empty() && self.char_all(unicode::classify::is_alpha)
     }
 
     #[pymethod]
@@ -1183,7 +1194,7 @@ impl PyStr {
 
     #[pymethod]
     fn isspace(&self) -> bool {
-        !self.data.is_empty() && self.char_all(unicode::classify::is_space)
+        !self.data().is_empty() && self.char_all(unicode::classify::is_space)
     }
 
     // Return true if all cased characters in the string are lowercase and there is at least one cased character, false otherwise.
@@ -1318,7 +1329,7 @@ impl PyStr {
         if !range.is_normal() {
             return None;
         }
-        let bytes = self.data.char_range_to_bytes(range);
+        let bytes = self.data().char_range_to_bytes(range);
         Some((bytes.start, &self.as_wtf8()[bytes]))
     }
 
@@ -1397,7 +1408,7 @@ impl PyStr {
 
     #[pymethod]
     fn istitle(&self) -> bool {
-        if self.data.is_empty() {
+        if self.data().is_empty() {
             return false;
         }
 
@@ -1654,7 +1665,7 @@ impl PyStr {
             zelf.to_owned()
         } else {
             // Subclass, create a new exact str
-            Self::from(zelf.data.clone()).into_ref(&vm.ctx)
+            Self::from(zelf.data().clone()).into_ref(&vm.ctx)
         }
     }
 }
@@ -1998,7 +2009,7 @@ impl PyStr {
         let s = self.as_wtf8();
         for index in indices {
             out.push(
-                s[self.data.char_index_to_byte(index)..]
+                s[self.data().char_index_to_byte(index)..]
                     .code_points()
                     .next()
                     .expect("index is below the character count"),
@@ -2014,7 +2025,7 @@ impl SliceableSequenceOp for PyStr {
     type Sliced = Self;
 
     fn do_get(&self, index: usize) -> Self::Item {
-        self.data.nth_char(index)
+        self.data().nth_char(index)
     }
 
     fn do_slice(&self, range: Range<usize>) -> Self::Sliced {
@@ -2025,7 +2036,7 @@ impl SliceableSequenceOp for PyStr {
         // byte reslice rather than a walk to `range.start` and another to
         // `range.end`.
         let char_len = range.len();
-        let bytes = self.data.char_range_to_bytes(range);
+        let bytes = self.data().char_range_to_bytes(range);
         let out = &self.as_wtf8()[bytes];
         // SAFETY: char_len is accurate
         unsafe { Self::new_with_char_len(out.to_owned(), char_len) }
@@ -2038,7 +2049,7 @@ impl SliceableSequenceOp for PyStr {
             return out.into();
         }
         let char_len = range.len();
-        let bytes = self.data.char_range_to_bytes(range);
+        let bytes = self.data().char_range_to_bytes(range);
         let mut out = Wtf8Buf::with_capacity(bytes.len());
         out.extend(self.as_wtf8()[bytes].code_points().rev());
         // SAFETY: char_len is accurate
@@ -2111,27 +2122,27 @@ impl AnyStrWrapper<Wtf8> for PyStrRef {
     }
 
     fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.data().is_empty()
     }
 }
 
 impl AnyStrWrapper<str> for PyStrRef {
     fn as_ref(&self) -> Option<&str> {
-        self.data.as_str()
+        self.data().as_str()
     }
 
     fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.data().is_empty()
     }
 }
 
 impl AnyStrWrapper<AsciiStr> for PyStrRef {
     fn as_ref(&self) -> Option<&AsciiStr> {
-        self.data.as_ascii()
+        self.data().as_ascii()
     }
 
     fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.data().is_empty()
     }
 }
 
@@ -2685,7 +2696,7 @@ impl PyStrInterned {
 
 impl core::fmt::Display for PyStrInterned {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.data.fmt(f)
+        self.data().fmt(f)
     }
 }
 
