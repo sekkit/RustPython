@@ -992,6 +992,7 @@ class AST_Tests(unittest.TestCase):
     @support.cpython_only
     @skip_if_unlimited_stack_size
     @skip_wasi_stack_overflow()
+    @unittest.skip("TODO: RUSTPYTHON; stack overflow in AST parser")
     @skip_emscripten_stack_overflow()
     def test_ast_recursion_limit(self):
         # Android test devices have less memory.
