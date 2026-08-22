@@ -549,12 +549,16 @@ impl Context {
         module: Option<&str>,
         name: &str,
         base: PyTypeRef,
-        slots: PyTypeSlots,
+        mut slots: PyTypeSlots,
     ) -> PyTypeRef {
         let mut attrs = PyAttributes::default();
         if let Some(module) = module {
             attrs.insert(identifier!(self, __module__), self.new_str(module).into());
         };
+        // Heap types created by Rust #[pyclass] extensions are immutable,
+        // matching CPython's behavior for types created via PyType_FromSpec.
+        // Python classes (via type.__new__) don't use new_class and stay mutable.
+        slots.flags |= PyTypeFlags::IMMUTABLETYPE;
         PyType::new_heap(
             name,
             vec![base],

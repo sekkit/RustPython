@@ -558,11 +558,17 @@ impl PyType {
         base: &Py<Self>,
         ctx: &Context,
     ) -> Result<PyRef<Self>, String> {
+        let mut slots = PyTypeSlots::default();
+        // Heap types created by Rust #[pyclass] extensions are immutable
+        // (matching CPython's behavior for types created via PyType_FromSpec).
+        // Python classes (created via `class Foo:`) don't use new_simple_heap
+        // and remain mutable.
+        slots.flags |= PyTypeFlags::IMMUTABLETYPE;
         Self::new_heap(
             name,
             vec![base.to_owned()],
             Default::default(),
-            Default::default(),
+            slots,
             Self::static_type().to_owned(),
             ctx,
         )

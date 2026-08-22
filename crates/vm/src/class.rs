@@ -244,7 +244,7 @@ pub trait PyClassImpl: PyClassDef {
 
     fn make_slots() -> PyTypeSlots {
         let mut slots = PyTypeSlots {
-            flags: Self::TP_FLAGS,
+            flags: Self::TP_FLAGS | PyTypeFlags::IMMUTABLETYPE,
             name: Self::TP_NAME,
             basicsize: Self::BASICSIZE,
             itemsize: Self::ITEMSIZE,
