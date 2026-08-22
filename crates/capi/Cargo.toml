@@ -17,6 +17,7 @@ itertools = { workspace = true }
 libc = { workspace = true }
 malachite-bigint = { workspace = true }
 num-complex = { workspace = true }
+once_cell = { workspace = true }
 rustpython-vm = { workspace = true, features = ["threading", "compiler", "importlib", "host_env"] }
 rustpython-stdlib = {workspace = true, features = ["threading"] }
 rustpython-pylib = { workspace = true }

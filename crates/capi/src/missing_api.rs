@@ -8,9 +8,9 @@ use crate::pystate::with_vm;
 use crate::util::CStrExt;
 use crate::PyObject;
 use core::ffi::{c_char, c_double, c_int, c_long, c_ulong, c_void, c_uint};
-use rustpython_vm::builtins::{PyDict, PyInt, PyStr, PyType, PyComplex};
+use rustpython_vm::builtins::{PyDict, PyInt, PyTuple, PyStr, PyType, PyComplex};
 use rustpython_vm::common::{hash::hash_float, str::{StrData, StrKind}};
-use rustpython_vm::{AsObject, PyObjectRef, PyPayload, VirtualMachine};
+use rustpython_vm::{AsObject, PyObjectRef, VirtualMachine};
 
 // FfiResult for *mut u32 (used by PyUnicode_AsUCS4Copy)
 impl crate::util::FfiResult for *mut u32 {
@@ -22,21 +22,73 @@ impl crate::util::FfiResult for *mut u32 {
 // Memory / object allocation
 // ===========================================================================
 
-/// _PyObject_New: allocate a new object of the given type.
+/// Instantiate an exception type through its normal constructor so the
+/// instance carries a real `PyBaseException` payload (args, traceback,
+/// cause, ...). A raw buffer or a payload-less object would break raising,
+/// exception matching and display for C extension exception types (e.g. one
+/// created by `PyErr_NewException`); routing through `PyType::call` also
+/// picks up the inherited constructor of payload-carrying bases such as
+/// OSError.
+fn instantiate_exception_type(
+    vm: &VirtualMachine,
+    ty: rustpython_vm::PyRef<PyType>,
+    args: Vec<PyObjectRef>,
+) -> rustpython_vm::PyResult<PyObjectRef> {
+    vm.invoke_exception(&ty, args).map(Into::into)
+}
+
+/// _PyObject_New: allocate a raw C-compatible object of the given type.
+///
+/// C extensions assume the returned pointer is `tp_basicsize` bytes whose
+/// header matches CPython's PyObject (ob_refcnt at offset 0, ob_type at
+/// offset 8) so they can write their struct fields past the header. A
+/// RustPython heap object would be too small for those fixed offsets, so
+/// hand out plain libc memory stamped with the header instead — except for
+/// exception types, which must be real Python objects to stay usable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _PyObject_New(typeobj: *mut crate::object::PyTypeObject) -> *mut PyObject {
-    with_vm(|vm| {
-        // Resolve the type stub to the real RustPython type, then create an
-        // instance. If resolution fails, fall back to a plain object.
-        let ty = crate::object::pytype::resolve_type_ptr(vm, typeobj);
-        match ty {
-            Ok(ty) => Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict()))),
-            Err(_) => {
-                let ty = vm.ctx.types.object_type.to_owned();
-                Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict())))
+pub unsafe extern "C" fn _PyObject_New(
+    typeobj: *mut crate::object::PyTypeObject,
+) -> *mut crate::PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut crate::PyObject> {
+        match crate::object::pytype::resolve_type_ptr(vm, typeobj) {
+            Ok(ty) if ty.is_subtype(vm.ctx.exceptions.base_exception_type) => {
+                instantiate_exception_type(vm, ty, Vec::new()).map(|exc| exc.into_raw().as_ptr())
+            }
+            // Not resolvable as an exception type: keep the raw buffer contract.
+            _ => {
+                // tp_basicsize sits at offset 32 of the CPython-compatible type stub.
+                let basicsize = unsafe { *(typeobj as *const usize).add(4) };
+                // The header itself must always fit.
+                let size = basicsize.max(rustpython_vm::object::SIZEOF_PYOBJECT_HEAD);
+                Ok(unsafe { raw_object_alloc(typeobj, size) })
             }
         }
     })
+}
+
+/// Allocate zeroed raw memory sized for a C-extension object and initialize
+/// the CPython-compatible object header.
+///
+/// Uses `libc::malloc` (not `std::alloc::alloc`) so the block stays freeable
+/// through `PyMem_Free`/`libc::free`.
+unsafe fn raw_object_alloc(
+    typeobj: *mut crate::object::PyTypeObject,
+    size: usize,
+) -> *mut crate::PyObject {
+    unsafe {
+        let ptr = libc::malloc(size) as *mut crate::PyObject;
+        if ptr.is_null() {
+            return core::ptr::null_mut();
+        }
+        // Zero the whole struct, then stamp the header words:
+        // ob_refcnt = 1 at offset 0, ob_type = typeobj at offset 8.
+        core::ptr::write_bytes(ptr.cast::<u8>(), 0, size);
+        let header = ptr.cast::<usize>();
+        core::ptr::write(header, 1);
+        core::ptr::write(header.add(1), typeobj as usize);
+        crate::objimpl::register_foreign_object(ptr as *const u8);
+        ptr
+    }
 }
 
 /// _PyObject_NewVar: allocate a new variable-size object.
@@ -307,10 +359,12 @@ pub unsafe extern "C" fn PyType_Ready(_tp: *mut crate::object::PyTypeObject) -> 
 
 /// PyType_GenericNew: generic type creation (tp_new slot).
 /// Creates an instance of the given type (resolved from the type stub).
+/// Exception types are instantiated through their normal constructor so
+/// instances carry a valid `PyBaseException` payload.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GenericNew(
     typeobj: *mut crate::object::PyTypeObject,
-    _args: *mut PyObject,
+    args: *mut PyObject,
     _kwds: *mut PyObject,
 ) -> *mut PyObject {
     with_vm(|vm| {
@@ -320,7 +374,20 @@ pub unsafe extern "C" fn PyType_GenericNew(
         match ty {
             Ok(ty) => {
                 let ty: rustpython_vm::PyRef<PyType> = ty;
-                Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict())))
+                if ty.is_subtype(vm.ctx.exceptions.base_exception_type) {
+                    // Honor tp_new's positional arguments the way
+                    // BaseException_new stores them on the instance.
+                    let call_args: Vec<PyObjectRef> = match unsafe { args.as_ref() } {
+                        None => Vec::new(),
+                        Some(obj) => match obj.downcast_ref::<PyTuple>() {
+                            Some(tuple) => tuple.iter().cloned().collect(),
+                            None => vec![obj.to_owned()],
+                        },
+                    };
+                    instantiate_exception_type(vm, ty, call_args)
+                } else {
+                    Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict())))
+                }
             }
             Err(_) => {
                 let ty = vm.ctx.types.object_type.to_owned();

@@ -3280,6 +3280,7 @@ dependencies = [
  "libc",
  "malachite-bigint",
  "num-complex",
+ "once_cell",
  "pyo3",
  "rustpython-pylib",
  "rustpython-stdlib",

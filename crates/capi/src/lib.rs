@@ -22,6 +22,7 @@ pub mod critical_section;
 pub mod descrobject;
 pub mod dictobject;
 pub mod floatobject;
+pub mod foreign;
 pub mod genericaliasobject;
 pub mod import;
 pub mod listobject;
