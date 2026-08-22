@@ -435,17 +435,40 @@ pub mod foreign_dispatch {
     static CALL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
     /// `fn(obj: *const PyObject) -> bool` — returns true when `obj` is a foreign raw buffer
     static IS_FOREIGN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+    /// `fn(raw: *mut PyObject) -> *mut PyObject` — wraps a foreign raw buffer in a
+    /// safe native object (returning NULL means "cannot wrap"). Used when a C
+    /// function's return value crosses back into Python.
+    static WRAP_FOREIGN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-    /// Set the three C-API foreign-dispatch callbacks.  Called once by the
+    /// Set the four C-API foreign-dispatch callbacks.  Called once by the
     /// capi crate during `Py_Initialize`.
     pub fn set(
         getattr: *mut (),
         call: *mut (),
         is_foreign: *mut (),
+        wrap_foreign: *mut (),
     ) {
         GETATTR.store(getattr, Ordering::Relaxed);
         CALL.store(call, Ordering::Relaxed);
         IS_FOREIGN.store(is_foreign, Ordering::Relaxed);
+        WRAP_FOREIGN.store(wrap_foreign, Ordering::Relaxed);
+    }
+
+    /// Wrap a foreign raw buffer into a safe native object. Returns None when
+    /// the hook is not installed or wrapping failed.
+    pub fn wrap_foreign(raw: *mut super::PyObject) -> Option<*mut super::PyObject> {
+        let ptr = WRAP_FOREIGN.load(Ordering::Relaxed);
+        if ptr.is_null() {
+            return None;
+        }
+        let f: unsafe extern "C" fn(*mut super::PyObject) -> *mut super::PyObject =
+            unsafe { core::mem::transmute(ptr) };
+        let wrapped = unsafe { f(raw) };
+        if wrapped.is_null() {
+            None
+        } else {
+            Some(wrapped)
+        }
     }
 
     /// Returns the foreign-getattr function pointer, or NULL.

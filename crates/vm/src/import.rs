@@ -835,7 +835,24 @@ fn ret_ptr_to_pyresult(vm: &VirtualMachine, ret_ptr: *mut crate::PyObject) -> Py
         return Ok(vm.ctx.none());
     }
     match core::ptr::NonNull::new(ret_ptr) {
-        Some(ret_ptr) => Ok(unsafe { PyObjectRef::from_raw(ret_ptr) }),
+        Some(ret_ptr) => {
+            // Foreign raw-buffer objects (from _PyObject_New) must NOT be
+            // wrapped as PyInner — they have no RustPython payload, typ or
+            // GcPrefix, and touching them through the native object model
+            // crashes. Ask the capi crate to wrap them safely instead.
+            let raw = ret_ptr.as_ptr();
+            if crate::object::foreign_dispatch::is_foreign(raw) {
+                return match crate::object::foreign_dispatch::wrap_foreign(raw) {
+                    Some(wrapped) => {
+                        Ok(unsafe { PyObjectRef::from_raw(core::ptr::NonNull::new_unchecked(wrapped)) })
+                    }
+                    None => Err(vm.new_system_error(
+                        "C extension returned a foreign object that cannot be wrapped",
+                    )),
+                };
+            }
+            Ok(unsafe { PyObjectRef::from_raw(ret_ptr) })
+        }
         None => Err(match vm.take_raised_exception() {
             Some(exc) => exc,
             None => vm.new_system_error("NULL result without error in PyObject_Call"),

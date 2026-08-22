@@ -69,6 +69,7 @@ pub extern "C" fn Py_InitializeEx(_initsigs: c_int) {
             crate::foreign::foreign_getattr as *mut (),
             crate::foreign::foreign_call as *mut (),
             crate::foreign::is_foreign_object as *mut (),
+            crate::foreign::wrap_foreign_object as *mut (),
         );
     }
 }

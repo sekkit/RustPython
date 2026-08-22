@@ -312,6 +312,32 @@ pub unsafe fn foreign_call(
     unsafe { call(obj, args, kwds) }
 }
 
+/// Wrap a foreign raw-buffer object into a safe native RustPython object.
+///
+/// Called from the VM (via `foreign_dispatch::wrap_foreign`) when a C function
+/// returns a pointer that `is_foreign_object` recognises. The returned native
+/// object carries the resolved type so `type()`/`isinstance()` work; the
+/// foreign buffer is kept alive by bumping its header refcount.
+pub unsafe extern "C" fn wrap_foreign_object(raw: *mut PyObject) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        if raw.is_null() {
+            return Err(vm.new_system_error("wrap_foreign: NULL pointer"));
+        }
+        // ob_type at offset 8 is the extension's own PyTypeObject (or one of
+        // our stubs). Resolve it to a real RustPython type.
+        let ty_raw = unsafe { *(raw as *const usize).add(1) } as *mut crate::object::PyTypeObject;
+        let ty = crate::object::pytype::resolve_type_ptr(vm, ty_raw)?;
+        // Keep the foreign buffer alive for as long as the wrapper lives by
+        // bumping its header refcount (ob_refcnt at offset 0).
+        unsafe {
+            let header = raw as *mut usize;
+            *header = (*header).wrapping_add(1);
+        }
+        let obj = vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict()));
+        Ok(obj.into_raw().as_ptr())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

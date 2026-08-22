@@ -26,6 +26,11 @@ pub(crate) fn unregister_foreign_object(ptr: *const u8) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_GC_Track(op: *mut PyObject) {
+    // Foreign raw-buffer objects (from _PyObject_New) have no GcPrefix;
+    // tracking them would read/write unrelated heap memory.
+    if crate::objimpl::is_foreign_object(op as *const u8) {
+        return;
+    }
     with_vm(|_vm| {
         let obj = unsafe { &*op };
         if !obj.is_gc_tracked() {
@@ -36,6 +41,9 @@ pub unsafe extern "C" fn PyObject_GC_Track(op: *mut PyObject) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_GC_UnTrack(op: *mut PyObject) {
+    if crate::objimpl::is_foreign_object(op as *const u8) {
+        return;
+    }
     with_vm(|_vm| {
         let obj = unsafe { &*op };
         if obj.is_gc_tracked() {
@@ -46,12 +54,18 @@ pub unsafe extern "C" fn PyObject_GC_UnTrack(op: *mut PyObject) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_GC_IsTracked(op: *mut PyObject) -> c_int {
-    with_vm(|_vm| unsafe { (&*op).is_gc_tracked() })
+    if crate::objimpl::is_foreign_object(op as *const u8) {
+        return 0;
+    }
+    with_vm(|_vm| unsafe { (&*op).is_gc_tracked() }) as c_int
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_GC_IsFinalized(op: *mut PyObject) -> c_int {
-    with_vm(|_vm| unsafe { (&*op).gc_finalized() })
+    if crate::objimpl::is_foreign_object(op as *const u8) {
+        return 0;
+    }
+    with_vm(|_vm| unsafe { (&*op).gc_finalized() }) as c_int
 }
 
 #[unsafe(no_mangle)]
