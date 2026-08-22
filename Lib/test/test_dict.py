@@ -1041,6 +1041,7 @@ class DictTest(unittest.TestCase):
             b.pop('a')
 
     @support.cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; split-table dict internals not implemented
     def test_splittable_popitem(self):
         """split table must be combined when d.popitem()"""
         a, b = self.make_shared_key_dict(2)
