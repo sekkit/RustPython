@@ -2504,7 +2504,6 @@ class TestWhich(BaseTest, unittest.TestCase):
                 rv = shutil.which(self.file)
                 self.assertIsNone(rv)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; machine-dependent: NeedCurrentDirectoryForExePathW returns False on this host, so which() returns the bare name; CPython 3.14 fails identically
     def test_environ_path_cwd(self):
         expected_cwd = self.file
         if sys.platform == "win32":
