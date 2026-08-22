@@ -9,7 +9,7 @@ use crate::util::CStrExt;
 use crate::PyObject;
 use core::ffi::{c_char, c_double, c_int, c_long, c_ulong, c_void, c_uint};
 use rustpython_vm::builtins::{PyDict, PyInt, PyStr, PyComplex};
-use rustpython_vm::common::hash::hash_float;
+use rustpython_vm::common::{hash::hash_float, str::{StrData, StrKind}};
 use rustpython_vm::{AsObject, PyObjectRef, PyPayload, VirtualMachine};
 
 // FfiResult for *mut u32 (used by PyUnicode_AsUCS4Copy)
@@ -662,12 +662,21 @@ pub unsafe extern "C" fn PyThread_release_lock(lock: *mut c_void) {
 // ===========================================================================
 
 /// PyUnicode_New: create a new Unicode string with the given length and maxchar.
+///
+/// Creates an inline-backed string so `PyUnicode_DATA`/`PyUnicode_READ` and
+/// C-extension string builders have a writable buffer of the requested size.
+/// The kind (ASCII vs UTF-8) is derived from `maxchar`: values < 0x80 yield a
+/// pure-ASCII string, larger values a UTF-8 string. The buffer is zero-filled
+/// so immediate writes land on NULs; `PyUnicode_FromKindAndData` fills real
+/// content.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_New(size: isize, maxchar: u32) -> *mut PyObject {
     with_vm(|vm| {
         let len = if size < 0 { 0 } else { size as usize };
-        let s = "\0".repeat(len);
-        Ok(vm.ctx.new_str(s))
+        let kind = if maxchar < 0x80 { StrKind::Ascii } else { StrKind::Utf8 };
+        let buf = vec![0u8; len];
+        let data = unsafe { StrData::new_inline_unchecked(buf, kind) };
+        Ok(vm.ctx.new_str(data))
     })
 }
 

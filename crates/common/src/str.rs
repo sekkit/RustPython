@@ -125,10 +125,22 @@ const MAX_WALK_TO_INDEX: usize = 4;
 
 #[derive(Debug, Clone)]
 pub struct StrData {
-    data: Box<Wtf8>,
+    data: StrStorage,
     kind: StrKind,
     len: StrLen,
     index: Wtf8IndexSlot,
+}
+
+/// Where a `[StrData]` stores its WTF-8 bytes.
+///
+/// `StrStorage::Heap` owns the data in a heap box (the default for ordinary
+/// RustPython strings). `StrStorage::Inline` owns the data in a `Vec<u8>`
+/// buffer, which backs the C-API inline string path without a separate heap
+/// indirection.
+#[derive(Debug, Clone)]
+enum StrStorage {
+    Heap(Box<Wtf8>),
+    Inline(Vec<u8>),
 }
 
 /// A [`Wtf8Index`] built on first use.
@@ -220,7 +232,7 @@ impl Clone for StrLen {
 impl Default for StrData {
     fn default() -> Self {
         Self {
-            data: <Box<Wtf8>>::default(),
+            data: StrStorage::Heap(<Box<Wtf8>>::default()),
             kind: StrKind::Ascii,
             len: StrLen::zero(),
             index: Wtf8IndexSlot::new(),
@@ -252,7 +264,7 @@ impl From<Box<AsciiStr>> for StrData {
     fn from(value: Box<AsciiStr>) -> Self {
         Self {
             len: value.len().into(),
-            data: value.into(),
+            data: StrStorage::Heap(value.into()),
             kind: StrKind::Ascii,
             index: Wtf8IndexSlot::new(),
         }
@@ -271,7 +283,7 @@ impl From<char> for StrData {
             ch.into()
         } else {
             Self {
-                data: ch.to_string().into(),
+                data: StrStorage::Heap(ch.to_string().into()),
                 kind: StrKind::Utf8,
                 len: 1.into(),
                 index: Wtf8IndexSlot::new(),
@@ -286,7 +298,7 @@ impl From<CodePoint> for StrData {
             ch.into()
         } else {
             Self {
-                data: Wtf8Buf::from(ch).into(),
+                data: StrStorage::Heap(Wtf8Buf::from(ch).into()),
                 kind: StrKind::Wtf8,
                 len: 1.into(),
                 index: Wtf8IndexSlot::new(),
@@ -306,7 +318,7 @@ impl StrData {
             _ => StrLen::uncomputed(),
         };
         Self {
-            data,
+            data: StrStorage::Heap(data),
             kind,
             len,
             index: Wtf8IndexSlot::new(),
@@ -319,16 +331,50 @@ impl StrData {
     #[must_use]
     pub unsafe fn new_with_char_len(data: Box<Wtf8>, kind: StrKind, char_len: usize) -> Self {
         Self {
-            data,
+            data: StrStorage::Heap(data),
             kind,
             len: char_len.into(),
             index: Wtf8IndexSlot::new(),
         }
     }
 
+    /// Build a StrData whose buffer is owned inline by StrStorage::Inline.
+    /// This backs the C-API string path (PyUnicode_New): the bytes must be valid
+    /// WTF-8 data for kind.
+    ///
+    /// # Safety
+    ///
+    /// data must be valid WTF-8 bytes for the given kind.
+    #[must_use]
+    pub unsafe fn new_inline_unchecked(data: Vec<u8>, kind: StrKind) -> Self {
+        let len = match kind {
+            StrKind::Ascii => data.len().into(),
+            _ => StrLen::uncomputed(),
+        };
+        Self {
+            data: StrStorage::Inline(data),
+            kind,
+            len,
+            index: Wtf8IndexSlot::new(),
+        }
+    }
+
+    /// If this StrData is backed by the inline C-API buffer, return a
+    /// shared slice of it.
+    #[inline]
+    pub fn inline_bytes(&self) -> Option<&[u8]> {
+        match &self.data {
+            StrStorage::Heap(_) => None,
+            StrStorage::Inline(bytes) => Some(bytes.as_slice()),
+        }
+    }
+
     #[inline]
     pub const fn as_wtf8(&self) -> &Wtf8 {
-        &self.data
+        match &self.data {
+            StrStorage::Heap(b) => &**b,
+            StrStorage::Inline(bytes) => unsafe { Wtf8::from_bytes_unchecked(bytes.as_slice()) },
+        }
     }
 
     // TODO: rename to to_str
@@ -336,13 +382,13 @@ impl StrData {
     pub fn as_str(&self) -> Option<&str> {
         self.kind
             .is_utf8()
-            .then(|| unsafe { core::str::from_utf8_unchecked(self.data.as_bytes()) })
+            .then(|| unsafe { core::str::from_utf8_unchecked(self.as_wtf8().as_bytes()) })
     }
 
     pub fn as_ascii(&self) -> Option<&AsciiStr> {
         self.kind
             .is_ascii()
-            .then(|| unsafe { AsciiStr::from_ascii_unchecked(self.data.as_bytes()) })
+            .then(|| unsafe { AsciiStr::from_ascii_unchecked(self.as_wtf8().as_bytes()) })
     }
 
     pub const fn kind(&self) -> StrKind {
@@ -353,22 +399,22 @@ impl StrData {
     pub fn as_str_kind(&self) -> PyKindStr<'_> {
         match self.kind {
             StrKind::Ascii => {
-                PyKindStr::Ascii(unsafe { AsciiStr::from_ascii_unchecked(self.data.as_bytes()) })
+                PyKindStr::Ascii(unsafe { AsciiStr::from_ascii_unchecked(self.as_wtf8().as_bytes()) })
             }
             StrKind::Utf8 => {
-                PyKindStr::Utf8(unsafe { core::str::from_utf8_unchecked(self.data.as_bytes()) })
+                PyKindStr::Utf8(unsafe { core::str::from_utf8_unchecked(self.as_wtf8().as_bytes()) })
             }
-            StrKind::Wtf8 => PyKindStr::Wtf8(&self.data),
+            StrKind::Wtf8 => PyKindStr::Wtf8(self.as_wtf8()),
         }
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.as_wtf8().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.as_wtf8().is_empty()
     }
 
     #[inline]
@@ -385,7 +431,7 @@ impl StrData {
             // utf8 chars().count() is optimized
             s.chars().count()
         } else {
-            self.data.code_points().count()
+            self.as_wtf8().code_points().count()
         };
         // len cannot be usize::MAX, since vec.capacity() < sys.maxsize
         self.len.0.store(len, Relaxed);
@@ -404,15 +450,15 @@ impl StrData {
         // For ASCII the two units coincide, and the table would be a Nth entry
         // saying N.
         if self.kind.is_ascii() {
-            return index.min(self.data.len());
+            return index.min(self.as_wtf8().len());
         }
         let char_len = self.char_len();
         if index >= char_len {
-            return self.data.len();
+            return self.as_wtf8().len();
         }
         self.index
-            .get_or_build(&self.data, char_len)
-            .byte_offset(&self.data, index)
+            .get_or_build(self.as_wtf8(), char_len)
+            .byte_offset(self.as_wtf8(), index)
     }
 
     /// The byte offset of code point `index`, for a caller that resolves one
@@ -427,18 +473,18 @@ impl StrData {
     fn char_index_to_byte_once(&self, index: usize) -> usize {
         if index <= MAX_WALK_TO_INDEX {
             return self
-                .data
+                .as_wtf8()
                 .code_point_indices()
                 .nth(index)
-                .map_or(self.data.len(), |(byte, _)| byte);
+                .map_or(self.as_wtf8().len(), |(byte, _)| byte);
         }
         let from_end = self.char_len() - index;
         if from_end <= MAX_WALK_TO_INDEX {
             return self
-                .data
+                .as_wtf8()
                 .code_point_indices()
                 .nth_back(from_end - 1)
-                .map_or(self.data.len(), |(byte, _)| byte);
+                .map_or(self.as_wtf8().len(), |(byte, _)| byte);
         }
         self.char_index_to_byte(index)
     }
@@ -460,17 +506,17 @@ impl StrData {
             // steps -- one iterator driven from both sides would have them meet
             // on a short string.
             let start = self
-                .data
+                .as_wtf8()
                 .code_point_indices()
                 .nth(range.start)
-                .map_or(self.data.len(), |(byte, _)| byte);
+                .map_or(self.as_wtf8().len(), |(byte, _)| byte);
             let end = match from_end {
-                0 => self.data.len(),
+                0 => self.as_wtf8().len(),
                 n => self
-                    .data
+                    .as_wtf8()
                     .code_point_indices()
                     .nth_back(n - 1)
-                    .map_or(self.data.len(), |(byte, _)| byte),
+                    .map_or(self.as_wtf8().len(), |(byte, _)| byte),
             };
             return start..end;
         }
@@ -492,14 +538,14 @@ impl StrData {
         }
         let char_len = self.char_len();
         self.index
-            .get_or_build(&self.data, char_len)
-            .char_index_at_byte(&self.data, bytepos, char_len)
+            .get_or_build(self.as_wtf8(), char_len)
+            .char_index_at_byte(self.as_wtf8(), bytepos, char_len)
     }
 
     pub fn nth_char(&self, index: usize) -> CodePoint {
         match self.as_str_kind() {
             PyKindStr::Ascii(s) => s[index].into(),
-            _ => self.data[self.char_index_to_byte_once(index)..]
+            _ => self.as_wtf8()[self.char_index_to_byte_once(index)..]
                 .code_points()
                 .next()
                 .unwrap(),
@@ -509,7 +555,7 @@ impl StrData {
 
 impl core::fmt::Display for StrData {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.data.fmt(f)
+        self.as_wtf8().fmt(f)
     }
 }
 

@@ -74,10 +74,54 @@ impl<'a> TryFromBorrowedObject<'a> for &'a Wtf8 {
 pub type PyStrRef = PyRef<PyStr>;
 pub type PyUtf8StrRef = PyRef<PyUtf8Str>;
 
+// CPython-compatible `PyStr` header. The first 24 bytes mirror the layout of
+// CPython's `PyASCIIObject` head (starting after the 16-byte `PyInner` header):
+//
+//   offset 0  ref_count   (in PyInner)
+//   offset 8  typ         (in PyInner)
+//   offset 16 length      (character count / byte count)
+//   offset 24 hash
+//   offset 32 state       (bitfield: `PyASCIIObject.state`)
+//   offset 36 data        (RustPython's heap/cached string data)
+//
+// For strings built by the C-API inline path (`PyUnicode_New`), the `state`
+// `compact` bit is set and the character data is expected at `op + SIZEOF_PYOBJECT_HEAD
+// + size_of::<PyStr>()`; see `crates/capi/src/missing_api.rs`.
+// State bitfield matches CPython's `_PyUnicode_STATE` subset we need:
+//   bit 0 `compact`, bit 1 `ascii`, bit 2 `ready`, bits 3-4 `kind`.
 #[pyclass(module = false, name = "str")]
 pub struct PyStr {
-    data: StrData,
+    /// Character count (matches CPython's `PyASCIIObject.length`).
+    length: isize,
     hash: PyAtomic<hash::PyHash>,
+    /// `PyASCIIObject.state` bitfield: compact/ascii/ready/kind.
+    state: u32,
+    data: StrData,
+}
+
+/// Bit positions in [`PyStr::state`], matching the subset of CPython's
+/// `PyASCIIObject.state` we track. `kind` spans bits 3-4 (2 bits).
+mod pystr_state {
+    pub(super) const COMPACT_BIT: u32 = 1 << 0;
+    pub(super) const ASCII_BIT: u32 = 1 << 1;
+    pub(super) const READY_BIT: u32 = 1 << 2;
+    pub(super) const KIND_SHIFT: u32 = 3;
+    pub(super) const KIND_MASK: u32 = 0b11 << KIND_SHIFT;
+}
+
+impl PyStr {
+    /// Build the CPython-compatible `state` bitfield from a [`StrKind`].
+    fn state_from_kind(kind: StrKind) -> u32 {
+        use pystr_state::*;
+        // RustPython stores WTF-8 bytes; CPython kind maps to element width.
+        // Internally we are 1-byte (UTF-8/WTF-8) so kind is always 1 for ascii
+        // and utf8; the `ascii` bit distinguishes pure-ASCII.
+        let (ascii, kind) = match kind {
+            StrKind::Ascii => (true, 1),
+            StrKind::Utf8 | StrKind::Wtf8 => (false, 1),
+        };
+        READY_BIT | (if ascii { ASCII_BIT } else { 0 }) | (kind << KIND_SHIFT)
+    }
 }
 
 impl fmt::Debug for PyStr {
@@ -205,9 +249,18 @@ impl From<CodePoint> for PyStr {
 
 impl From<StrData> for PyStr {
     fn from(data: StrData) -> Self {
+        let length = data.char_len() as isize;
+        // Only inline-backed buffers (StrData::new_inline_unchecked, used by
+        // the C-API PyUnicode_New) have real data at the CPython compact
+        // offset; regular heap strings get the plain non-compact state.
+        let compact = data.inline_bytes().is_some() as u32;
+        let state = Self::state_from_kind(data.kind())
+            | if compact != 0 { pystr_state::COMPACT_BIT } else { 0 };
         Self {
-            data,
+            length,
             hash: Radium::new(hash::SENTINEL),
+            state,
+            data,
         }
     }
 }
@@ -234,9 +287,12 @@ impl From<Box<Wtf8>> for PyStr {
 
 impl Default for PyStr {
     fn default() -> Self {
+        let data = StrData::default();
         Self {
-            data: StrData::default(),
+            length: 0,
             hash: Radium::new(hash::SENTINEL),
+            state: Self::state_from_kind(data.kind()),
+            data,
         }
     }
 }
@@ -511,6 +567,20 @@ impl PyStr {
 
     pub const fn as_bytes(&self) -> &[u8] {
         self.data.as_wtf8().as_bytes()
+    }
+
+    /// The CPython-compatible character count stored in the header field
+    /// PyASCIIObject.length (offset 16 past the PyInner header).
+    #[inline]
+    pub const fn cp_length(&self) -> isize {
+        self.length
+    }
+
+    /// The CPython-compatible state bitfield (PyASCIIObject.state, offset 32).
+    /// Exposed for C-API consumers; RustPython computes it from the string kind.
+    #[inline]
+    pub const fn state_u32(&self) -> u32 {
+        self.state
     }
 
     pub fn to_str(&self) -> Option<&str> {
@@ -1607,7 +1677,10 @@ impl PyRef<PyStr> {
             // Mutating payload in place preserves semantics while avoiding PyObject reallocation.
             unsafe {
                 let payload = self.payload() as *const PyStr as *mut PyStr;
-                (*payload).data = PyStr::from(s).data;
+                let new_payload = PyStr::from(s);
+                (*payload).length = new_payload.length;
+                (*payload).state = new_payload.state;
+                (*payload).data = new_payload.data;
                 (*payload)
                     .hash
                     .store(hash::SENTINEL, atomic::Ordering::Relaxed);
@@ -2188,7 +2261,7 @@ impl PyUtf8Str {
 
     /// Returns the underlying WTF-8 slice (always valid UTF-8 for this type).
     #[inline]
-    pub fn as_wtf8(&self) -> &Wtf8 {
+    pub const fn as_wtf8(&self) -> &Wtf8 {
         self.0.as_wtf8()
     }
 
