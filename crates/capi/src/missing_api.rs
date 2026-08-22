@@ -8,7 +8,7 @@ use crate::pystate::with_vm;
 use crate::util::CStrExt;
 use crate::PyObject;
 use core::ffi::{c_char, c_double, c_int, c_long, c_ulong, c_void, c_uint};
-use rustpython_vm::builtins::{PyDict, PyInt, PyStr, PyComplex};
+use rustpython_vm::builtins::{PyDict, PyInt, PyStr, PyType, PyComplex};
 use rustpython_vm::common::{hash::hash_float, str::{StrData, StrKind}};
 use rustpython_vm::{AsObject, PyObjectRef, PyPayload, VirtualMachine};
 
@@ -25,10 +25,17 @@ impl crate::util::FfiResult for *mut u32 {
 /// _PyObject_New: allocate a new object of the given type.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _PyObject_New(typeobj: *mut crate::object::PyTypeObject) -> *mut PyObject {
-    let _ = typeobj;
     with_vm(|vm| {
-        let ty = vm.ctx.types.object_type.to_owned();
-        Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict())))
+        // Resolve the type stub to the real RustPython type, then create an
+        // instance. If resolution fails, fall back to a plain object.
+        let ty = crate::object::pytype::resolve_type_ptr(vm, typeobj);
+        match ty {
+            Ok(ty) => Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict()))),
+            Err(_) => {
+                let ty = vm.ctx.types.object_type.to_owned();
+                Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict())))
+            }
+        }
     })
 }
 
@@ -299,16 +306,27 @@ pub unsafe extern "C" fn PyType_Ready(_tp: *mut crate::object::PyTypeObject) -> 
 }
 
 /// PyType_GenericNew: generic type creation (tp_new slot).
+/// Creates an instance of the given type (resolved from the type stub).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GenericNew(
     typeobj: *mut crate::object::PyTypeObject,
     _args: *mut PyObject,
     _kwds: *mut PyObject,
 ) -> *mut PyObject {
-    let _ = typeobj;
     with_vm(|vm| {
-        let ty = vm.ctx.types.object_type.to_owned();
-        Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict())))
+        // Resolve the type stub to the real RustPython type, then create an
+        // instance. If resolution fails, fall back to a plain object.
+        let ty = crate::object::pytype::resolve_type_ptr(vm, typeobj);
+        match ty {
+            Ok(ty) => {
+                let ty: rustpython_vm::PyRef<PyType> = ty;
+                Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict())))
+            }
+            Err(_) => {
+                let ty = vm.ctx.types.object_type.to_owned();
+                Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict())))
+            }
+        }
     })
 }
 

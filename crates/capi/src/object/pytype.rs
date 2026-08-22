@@ -166,7 +166,7 @@ pub unsafe extern "C" fn PyType_IsSubtype(a: *const PyTypeObject, b: *const PyTy
 /// PyType_IsSubtype with those raw pointers, so resolve them: known payload
 /// vtables map to their real type; the exported type-stub symbols (byte copies
 /// of a type's header) carry the real type's fields and can be used directly.
-fn resolve_type_ptr(
+pub(crate) fn resolve_type_ptr(
     vm: &VirtualMachine,
     ptr: *const PyTypeObject,
 ) -> rustpython_vm::PyResult<PyRef<PyType>> {
