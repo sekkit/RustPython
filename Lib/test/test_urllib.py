@@ -378,7 +378,6 @@ class urlopen_HttpTests(unittest.TestCase, FakeHTTPMixin):
             self.unfakehttp()
 
     @unittest.skipUnless(ssl, "ssl module required")
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; HTTPS host control chars raise ValueError from _tunnel() (CPython 3.14 bug, fails identically), test expects InvalidURL
     def test_url_host_with_control_char_rejected(self):
         for char_no in list(range(0, 0x21)) + [0x7f]:
             char = chr(char_no)
@@ -396,7 +395,6 @@ class urlopen_HttpTests(unittest.TestCase, FakeHTTPMixin):
                 self.unfakehttp()
 
     @unittest.skipUnless(ssl, "ssl module required")
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; same CPython 3.14 _tunnel() ValueError vs InvalidURL mismatch as above
     def test_url_host_with_newline_header_injection_rejected(self):
         self.fakehttp(b"HTTP/1.1 200 OK\r\n\r\nHello.")
         host = "localhost\r\nX-injected: header\r\n"
