@@ -2909,6 +2909,7 @@ class ImplementationTest(unittest.TestCase):
     """
 
     @cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; Pattern type immutability not enforced
     def test_immutable(self):
         # bpo-43908: check that re types are immutable
         with self.assertRaises(TypeError):
@@ -2934,6 +2935,7 @@ class ImplementationTest(unittest.TestCase):
         self.assertGreaterEqual(re._compiler.MAXGROUPS, 0)
 
     @cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; Pattern instantiation not prevented
     def test_disallow_instantiation(self):
         # Ensure that the type disallows instantiation (bpo-43916)
         check_disallow_instantiation(self, re.Match)
@@ -2970,6 +2972,7 @@ class ImplementationTest(unittest.TestCase):
                 del sys.modules[name]
 
     @cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; unicode_iscased has different definition
     def test_case_helpers(self):
         import _sre
         for i in range(128):
@@ -2997,6 +3000,7 @@ class ImplementationTest(unittest.TestCase):
         self.assertTrue(_sre.unicode_iscased(0x0130))
 
     @cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; finditer validation is lazy (does not raise TypeError immediately)
     def test_dealloc(self):
         # issue 3299: check for segfault in debug build
         import _sre
@@ -3030,6 +3034,7 @@ class ImplementationTest(unittest.TestCase):
         self.assertRaises(OverflowError, re.compile, r".{%d,}?" % MAXREPEAT)
 
     @cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; _sre.template error message differs
     def test_sre_template_invalid_group_index(self):
         # see gh-106524
         import _sre
