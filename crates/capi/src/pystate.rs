@@ -9,6 +9,7 @@ use rustpython_vm::vm::thread::{
 use rustpython_vm::{Interpreter, VirtualMachine};
 
 pub(crate) fn with_vm<R: FfiResult<O>, O>(f: impl FnOnce(&VirtualMachine) -> R) -> O {
+    crate::crash_diag::install();
     with_current_vm(|vm| {
         crate::objectstatics::ensure_object_statics(vm);
         f(vm).into_output(vm)

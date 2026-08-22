@@ -270,10 +270,14 @@ pub unsafe extern "C" fn PyObject_IsInstance(inst: *mut PyObject, cls: *mut PyOb
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Size(obj: *mut PyObject) -> isize {
-    with_vm(|vm| {
+    let r = with_vm(|vm| {
         let obj = unsafe { &*obj };
         obj.length(vm)
-    })
+    });
+    if std::env::var("RUSTPYTHON_TRACE").is_ok() && r < 0 {
+        eprintln!("TRACE: PyObject_Size({:p}) = {}", obj, r);
+    }
+    r
 }
 
 #[unsafe(no_mangle)]

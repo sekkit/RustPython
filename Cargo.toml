@@ -114,6 +114,7 @@ codegen-units = 1
 opt-level = 3
 
 [profile.release]
+debug = true
 lto = "thin"
 
 [profile.wasm-release]

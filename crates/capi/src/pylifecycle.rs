@@ -65,12 +65,14 @@ pub extern "C" fn Py_InitializeEx(_initsigs: c_int) {
         // Register foreign-object dispatch table so the VM crate can route
         // attribute access and calls on C extension raw buffers through
         // the capi crate's foreign_{getattr,call} helpers.
-        rustpython_vm::object::foreign_dispatch::set(
+                rustpython_vm::object::foreign_dispatch::set(
             crate::foreign::foreign_getattr as *mut (),
             crate::foreign::foreign_call as *mut (),
             crate::foreign::is_foreign_object as *mut (),
             crate::foreign::wrap_foreign_object as *mut (),
         );
+        // Install native crash diagnostics (VEH logging faulting IP/module).
+        crate::crash_diag::install();
     }
 }
 

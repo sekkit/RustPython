@@ -144,10 +144,14 @@ pub unsafe extern "C" fn PySequence_SetSlice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Size(obj: *mut PyObject) -> isize {
-    with_vm(|vm| {
+    let r = with_vm(|vm| {
         let obj = unsafe { &*obj };
         obj.try_sequence(vm)?.length(vm)
-    })
+    });
+    if std::env::var("RUSTPYTHON_TRACE").is_ok() && r < 0 {
+        eprintln!("TRACE: PySequence_Size({:p}) = {}", obj, r);
+    }
+    r
 }
 
 #[unsafe(no_mangle)]

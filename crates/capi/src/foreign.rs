@@ -128,11 +128,21 @@ pub(crate) fn is_known_type_stub_addr(addr: usize) -> bool {
 /// are also foreign raw buffers but do not answer true here; the dispatch
 /// functions below handle them regardless of this check.
 pub unsafe fn is_foreign_object(obj: *mut PyObject) -> bool {
+    crate::crash_diag::install();
     if obj.is_null() {
         return false;
     }
+    // Exact answer first: every raw buffer allocated by _PyObject_New is
+    // registered in the objimpl foreign-object set.
+    if crate::objimpl::is_foreign_object(obj as *const u8) {
+        return true;
+    }
     let ty = unsafe { obj_type_ptr(obj) } as usize;
-    ty != 0 && is_known_type_stub_addr(ty)
+    if ty != 0 && is_known_type_stub_addr(ty) {
+        return true;
+    }
+    // Fallback heuristic for buffers allocated by other means.
+    !unsafe { crate::object::pytype::looks_like_native_object(obj) }
 }
 
 /// True when descriptor tables may be read from the type at `ty`. Dynamic

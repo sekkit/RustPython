@@ -19,6 +19,7 @@ pub mod ceval;
 pub mod codecs;
 pub mod complexobject;
 pub mod critical_section;
+pub mod crash_diag;
 pub mod descrobject;
 pub mod dictobject;
 pub mod floatobject;

@@ -129,15 +129,30 @@ pub unsafe extern "C" fn Py_TYPE(op: *mut PyObject) -> *const PyTypeObject {
     let ob_type = unsafe { *(op as *const usize).add(1) as *const PyTypeObject };
     // If it's a known stub address, return it directly.
     // Otherwise, create a stub for the real type (dynamic types).
-    if unsafe { crate::foreign::is_foreign_object(op) } {
+    if unsafe { crate::foreign::is_foreign_object(op) } || !unsafe { looks_like_native_object(op) }
+    {
         return ob_type;
     }
-    // For native RustPython objects, the ob_type at offset 8 is a Py<PyType>
-    // which IS a valid PyTypeObject pointer.  But we still need a stub for
-    // C-API callers, so create one if needed.
     let real_type = unsafe { (*op).class() };
     let stub_addr = get_or_create_stub(real_type);
     stub_addr as *const PyTypeObject
+}
+
+/// Heuristic: does `op` point to a genuine RustPython heap object?
+///
+/// Native objects always carry a `GcPrefix` immediately before the `PyInner`
+/// whose last field is a valid `'static` vtable reference. Foreign buffers
+/// allocated with plain malloc have arbitrary bytes there, so requiring a
+/// non-null, word-aligned "vtable" filters them out cheaply.
+pub(crate) unsafe fn looks_like_native_object(op: *mut PyObject) -> bool {
+    if op.is_null() {
+        return false;
+    }
+    const SIZEOF_GCPREFIX: usize = rustpython_vm::object::SIZEOF_GCPREFIX;
+    let vtable_slot =
+        unsafe { (op as *const usize).sub(SIZEOF_GCPREFIX / core::mem::size_of::<usize>()) };
+    let vtable = unsafe { *vtable_slot };
+    vtable >= 0x1000 && vtable % core::mem::size_of::<usize>() == 0
 }
 
 #[unsafe(no_mangle)]
