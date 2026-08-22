@@ -12,8 +12,9 @@ mod _suggestions {
         name: PyObjectRef,
         vm: &VirtualMachine,
     ) -> PyResult<PyObjectRef> {
+        // Reject list subclasses with a TypeError, matching CPython (gh-131936).
         let candidates = candidates
-            .downcast::<PyList>()
+            .downcast_exact::<PyList>(vm)
             .map_err(|_| vm.new_type_error("candidates must be a list"))?;
         let candidates = candidates.borrow_vec();
         Ok(
