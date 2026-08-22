@@ -6095,6 +6095,7 @@ class TestSignatureDefinitions(unittest.TestCase):
                 self.assertIsNotNone(getattr(cls, name).__text_signature__)
                 self.assertRaises(ValueError, inspect.signature, getattr(cls, name))
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; incompatible __text_signature__ coverage vs CPython's Argument Clinic baseline
     def test_builtins_have_signatures(self):
         no_signature = {'type', 'super', 'bytearray', 'bytes', 'dict', 'int', 'str'}
         # These need PEP 457 groups
@@ -6122,6 +6123,7 @@ class TestSignatureDefinitions(unittest.TestCase):
                 no_signature, unsupported_signature,
                 methods_no_signature, methods_unsupported_signature)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; CellType lacks __text_signature__ that CPython provides
     def test_types_module_has_signatures(self):
         unsupported_signature = {'CellType'}
         methods_no_signature = {
@@ -6133,6 +6135,7 @@ class TestSignatureDefinitions(unittest.TestCase):
                 unsupported_signature=unsupported_signature,
                 methods_no_signature=methods_no_signature)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; getsizeof/set_asyncgen_hooks expose signatures where CPython expects none
     def test_sys_module_has_signatures(self):
         no_signature = {'getsizeof', 'set_asyncgen_hooks'}
         no_signature |= {name for name in ['getobjects']
@@ -6153,6 +6156,7 @@ class TestSignatureDefinitions(unittest.TestCase):
         self._test_module_has_signatures(codecs,
                 methods_no_signature=methods_no_signature)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; OrderedDict/deque/UserString.maketrans signature coverage differs from CPython
     def test_collections_module_has_signatures(self):
         no_signature = {'OrderedDict', 'defaultdict'}
         unsupported_signature = {'deque'}
@@ -6176,6 +6180,7 @@ class TestSignatureDefinitions(unittest.TestCase):
         import errno
         self._test_module_has_signatures(errno)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; dump_traceback/dump_traceback_later/enable lack __text_signature__
     def test_faulthandler_module_has_signatures(self):
         import faulthandler
         unsupported_signature = {'dump_traceback', 'dump_traceback_later', 'enable', 'dump_c_stack'}
@@ -6183,10 +6188,12 @@ class TestSignatureDefinitions(unittest.TestCase):
                                   if hasattr(faulthandler, name)}
         self._test_module_has_signatures(faulthandler, unsupported_signature=unsupported_signature)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; functools.reduce exposes a generic signature where CPython raises ValueError
     def test_functools_module_has_signatures(self):
         unsupported_signature = {"reduce"}
         self._test_module_has_signatures(functools, unsupported_signature=unsupported_signature)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; gc.set_threshold exposes a signature where CPython expects none
     def test_gc_module_has_signatures(self):
         import gc
         no_signature = {'set_threshold'}
@@ -6216,6 +6223,7 @@ class TestSignatureDefinitions(unittest.TestCase):
         import operator
         self._test_module_has_signatures(operator)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; os chmod/utime/get_terminal_size/link signature coverage differs from CPython
     def test_os_module_has_signatures(self):
         unsupported_signature = {'chmod', 'utime'}
         unsupported_signature |= {name for name in
@@ -6264,6 +6272,7 @@ class TestSignatureDefinitions(unittest.TestCase):
         no_signature = {'RLock'}
         self._test_module_has_signatures(_thread, no_signature)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; time asctime/ctime/gmtime/localtime/strftime/strptime expose signatures where CPython expects none
     def test_time_module_has_signatures(self):
         no_signature = {
             'asctime', 'ctime', 'get_clock_info', 'gmtime', 'localtime',
@@ -6284,6 +6293,7 @@ class TestSignatureDefinitions(unittest.TestCase):
         import tracemalloc
         self._test_module_has_signatures(tracemalloc)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; typing.Text str-backed methods lack __text_signature__
     def test_typing_module_has_signatures(self):
         import typing
         no_signature = {'ParamSpec', 'ParamSpecArgs', 'ParamSpecKwargs',
@@ -6298,6 +6308,7 @@ class TestSignatureDefinitions(unittest.TestCase):
                 methods_no_signature=methods_no_signature,
                 methods_unsupported_signature=methods_unsupported_signature)
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; warnings warn/warn_explicit expose generic signatures where CPython raises ValueError
     def test_warnings_module_has_signatures(self):
         unsupported_signature = {'warn', 'warn_explicit'}
         self._test_module_has_signatures(warnings, unsupported_signature=unsupported_signature)

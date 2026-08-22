@@ -505,6 +505,7 @@ class TracebackCases(unittest.TestCase):
         self.assertEqual(stderr.splitlines(), expected)
 
     @cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; test only exercises CPython's _Py_FindSourceFile fallback, RustPython's source display doesn't depend on io.open
     def test_lost_io_open(self):
         # GH-142737: Display the traceback even if io.open is lost
         crasher = textwrap.dedent("""\
