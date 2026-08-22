@@ -416,6 +416,65 @@ const _: () = assert!(
 /// `ptr - SIZEOF_GCPREFIX`.
 pub const SIZEOF_GCPREFIX: usize = core::mem::size_of::<GcPrefix>();
 
+/// Optional C-API foreign object dispatch table.
+///
+/// When the `rustpython-capi` crate initializes, it sets these pointers to its
+/// `foreign_getattr` / `foreign_call` helpers.  The VM then checks them before
+/// the normal RustPython attribute/call dispatch: if the pointer is non-null
+/// and the object is recognised as a foreign (raw-buffer) object, the C helper
+/// is invoked instead of the Rust-native path.
+///
+/// All three fields are set atomically exactly once during capi init and never
+/// change after that, so `Ordering::Relaxed` is sufficient.
+pub mod foreign_dispatch {
+    use core::sync::atomic::{AtomicPtr, Ordering};
+
+    /// `fn(obj: *mut PyObject, name: *mut PyObject) -> *mut PyObject`
+    static GETATTR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+    /// `fn(obj: *mut PyObject, args: *mut PyObject, kwds: *mut PyObject) -> *mut PyObject`
+    static CALL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+    /// `fn(obj: *const PyObject) -> bool` — returns true when `obj` is a foreign raw buffer
+    static IS_FOREIGN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+    /// Set the three C-API foreign-dispatch callbacks.  Called once by the
+    /// capi crate during `Py_Initialize`.
+    pub fn set(
+        getattr: *mut (),
+        call: *mut (),
+        is_foreign: *mut (),
+    ) {
+        GETATTR.store(getattr, Ordering::Relaxed);
+        CALL.store(call, Ordering::Relaxed);
+        IS_FOREIGN.store(is_foreign, Ordering::Relaxed);
+    }
+
+    /// Returns the foreign-getattr function pointer, or NULL.
+    pub fn getattr_fn() -> Option<unsafe extern "C" fn(*mut super::PyObject, *mut super::PyObject) -> *mut super::PyObject> {
+        let ptr = GETATTR.load(Ordering::Relaxed);
+        if ptr.is_null() { None } else {
+            Some(unsafe { core::mem::transmute(ptr) })
+        }
+    }
+
+    /// Returns the foreign-call function pointer, or NULL.
+    pub fn call_fn() -> Option<unsafe extern "C" fn(*mut super::PyObject, *mut super::PyObject, *mut super::PyObject) -> *mut super::PyObject> {
+        let ptr = CALL.load(Ordering::Relaxed);
+        if ptr.is_null() { None } else {
+            Some(unsafe { core::mem::transmute(ptr) })
+        }
+    }
+
+    /// Check if `obj` is a foreign raw‑buffer object by calling the
+    /// C-API is‑foreign callback.  Returns `false` when the callback is
+    /// not installed (normal RustPython objects).
+    pub fn is_foreign(obj: *const super::PyObject) -> bool {
+        let ptr = IS_FOREIGN.load(Ordering::Relaxed);
+        if ptr.is_null() { return false; }
+        let f: unsafe extern "C" fn(*mut super::PyObject) -> bool = unsafe { core::mem::transmute(ptr) };
+        unsafe { f(obj as *mut super::PyObject) }
+    }
+}
+
 impl<T> PyInner<T> {
     /// Access the GcPrefix allocated before this PyInner.
     /// The GcPrefix is always present (allocated for every object).

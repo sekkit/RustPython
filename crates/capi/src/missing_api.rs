@@ -49,6 +49,11 @@ fn instantiate_exception_type(
 pub unsafe extern "C" fn _PyObject_New(
     typeobj: *mut crate::object::PyTypeObject,
 ) -> *mut crate::PyObject {
+    // Quick trace for debugging C extension object creation
+    if std::env::var("RUSTPYTHON_TRACE").is_ok() {
+        let basicsize = unsafe { *(typeobj as *const usize).add(4) };
+        eprintln!("TRACE: _PyObject_New typeobj={:p} basicsize={}", typeobj, basicsize);
+    }
     with_vm(|vm| -> rustpython_vm::PyResult<*mut crate::PyObject> {
         match crate::object::pytype::resolve_type_ptr(vm, typeobj) {
             Ok(ty) if ty.is_subtype(vm.ctx.exceptions.base_exception_type) => {

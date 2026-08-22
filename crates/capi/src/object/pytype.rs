@@ -124,12 +124,18 @@ define_py_check!(exact fn PyType_CheckExact, types.type_type);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_TYPE(op: *mut PyObject) -> *const PyTypeObject {
+    // Read ob_type directly from offset 8 (works for both native RustPython
+    // objects and foreign raw-buffer objects).
+    let ob_type = unsafe { *(op as *const usize).add(1) as *const PyTypeObject };
+    // If it's a known stub address, return it directly.
+    // Otherwise, create a stub for the real type (dynamic types).
+    if unsafe { crate::foreign::is_foreign_object(op) } {
+        return ob_type;
+    }
+    // For native RustPython objects, the ob_type at offset 8 is a Py<PyType>
+    // which IS a valid PyTypeObject pointer.  But we still need a stub for
+    // C-API callers, so create one if needed.
     let real_type = unsafe { (*op).class() };
-    let real_addr = real_type as *const _ as usize;
-    // Check if the type is an exported static type (already has a stub)
-    // or a dynamic type that needs a new stub
-    // For static types, the address is the real type (stub is at objectstatics)
-    // For dynamic types, we create a CPython-compatible stub
     let stub_addr = get_or_create_stub(real_type);
     stub_addr as *const PyTypeObject
 }

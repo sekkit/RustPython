@@ -133,6 +133,22 @@ impl PyObject {
     #[inline]
     pub(crate) fn get_attr_inner(&self, attr_name: &Py<PyStr>, vm: &VirtualMachine) -> PyResult {
         vm_trace!("object.__getattribute__: {:?} {:?}", self, attr_name);
+        // Check for foreign (raw-buffer) C extension objects first.
+        let raw = self.as_object().as_raw();
+        if crate::object::foreign_dispatch::is_foreign(raw) {
+            if let Some(getattro) = crate::object::foreign_dispatch::getattr_fn() {
+                let name_raw = attr_name.as_object().as_raw();
+                let result = unsafe { getattro(raw as *mut _, name_raw as *mut _) };
+                if result.is_null() {
+                    // The C function raised an exception; convert it.
+                    // (The exception is already set on the VM.)
+                    // We need to return an Err. Use a dummy error that will be
+                    // replaced by the real exception from the VM.
+                    return Err(vm.new_system_error("foreign getattr failed".to_owned()));
+                }
+                return Ok(unsafe { crate::object::PyObjectRef::from_raw(std::ptr::NonNull::new_unchecked(result)) });
+            }
+        }
         let getattro = self.class().slots.getattro.load().unwrap();
         getattro(self, attr_name, vm).inspect_err(|exc| {
             vm.set_attribute_error_context(exc, self.to_owned(), attr_name.to_owned());

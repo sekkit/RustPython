@@ -28,6 +28,13 @@ impl PyObject {
 
     /// PyObject_Call
     pub fn call_with_args(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+        // Check for foreign (raw-buffer) C extension objects first.
+        let raw = self.as_object().as_raw();
+        if crate::object::foreign_dispatch::is_foreign(raw) {
+            return Err(vm.new_type_error(
+                "cannot call foreign C extension object (not yet wired)".to_owned()
+            ));
+        }
         let Some(callable) = self.to_callable() else {
             return Err(
                 vm.new_type_error(format!("'{}' object is not callable", self.class().name()))
