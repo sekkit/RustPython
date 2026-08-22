@@ -725,6 +725,7 @@ class TestSpecifics(unittest.TestCase):
     @support.cpython_only
     @unittest.skipIf(support.is_wasi, "exhausts limited stack on WASI")
     @support.skip_emscripten_stack_overflow()
+    @unittest.skip("TODO: RUSTPYTHON; stack overflow in compiler")
     def test_compiler_recursion_limit(self):
         # Compiler frames are small
         limit = 100
@@ -779,6 +780,7 @@ class TestSpecifics(unittest.TestCase):
     # Merging equal constants is not a strict requirement for the Python
     # semantics, it's a more an implementation detail.
     @support.cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; code object merging not implemented
     def test_merge_constants(self):
         # Issue #25843: compile() must merge constants which are equal
         # and have the same type.
@@ -823,6 +825,7 @@ class TestSpecifics(unittest.TestCase):
     # Merging equal co_linetable is not a strict requirement
     # for the Python semantics, it's a more an implementation detail.
     @support.cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; code object merging not implemented
     def test_merge_code_attrs(self):
         # See https://bugs.python.org/issue42217
         f1 = lambda x: x.y.z

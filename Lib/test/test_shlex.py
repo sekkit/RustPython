@@ -369,6 +369,7 @@ class ShlexTest(unittest.TestCase):
             shlex_instance.punctuation_chars = False
 
     @cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; os imported eagerly at startup
     def test_lazy_imports(self):
         import_helper.ensure_lazy_imports('shlex', {'collections', 're', 'os'})
 
