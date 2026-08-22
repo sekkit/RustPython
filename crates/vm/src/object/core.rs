@@ -1,4 +1,4 @@
-﻿//! Essential types for object models
+//! Essential types for object models
 //!
 //! +-------------------------+--------------+-----------------------+
 //! |       Management        |       Typed      |      Untyped      |
@@ -414,6 +414,22 @@ pub(super) struct PyInner<T> {
     pub(super) payload: T,
 }
 pub(crate) const SIZEOF_PYOBJECT_HEAD: usize = core::mem::size_of::<PyInner<()>>();
+
+impl<T> PyInner<T> {
+    /// Access the GcPrefix allocated before this PyInner.
+    /// The GcPrefix is always present (allocated for every object).
+    #[inline(always)]
+    fn gc_prefix(&self) -> &GcPrefix {
+        let gc_size = core::mem::size_of::<GcPrefix>();
+        unsafe { &*((self as *const Self as *const u8).sub(gc_size) as *const GcPrefix) }
+    }
+    /// Access the mutable GcPrefix allocated before this PyInner.
+    #[inline(always)]
+    fn gc_prefix_mut(&mut self) -> &mut GcPrefix {
+        let gc_size = core::mem::size_of::<GcPrefix>();
+        unsafe { &mut *((self as *mut Self as *mut u8).sub(gc_size) as *mut GcPrefix) }
+    }
+}
 
 impl<T> PyInner<T> {
     /// Read type flags and member_count via raw pointers to avoid Stacked Borrows
