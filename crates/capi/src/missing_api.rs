@@ -60,6 +60,12 @@ pub unsafe extern "C" fn _PyObject_New(
                 let basicsize = unsafe { *(typeobj as *const usize).add(4) };
                 // The header itself must always fit.
                 let size = basicsize.max(rustpython_vm::object::SIZEOF_PYOBJECT_HEAD);
+                // Arm the NULL-contract diagnostic window when a C extension
+                // allocates a large object (e.g. regex PatternObject, 352B).
+                if size >= 64 {
+                    crate::crash_diag::NULL_WINDOW
+                        .store(1, core::sync::atomic::Ordering::Relaxed);
+                }
                 Ok(unsafe { raw_object_alloc(typeobj, size) })
             }
         }

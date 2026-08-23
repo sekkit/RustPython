@@ -59,7 +59,24 @@ impl FfiResult<*mut PyObject> for PyObjectRef {
 impl FfiResult for *mut PyObject {
     const ERR_VALUE: *mut PyObject = core::ptr::null_mut();
 
-    fn into_output(self, _vm: &VirtualMachine) -> *mut PyObject {
+    fn into_output(self, vm: &VirtualMachine) -> *mut PyObject {
+        // Diagnostic sweep: a NULL result with no exception set violates
+        // CPython's API contract; C extensions then dereference the NULL.
+        if self.is_null()
+            && crate::crash_diag::NULL_WINDOW.load(core::sync::atomic::Ordering::Relaxed) != 0
+        {
+            let exc = vm.take_raised_exception();
+            let note = match &exc {
+                Some(_) => "with-exception",
+                None => "NO-EXCEPTION",
+            };
+            eprintln!(
+                "NULL-RESULT({}): backtrace follows",
+                note
+            );
+            // Re-set the exception so behaviour is unchanged.
+            vm.set_exception(exc);
+        }
         self
     }
 }

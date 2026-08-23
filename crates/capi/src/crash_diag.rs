@@ -99,6 +99,12 @@ unsafe extern "system" {
 
 static SYM_READY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+/// When non-zero, `FfiResult::into_output` logs every NULL pointer result
+/// that lacks a pending exception (a CPython contract violation class).
+/// Armed by `_PyObject_New` when a C extension allocates a large object,
+/// disarmed by the next successful Python-level call boundary.
+pub static NULL_WINDOW: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
 /// Best-effort symbol lookup for an instruction address. Returns an empty
 /// string when dbghelp is unavailable or no symbol matches.
 fn symbol_for_ip(ip: usize) -> String {
