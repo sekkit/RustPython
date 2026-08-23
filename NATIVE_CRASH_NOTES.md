@@ -126,3 +126,14 @@ IMPLEMENTATION PLAN (multi-round):
    slice-based ops. Interning/latin1 fast paths reworked.
 3. Hash computed lazily into hash field as today.
 Estimate: rounds 286-292 for core migration, then test-suite shakedown.
+Step 2 scoping (this round): identified exact wiring points for inline
+bytes without breaking readers - DUAL STORAGE transition:
+1. Context::new_str / intern paths know byte_len pre-allocation; route
+   into_ref -> new_ref -> new_with_extra(extra = len+1).
+2. After alloc, memcpy WTF-8 into tail (abs+40) and record byte_len.
+3. Keep existing StrData field temporarily (readers unchanged); regex
+   macros read the tail directly = real data => AV resolved NOW.
+4. Later rounds migrate readers to tail slices, then drop StrData.
+Blocker found while scoping: new_ref signature lacks extra passthrough;
+needs PyPayload::into_ref_with_extra or a Context::new_str_inline that
+bypasses freelist. Next session implements that bypass (est 1 round).
