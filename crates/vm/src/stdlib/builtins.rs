@@ -1,7 +1,7 @@
 //! Builtin function definitions.
 //!
 //! Implements the list of [builtin Python functions](https://docs.python.org/3/library/builtins.html).
-use crate::{Py, VirtualMachine, builtins::PyModule, class::PyClassImpl};
+use crate::{Py, VirtualMachine, builtins::{PyInt, PyModule}, class::PyClassImpl};
 pub(crate) use builtins::{DOC, module_def};
 pub use builtins::{ascii, print, reversed};
 
@@ -14,7 +14,7 @@ mod builtins {
             PyUtf8StrRef,
             enumerate::PyReverseSequenceIterator,
             function::{PyCell, PyCellRef, PyFunction},
-            int::PyIntRef,
+            int::{PyInt, PyIntRef},
             iter::PyCallableIterator,
             list::{PyList, SortOptions},
         },
@@ -1210,6 +1210,44 @@ mod builtins {
                 ),
             _ => (),
         });
+
+        // Fast path: sum of i64 integers. Bypasses the generic vm._add
+        // dispatch per element — matches CPython's int-only fast path.
+        // Only for exact ints (not bool, which is a subclass).
+        let is_exact_int = sum.downcast_ref_if_exact::<PyInt>(vm).is_some();
+        if is_exact_int {
+            use num_traits::ToPrimitive;
+            let mut acc: i128 = sum.downcast_ref::<PyInt>().unwrap().as_bigint().to_i64().unwrap_or(0) as i128;
+            let mut overflow = false;
+            for item in iterable.iter(vm)? {
+                let item = item?;
+                if !overflow {
+                    // Only exact ints enter the fast path (not bool subclasses)
+                    if item.downcast_ref_if_exact::<PyInt>(vm).is_some() {
+                        if let Some(int_val) = item.downcast_ref::<PyInt>() {
+                            if let Some(v) = int_val.as_bigint().to_i64() {
+                                match acc.checked_add(v as i128) {
+                                    Some(result) => {
+                                        if result >= i64::MIN as i128 && result <= i64::MAX as i128 {
+                                            acc = result;
+                                            continue;
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                        }
+                    }
+                    overflow = true;
+                    sum = vm.ctx.new_int(acc as i64).into();
+                }
+                sum = vm._add(&sum, &item)?;
+            }
+            if !overflow {
+                return Ok(vm.ctx.new_int(acc as i64).into());
+            }
+            return Ok(sum);
+        }
 
         for item in iterable.iter(vm)? {
             sum = vm._add(&sum, &*item?)?;
