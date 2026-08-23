@@ -505,25 +505,12 @@ impl FrameObject {
                 .first_line_number
                 .map_or(1, |n| n.get());
         }
-        // For executing frames (on the TLS chain), use prev_line which is
-        // updated at each bytecode instruction *before* the instruction
-        // runs. This gives the correct line even when observed mid-CALL
-        // (where lasti has already advanced past the CALL instruction).
-        let live = self.find_live_source_iframe();
-        if !live.is_null() {
-            // Read live prev_line. Use read_volatile to bypass LLVM noalias
-            // on the &mut InterpreterFrame borrow in with_iframe.
-            let prev = unsafe {
-                let field_ptr = core::ptr::addr_of!((*live).prev_line);
-                core::ptr::read_volatile(field_ptr as *const u32)
-            };
-            if prev > 0 {
-                return prev as usize;
-            }
-        }
-        // For returned frames, use lasti-based location lookup. This is
-        // correct for exception tracebacks where prev_line may have been
-        // updated by cleanup instructions after the exception.
+        // Compute the line lazily from the instruction position (CPython
+        // 3.12+ semantics). lasti points PAST the instruction being executed
+        // (advanced before execution), so locations[lasti - 1] is the
+        // currently-executing instruction's line. This is also correct when
+        // observed mid-CALL from a callee: lasti has advanced past CALL, so
+        // the reported line is the call site — matching CPython.
         self.current_location().line.get()
     }
 

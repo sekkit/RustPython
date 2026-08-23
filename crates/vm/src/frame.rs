@@ -3023,14 +3023,15 @@ impl ExecutingFrame<'_> {
             // updating here first would defeat LINE de-duplication).
             // Other instrumented opcodes update prev_line via
             // execute_instrumented.
-            if !matches!(
-                op.into(),
-                Opcode::Resume | Opcode::ExtendedArg | Opcode::InstrumentedLine
-            ) && !op.is_instrumented()
-                && let Some((loc, _)) = self.code.locations.get(idx)
-            {
-                self.prev_line.set(loc.line.get() as u32);
-            }
+            // prev_line is NOT eagerly updated here anymore: f_lineno()
+            // computes the line lazily from lasti (matching CPython 3.12+,
+            // which derives f_lineno from the instruction position instead
+            // of maintaining a per-instruction shadow field). Removing this
+            // per-instruction Opcode conversion + locations table lookup +
+            // Cell write saves measurable dispatch overhead on every
+            // bytecode executed.
+            // prev_line updates happen only under active tracing (LINE
+            // event de-duplication below and in instrumented handlers).
 
             if vm.use_tracing.get() {
                 // Fire 'opcode' trace event for sys.settrace when f_trace_opcodes
