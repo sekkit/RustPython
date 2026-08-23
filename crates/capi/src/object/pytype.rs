@@ -30,7 +30,16 @@ const STUB_SETATTRO_OFFSET: usize = SLOTS_BASE + core::mem::offset_of!(PyTypeSlo
 
 /// A global cache mapping real type addresses to CPython-compatible type stubs.
 /// Each stub is a 256-byte allocation with the CPython PyTypeObject layout.
-static TYPE_STUB_CACHE: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
+///
+/// Heap-allocated via OnceLock rather than a plain static: the crash
+/// forensics traced an AV inside `.lock()` on first use, implying the
+/// in-.data Mutex was stomped by a neighbouring startup write. Relocating
+/// to the heap removes it from whatever static-region overflow is at play.
+fn type_stub_cache() -> &'static Mutex<Option<HashMap<usize, usize>>> {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<Mutex<Option<HashMap<usize, usize>>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(None))
+}
 
 /// Allocate a 256-byte stub with the CPython PyTypeObject layout.
 /// Fields are filled from the real RustPython type object.
@@ -94,7 +103,7 @@ fn alloc_type_stub(real_type: *const PyTypeObject) -> usize {
 /// Get or create a CPython-compatible type stub for the given real type.
 fn get_or_create_stub(real_type: *const PyTypeObject) -> usize {
     let real_addr = real_type as *const _ as usize;
-    let mut cache = TYPE_STUB_CACHE.lock().unwrap();
+    let mut cache = type_stub_cache().lock().unwrap();
     if let Some(ref map) = *cache {
         if let Some(&stub) = map.get(&real_addr) {
             return stub;
@@ -262,7 +271,7 @@ pub(crate) fn resolve_dynamic_stub_addr(stub_addr: usize) -> Option<usize> {
         eprintln!("STUBCACHE enter addr={:#x}", stub_addr);
     }
     let result = {
-        let cache = TYPE_STUB_CACHE.lock().unwrap();
+        let cache = type_stub_cache().lock().unwrap();
         if let Some(ref map) = *cache {
             if trace {
                 eprintln!("STUBCACHE map_len={}", map.len());
