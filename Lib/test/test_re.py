@@ -2909,7 +2909,6 @@ class ImplementationTest(unittest.TestCase):
     """
 
     @cpython_only
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; Pattern type immutability not enforced
     def test_immutable(self):
         # bpo-43908: check that re types are immutable
         with self.assertRaises(TypeError):

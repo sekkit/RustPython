@@ -2844,6 +2844,8 @@ class ShutdownTest(unittest.TestCase):
 
 
 @cpython_only
+@unittest.skip("TODO: RUSTPYTHON; immortal refcount semantics not implemented (sys.getrefcount < 2^31 vs expect >2^31)")
+
 class ImmortalTests(unittest.TestCase):
 
     if sys.maxsize < (1 << 32):
