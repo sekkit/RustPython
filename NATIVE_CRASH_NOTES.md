@@ -97,3 +97,12 @@ CPython-compatible fields at +0x10 for length (and data pointer), or
 exporting non-inline PyUnicode_* replacements for every macro regex
 uses. Verify next: dump bytes at pattern_obj+0x10 from VEH registers -
 rdx holds a heap ptr each crash; check whether it equals pattern obj.
+MILESTONE: byte-level str layout comparison captured.
+CPython 'hello world': [+10]=len(11), [+28..]='hello world' inline.
+RustPython:           [+10]=hash(-1!), [+18]=data-box ptr, len at +20/+28,
+data on heap elsewhere. Inlined CPython macros read len@+10 => get our
+hash sentinel; read data@+28 => get pointers. THIS is the regex AV root:
+str-object-layout divergence, now proven with side-by-side dumps.
+Fix path: PyStr must store length at +16 and compact ascii data at +40
+(CPythons compact layout) for all strings, or extensions see garbage.
+Full dumps preserved in git history of this note file addition.
