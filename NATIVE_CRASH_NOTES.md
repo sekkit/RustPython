@@ -113,3 +113,16 @@ shifts). CPython expects length at absolute +16. Delta = +16..24 shift.
 FIX: static-assert offset_of!(PyStr-ish view from obj base, length)==16;
 reorder payload (length first) and/or account PyInner size so absolute
 offset matches; then inline-data question remains for READ_CHAR.
+Round 285 replay: crash persists - confirms inline-data@+40 is THE last
+blocker. Length+state parity insufficient; regex computes
+PyUnicode_DATA = obj+40 for compact strings and reads our heap-boxed
+storage there.
+IMPLEMENTATION PLAN (multi-round):
+1. PyStr layout: {length@p+0, hash@p+8, state@p+16} payload = 24B;
+   inline WTF-8 bytes begin abs+40. Allocation: 40+len+1 via oversized
+   PyInner alloc (reuse extra-bytes hook planned for _PyObject_New).
+2. StrData removed from object; kind lives in state bits; bytes accessed
+   via raw slice from data ptr. All ~36 call sites in str.rs migrate to
+   slice-based ops. Interning/latin1 fast paths reworked.
+3. Hash computed lazily into hash field as today.
+Estimate: rounds 286-292 for core migration, then test-suite shakedown.
