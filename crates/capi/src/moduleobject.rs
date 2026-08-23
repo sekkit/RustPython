@@ -7,7 +7,7 @@ use alloc::ffi::CString;
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::ptr::NonNull;
 use std::cell::RefCell;
-use rustpython_vm::builtins::{PyModule, PyStr, PyTuple, PyType};
+use rustpython_vm::builtins::{PyBytes, PyModule, PyStr, PyTuple, PyType};
 use rustpython_vm::{AsObject, PyObjectRef, PyResult, VirtualMachine};
 
 /// Thread-local cache for PyModule_GetName's NULL-terminated return value.
@@ -351,6 +351,21 @@ pub unsafe extern "C" fn _PyModule_Create(def: *mut PyModuleDef) -> *mut PyObjec
             def as *const PyModuleDef as usize,
         )?;
 
+        // Allocate per-module state buffer if m_size > 0 (CPython contract
+        // for PyModule_GetState).
+        if def.m_size > 0 {
+            let state_buf = vec![0u8; def.m_size as usize];
+            module
+                .downcast_ref::<PyModule>()
+                .ok_or_else(|| vm.new_system_error("module object is not a module"))?
+                .dict()
+                .set_item(
+                    CAPI_STATE_KEY,
+                    vm.ctx.new_bytes(state_buf).into(),
+                    vm,
+                )?;
+        }
+
         Ok(module)
     })
 }
@@ -358,6 +373,8 @@ pub unsafe extern "C" fn _PyModule_Create(def: *mut PyModuleDef) -> *mut PyObjec
 /// Key under which the C-API stores PEP 793 slot state (exec function and
 /// token) on the module's __dict__: RustPython has no per-module C state slot.
 const CAPI_SLOTS_KEY: &str = "\0_rustpython_capi_slots";
+/// Key for the per-module C state buffer allocated via PyModuleDef.m_size.
+const CAPI_STATE_KEY: &str = "\0_rustpython_capi_state";
 
 fn store_module_slots(
     vm: &VirtualMachine,
@@ -677,8 +694,24 @@ pub unsafe extern "C" fn PyModule_GetDef(module: *mut PyObject) -> *mut PyModule
 /// PyModule_GetState: per-module C state pointer. RustPython does not allocate
 /// C-visible module state; return NULL like CPython does when there is none.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyModule_GetState(_module: *mut PyObject) -> *mut c_void {
-    core::ptr::null_mut()
+pub unsafe extern "C" fn PyModule_GetState(module: *mut PyObject) -> *mut c_void {
+    with_vm(|vm| {
+        let module = unsafe { &*module };
+        let dict = module
+            .downcast_ref::<PyModule>()
+            .ok_or_else(|| vm.new_system_error("PyModule_GetState: argument is not a module"))?
+            .dict();
+        let key = vm.ctx.new_str(CAPI_STATE_KEY);
+        match dict.get_item_opt(&*key, vm) {
+            Ok(Some(val)) => {
+                let bytes = val
+                    .downcast_ref::<PyBytes>()
+                    .ok_or_else(|| vm.new_system_error("PyModule_GetState: state is not bytes"))?;
+                Ok(bytes.as_bytes().as_ptr() as *mut c_void)
+            }
+            _ => Ok(core::ptr::null_mut()),
+        }
+    })
 }
 
 /// PyModule_AddObjectRef: add a value to the module (CPython sets it as an
