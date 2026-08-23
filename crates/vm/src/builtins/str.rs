@@ -100,28 +100,31 @@ pub struct PyStr {
     data: StrData,
 }
 
-/// Bit positions in [`PyStr::state`], matching the subset of CPython's
-/// `PyASCIIObject.state` we track. `kind` spans bits 3-4 (2 bits).
+/// Bit positions in [`PyStr::state`], matching CPython's
+/// `PyASCIIObject.state` packing exactly (interned:2, kind:3, compact:1,
+/// ascii:1, ready:1) so inlined extension macros (`PyUnicode_IS_ASCII`,
+/// `PyUnicode_IS_COMPACT`, `PyUnicode_KIND`) read correct values.
 mod pystr_state {
-    pub(super) const COMPACT_BIT: u32 = 1 << 0;
-    pub(super) const ASCII_BIT: u32 = 1 << 1;
-    pub(super) const READY_BIT: u32 = 1 << 2;
-    pub(super) const KIND_SHIFT: u32 = 3;
-    pub(super) const KIND_MASK: u32 = 0b11 << KIND_SHIFT;
+    pub(super) const INTERNED_SHIFT: u32 = 0;
+    pub(super) const KIND_SHIFT: u32 = 2;
+    pub(super) const COMPACT_BIT: u32 = 1 << 5;
+    pub(super) const ASCII_BIT: u32 = 1 << 6;
+    pub(super) const READY_BIT: u32 = 1 << 7;
 }
 
 impl PyStr {
     /// Build the CPython-compatible `state` bitfield from a [`StrKind`].
     fn state_from_kind(kind: StrKind) -> u32 {
         use pystr_state::*;
-        // RustPython stores WTF-8 bytes; CPython kind maps to element width.
-        // Internally we are 1-byte (UTF-8/WTF-8) so kind is always 1 for ascii
-        // and utf8; the `ascii` bit distinguishes pure-ASCII.
-        let (ascii, kind) = match kind {
-            StrKind::Ascii => (true, 1),
-            StrKind::Utf8 | StrKind::Wtf8 => (false, 1),
-        };
-        READY_BIT | (if ascii { ASCII_BIT } else { 0 }) | (kind << KIND_SHIFT)
+        // RustPython stores WTF-8 bytes; element width is 1 (kind == 1),
+        // strings are always "compact" from the macro perspective, and the
+        // `ascii` bit distinguishes pure-ASCII storage.
+        let ascii = matches!(kind, StrKind::Ascii);
+        let kind: u32 = 1;
+        READY_BIT
+            | COMPACT_BIT
+            | (if ascii { ASCII_BIT } else { 0 })
+            | (kind << KIND_SHIFT)
     }
 }
 
