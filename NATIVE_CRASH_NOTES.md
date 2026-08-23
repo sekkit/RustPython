@@ -106,3 +106,10 @@ str-object-layout divergence, now proven with side-by-side dumps.
 Fix path: PyStr must store length at +16 and compact ascii data at +40
 (CPythons compact layout) for all strings, or extensions see garbage.
 Full dumps preserved in git history of this note file addition.
+LAYOUT SCAN: 'hello world' RustPython qwords: [+10]=-1(hash), [+18]=box,
+[+20]=0xb, [+28]=0xb => length sits at +32/+40 ABSOLUTE (payload starts
++16 AFTER PyInner header; pyclass ordering puts hash first or GC prefix
+shifts). CPython expects length at absolute +16. Delta = +16..24 shift.
+FIX: static-assert offset_of!(PyStr-ish view from obj base, length)==16;
+reorder payload (length first) and/or account PyInner size so absolute
+offset matches; then inline-data question remains for READ_CHAR.
