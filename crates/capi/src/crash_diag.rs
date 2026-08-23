@@ -312,12 +312,13 @@ unsafe extern "system" fn veh_handler(info: *mut EXCEPTION_POINTERS) -> i32 {
     };
 
     eprint_diag(&format!(
-        "NATIVE-CRASH: access violation ({}) of {:#x} at IP {:#x} in {} {} | rcx={:#x} rdx={:#x} rax={:#x} r8={:#x}",
+        "NATIVE-CRASH: access violation ({}) of {:#x} at IP {:#x} in {} {} | fn='{}' rcx={:#x} rdx={:#x} rax={:#x} r8={:#x}",
         kind,
         accessed,
         ip,
         module_info,
         symbol_for_ip(ip),
+        rustpython_vm::object::foreign_dispatch::current_fn_name(),
         unsafe { (*(*info).context_record).rcx },
         unsafe { (*(*info).context_record).rdx },
         unsafe { (*(*info).context_record).rax },

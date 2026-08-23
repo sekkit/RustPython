@@ -471,6 +471,26 @@ pub mod foreign_dispatch {
         }
     }
 
+    /// Name of the currently-executing C-API function (ptr+len into leaked
+    /// static memory), set by the dispatch wrappers before each invocation.
+    static FN_PTR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+    static FN_LEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    pub fn set_current_fn_name(ptr: usize, len: usize) {
+        FN_PTR.store(ptr as *mut (), Ordering::Relaxed);
+        FN_LEN.store(len, Ordering::Relaxed);
+    }
+
+    pub fn current_fn_name() -> String {
+        let p = FN_PTR.load(Ordering::Acquire) as usize;
+        let l = FN_LEN.load(Ordering::Acquire);
+        if p == 0 || l == 0 || l > 4096 {
+            return String::new();
+        }
+        let slice = unsafe { core::slice::from_raw_parts(p as *const u8, l) };
+        String::from_utf8_lossy(slice).into_owned()
+    }
+
     /// Returns the foreign-getattr function pointer, or NULL.
     pub fn getattr_fn() -> Option<unsafe extern "C" fn(*mut super::PyObject, *mut super::PyObject) -> *mut super::PyObject> {
         let ptr = GETATTR.load(Ordering::Relaxed);
