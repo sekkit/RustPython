@@ -51,3 +51,11 @@ taking the is_foreign_object true branch (vtable heuristic false
 positive) get libc::free()d while allocated by Rust's global allocator
 => heap corruption => delayed AV at next allocation/lock.
 FIX NEXT: restrict is_foreign_object to registry-only; drop heuristic.
+Update: registry-only is_foreign_object (heuristic removed as unsafe on
+free path) - crash unchanged. ALL environmental/allocator theories now
+exhausted. Remaining suspect: re_compile writes through a pointer we
+sized with tp_basicsize from the STUB, but the stub's basicsize field
+may be stale/wrong for the extension type - verify by dumping
+tp_basicsize read in _PyObject_New vs PatternObject real size, and
+check whether PyType_Ready (currently no-op!) is expected to finalize
+basicsize. CPython extensions rely on PyType_Ready having run.
