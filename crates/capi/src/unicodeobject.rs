@@ -74,22 +74,28 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
     obj: *mut PyObject,
     size: *mut isize,
 ) -> *const c_char {
-    with_vm(|vm| {
+    with_vm(|vm| -> rustpython_vm::PyResult<*const c_char> {
         let unicode = unsafe { &*obj }.try_downcast_ref::<PyStr>(vm)?;
 
         let str = unicode.to_str().ok_or_else(|| {
             vm.new_system_error("PyUnicode_AsUTF8AndSize only supports UTF-8 or ASCII strings")
         })?;
 
-        if size.is_null() {
-            // We do not support null size arguments because the returned string is not NULL terminated.
-            return Err(
-                vm.new_system_error("size argument to PyUnicode_AsUTF8AndSize cannot be null")
-            );
-        }
-
-        unsafe { *size = str.len() as isize };
-        Ok(str.as_ptr())
+        // CPython contract (unicodeobject.h): `size` MAY be NULL — the caller
+        // then opts out of the length write. The returned buffer is still
+        // NUL-terminated, so route through the thread-local CString cache.
+        let cstr = alloc::ffi::CString::new(str).map_err(|_| {
+            vm.new_system_error("PyUnicode_AsUTF8AndSize: string contains null byte")
+        })?;
+        let ptr = UNICODE_UTF8_CACHE.try_with(|cache| {
+            let len = cstr.as_bytes().len();
+            *cache.borrow_mut() = cstr;
+            if !size.is_null() {
+                unsafe { *size = len as isize };
+            }
+            cache.borrow().as_ptr()
+        }).unwrap_or(core::ptr::null());
+        Ok(ptr)
     })
 }
 
