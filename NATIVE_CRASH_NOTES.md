@@ -190,3 +190,39 @@ char_len/char_index_to_byte/char_range_to_bytes/byte_to_char_index/
 nth_char/clone_to_data) - compiles in rustpython-common.
 NEXT: (a) add From<StrData> to carry through new_str; (b) switch
 new_str signature; (c) strip PyStr to 24B; (d) migrate 36 call sites.
+## Round 2 Findings: Atomic Refcount Cost + Cumulative Performance Summary
+
+### Experiment: threading atomics cost ~10%
+Built --no-default-features (no threading => non-atomic refcounts via
+Radium) and compared: hot_loop 0.377s -> 0.348s, all micro-ops ~10%
+faster. This is the free-threading tax: RustPython default-builds with
+threading so every incref/decref is lock xadd. CPython free-threaded
+pays the same class of cost (~30% vs GIL build).
+
+Options: (a) accept 10%, (b) biased/deferred refcounting (CPython
+3.13t approach, big project), (c) make threading opt-in.
+
+### Cumulative performance gains this optimization series
+| Benchmark | Baseline | Now | Speedup | Gap vs CPython |
+|---|---|---|---|---|
+| hot_loop 2M | 0.449s | 0.377s | 1.19x | 3.7x -> 3.1x |
+| for_loop_1k | 44.9us | 25.0us | **1.8x** | 4.5x -> 3.0x |
+| str_split 22KB | 680us | 259us | **2.6x** | 6.3x -> 2.4x |
+| list_compr_1k | 162us | 118us | 1.4x | 4.2x -> 3.1x |
+| sum(list 50k) | 3554us | 155us* | **22.9x** | 21x -> 4.7x |
+(*with-threading build, fast path)
+Plus no-threading variant reaches for_loop 22.5us / gap 2.7x.
+
+### Optimizations landed
+1. lazy f_lineno (per-instruction bookkeeping removed)
+2. mimalloc global allocator
+3. sum() exact-int fast path (i128 accumulator)
+4. inline buffer at CPython compact-data offset +40
+5. PyType_Ready sets ob_type; PyModule_GetState state buffer;
+   _PyObject_GC_New GC-head space (correctness fixes enabling PYDs)
+
+### Next highest-value targets
+1. Superinstructions: fuse FOR_ITER+STORE_FAST etc (Phase 1 roadmap)
+2. Biased refcounting to reclaim the threading tax under default build
+3. LOAD_ATTR cache hit-rate audit (specialize_load_attr exists; verify
+   it fires on hot paths via counters dump)
