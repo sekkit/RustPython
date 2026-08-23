@@ -905,6 +905,14 @@ pub unsafe extern "C" fn rp_va_parse_tuple(
         let tuple = args
             .try_downcast_ref::<PyTuple>(vm)
             .map_err(|_| vm.new_system_error("PyArg_ParseTuple() argument 1 must be a tuple"))?;
+        if std::env::var("RUSTPYTHON_TRACE").is_ok() {
+            eprintln!(
+                "PARSE-TUPLE: fmt={:?} nslots={} nargs={}",
+                core::str::from_utf8(format).unwrap_or("?"),
+                nslots,
+                tuple.as_slice().len()
+            );
+        }
         let mut cursor = Cursor::new(tuple.as_slice().to_vec());
         let mut slots = VaSlots::new(unsafe { core::slice::from_raw_parts(slots, nslots as usize) });
         parse_format(vm, &mut cursor, format, &mut slots).map(|_| true)

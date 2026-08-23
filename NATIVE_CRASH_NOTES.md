@@ -77,3 +77,12 @@ Next diagnostic: log format string + nslots in rp_va_parse_tuple under
 RUSTPYTHON_TRACE during compile call; compare against expected 11-arg
 signature; also check whether _regex.compile def even uses KEYWORDS
 (flag arm coverage from fn='' earlier suggests plain VARARGS).
+DECISIVE: fmt="OnOOOOOnOnn:re_compile" nslots=11 nargs=11 - parse
+SUCCEEDS. Crash is post-parse inside re_compile body: some capi call it
+makes receives NULL first arg (rcx=0). Parse-converted slots are valid
+raw ptrs (O) or ints (n). Suspects within re_compile flow:
+PyDict_GetItem/Next on the dicts, PyUnicode_* on pattern 'hello',
+PyList ops on code list, or PyObject_New'd PatternObject field init
+reading a NULL it got from one of those. Next: entry-log PyDict_*
+family + PyUnicode_AsUTF8AndSize callers under window; first NULL-arg
+log before VEH names the callee.
