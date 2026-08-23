@@ -97,6 +97,12 @@ pub struct PyStr {
     hash: PyAtomic<hash::PyHash>,
     /// `PyASCIIObject.state` bitfield: compact/ascii/ready/kind.
     state: u32,
+    /// Padding to align `inline` to the CPython compact-data offset (+40).
+    pad: u32,
+    /// Inline buffer at CPython's compact-data offset (+40 absolute).
+    /// The first 8 bytes of the string are mirrored here so extensions'
+    /// inlined `PyUnicode_DATA` macro reads real character data.
+    inline: [u8; 8],
     data: StrData,
 }
 
@@ -264,6 +270,14 @@ impl From<StrData> for PyStr {
             length,
             hash: Radium::new(hash::SENTINEL),
             state,
+            pad: 0,
+            inline: {
+                let mut buf = [0u8; 8];
+                let bytes = data.as_wtf8().as_bytes();
+                let n = bytes.len().min(8);
+                buf[..n].copy_from_slice(&bytes[..n]);
+                buf
+            },
             data,
         }
     }
@@ -296,6 +310,8 @@ impl Default for PyStr {
             length: 0,
             hash: Radium::new(hash::SENTINEL),
             state: Self::state_from_kind(data.kind()),
+            pad: 0,
+            inline: [0u8; 8],
             data,
         }
     }
