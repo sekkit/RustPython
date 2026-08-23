@@ -131,6 +131,136 @@ pub struct StrData {
     index: Wtf8IndexSlot,
 }
 
+/// A borrowed view of a string's WTF-8 data, used by the header-only
+/// [`PyStr`] layout where the data lives inline at a fixed offset instead of
+/// in an owned [`StrData`] field. Constructed on demand from the object's
+/// inline bytes; all accessors mirror their [`StrData`] counterparts.
+#[derive(Debug, Clone, Copy)]
+pub struct StrDataRef<'a> {
+    bytes: &'a [u8],
+    kind: StrKind,
+    char_len: usize,
+}
+
+impl<'a> StrDataRef<'a> {
+    /// Construct a borrowed view. `char_len` is supplied by the caller (it is
+    /// the character count stored in the object header); ASCII strings have
+    /// `char_len == bytes.len()`.
+    #[inline]
+    pub const fn new(bytes: &'a [u8], kind: StrKind, char_len: usize) -> Self {
+        Self {
+            bytes,
+            kind,
+            char_len,
+        }
+    }
+
+    #[inline]
+    pub const fn as_wtf8(&self) -> &Wtf8 {
+        // WTF-8 bytes are always valid WTF-8 by construction.
+        unsafe { Wtf8::from_bytes_unchecked(self.bytes) }
+    }
+
+    // TODO: rename to to_str
+    #[inline]
+    pub fn as_str(&self) -> Option<&str> {
+        self.kind
+            .is_utf8()
+            .then(|| unsafe { core::str::from_utf8_unchecked(self.bytes) })
+    }
+
+    #[inline]
+    pub fn as_ascii(&self) -> Option<&AsciiStr> {
+        self.kind
+            .is_ascii()
+            .then(|| unsafe { AsciiStr::from_ascii_unchecked(self.bytes) })
+    }
+
+    #[inline]
+    pub const fn kind(&self) -> StrKind {
+        self.kind
+    }
+
+    #[inline]
+    pub fn as_str_kind(&self) -> PyKindStr<'_> {
+        match self.kind {
+            StrKind::Ascii => PyKindStr::Ascii(unsafe { AsciiStr::from_ascii_unchecked(self.bytes) }),
+            StrKind::Utf8 => PyKindStr::Utf8(unsafe { core::str::from_utf8_unchecked(self.bytes) }),
+            StrKind::Wtf8 => PyKindStr::Wtf8(self.as_wtf8()),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    #[inline]
+    pub fn char_len(&self) -> usize {
+        self.char_len
+    }
+
+    /// The byte offset of code point `index`, using the shared walk helpers.
+    pub fn char_index_to_byte(&self, index: usize) -> usize {
+        if self.kind.is_ascii() {
+            return index.min(self.bytes.len());
+        }
+        if index >= self.char_len {
+            return self.bytes.len();
+        }
+        self.as_wtf8()
+            .code_point_indices()
+            .nth(index)
+            .map_or(self.bytes.len(), |(byte, _)| byte)
+    }
+
+    /// The byte range spanned by the code points in `range`.
+    #[must_use]
+    pub fn char_range_to_bytes(&self, range: core::ops::Range<usize>) -> core::ops::Range<usize> {
+        if self.kind.is_ascii() {
+            return range;
+        }
+        let start = self.char_index_to_byte(range.start);
+        let end = if range.end >= self.char_len {
+            self.bytes.len()
+        } else {
+            self.char_index_to_byte(range.end)
+        };
+        start..end
+    }
+
+    /// The code point index containing `bytepos`.
+    pub fn byte_to_char_index(&self, bytepos: usize) -> usize {
+        if self.kind.is_ascii() {
+            return bytepos.min(self.bytes.len());
+        }
+        let bytepos = bytepos.min(self.bytes.len());
+        self.as_wtf8()
+            .code_point_indices()
+            .take_while(|(byte, _)| *byte < bytepos)
+            .count()
+    }
+
+    /// The code point at `index`.
+    pub fn nth_char(&self, index: usize) -> CodePoint {
+        self.as_wtf8()
+            .code_point_indices()
+            .nth(index)
+            .map_or(CodePoint::from_char('\u{FFFD}'), |(_, cp)| cp)
+    }
+
+    /// Clone into an owned [`StrData`] from the borrowed bytes.
+    pub fn clone_to_data(&self) -> StrData {
+        let owned: Box<Wtf8> = self.as_wtf8().into_box();
+        StrData::from(owned)
+    }
+}
+
 /// Where a `[StrData]` stores its WTF-8 bytes.
 ///
 /// `StrStorage::Heap` owns the data in a heap box (the default for ordinary

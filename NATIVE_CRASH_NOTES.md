@@ -173,3 +173,20 @@ _PyUnicode_ToLowercase IS exported. However, PYD loads successfully =>
 all imports resolved => either PYD does not import this name (string
 from debug info/data section) or uses a different mechanism. Likely
 false positive from binary string scanning.
+HEADER-ONLY PyStr REFACTOR - DESIGN BLOCKER + SOLUTION (round 1):
+BLOCKER: PyStr is both an allocated payload (reads tail at +40) and a
+VALUE passed to Context::new_str(impl Into<PyStr>). A header-only
+(24B) PyStr value cannot carry bytes to allocation time, so new_str
+cannot copy them into the tail.
+SOLUTION: change Context::new_str to take `impl Into<StrData>` (or a
+new PyStrData<'_> carrier). Bytes flow to allocation, tail written
+there; PyStr values only exist for allocated objects (data() reads
+tail). All From<T> for PyStr impls already go through StrData, so
+callers change minimally (new_str(x) where x: Into<StrData> still
+accepts &str/String/Wtf8/char/&[u8]) via existing From impls.
+LANDED: StrDataRef<'a> borrowed view {bytes, kind, char_len} with all
+14 accessors (as_wtf8/as_str/as_ascii/kind/as_str_kind/len/is_empty/
+char_len/char_index_to_byte/char_range_to_bytes/byte_to_char_index/
+nth_char/clone_to_data) - compiles in rustpython-common.
+NEXT: (a) add From<StrData> to carry through new_str; (b) switch
+new_str signature; (c) strip PyStr to 24B; (d) migrate 36 call sites.
