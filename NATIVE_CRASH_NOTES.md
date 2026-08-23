@@ -44,3 +44,10 @@ trace lines around crash (earlier greps filtered them); determine
 whether enter/map_len print order places fault inside lock() vs iter();
 then dump raw HashMap internals (table ptr, ctrl) from the VEH using
 the known &static address.
+DECISIVE: enter prints, map_len never does => AV inside Mutex::lock()
+itself, on a HEAP-allocated Mutex (OnceLock-relocated). Heap corruption
+from elsewhere. Unified theory: allocator mismatch - native objects
+taking the is_foreign_object true branch (vtable heuristic false
+positive) get libc::free()d while allocated by Rust's global allocator
+=> heap corruption => delayed AV at next allocation/lock.
+FIX NEXT: restrict is_foreign_object to registry-only; drop heuristic.
