@@ -90,6 +90,7 @@ pub type PyUtf8StrRef = PyRef<PyUtf8Str>;
 // State bitfield matches CPython's `_PyUnicode_STATE` subset we need:
 //   bit 0 `compact`, bit 1 `ascii`, bit 2 `ready`, bits 3-4 `kind`.
 #[pyclass(module = false, name = "str")]
+#[repr(C)]
 pub struct PyStr {
     /// Character count (matches CPython's `PyASCIIObject.length`).
     length: isize,
