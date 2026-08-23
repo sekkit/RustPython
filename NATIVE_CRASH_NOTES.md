@@ -19,3 +19,10 @@ Remaining suspects:
 
 Next step: print module name for IP using GetModuleHandleExW and
 compare against BOTH image bases; then audit pyerrors.rs static writes.
+Update: real-args repro captured (JSON round-trip of actual
+_regex.compile arguments from working CPython 3.14). Crash STILL
+occurs - proving the bug is not invalid-input-related. New backtrace
+frame: malachite-nz from_power_of_2_digits inside rustpython_capi -
+bigint conversion path involved when extracting large opcode ints from
+the code list. Next: probe PyLong_AsUnsignedLong with the real large
+opcode values (e.g. >2^32) and check our BigInt->c_ulong conversion.
