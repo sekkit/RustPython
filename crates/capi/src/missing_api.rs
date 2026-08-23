@@ -392,9 +392,24 @@ pub unsafe extern "C" fn _Py_HashDouble(value: c_double) -> isize {
 // Type operations
 // ===========================================================================
 
-/// PyType_Ready: finalize a type object. No-op: RustPython types are always ready.
+/// PyType_Ready: finalize a type object. Sets the type's ob_type to the
+/// PyType_Type stub so extensions' type objects have a valid metatype
+/// pointer, matching CPython's contract (PyType_Ready is required to run
+/// before any type is used).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyType_Ready(_tp: *mut crate::object::PyTypeObject) -> c_int {
+pub unsafe extern "C" fn PyType_Ready(tp: *mut crate::object::PyTypeObject) -> c_int {
+    if tp.is_null() {
+        return -1;
+    }
+    // ob_type is at offset 8 of the CPython PyTypeObject (and our stub).
+    // If it's not already set to the PyType_Type stub, write it.
+    unsafe {
+        let ob_type_ptr = (tp as *mut usize).add(1);
+        if *ob_type_ptr == 0 {
+            use crate::objectstatics::PyType_Type;
+            *ob_type_ptr = core::ptr::addr_of!(PyType_Type) as usize;
+        }
+    }
     0
 }
 
