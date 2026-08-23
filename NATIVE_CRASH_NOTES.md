@@ -69,3 +69,11 @@ re_compile's format string, one converted value lands in the wrong
 slot => later NULL deref INSIDE re_compile. Next: instrument
 parse_format success path to dump slot values+addresses under
 RUSTPYTHON_TRACE for the compile call.
+Update round 277: VaSlots stride theory WEAKENED - getargs.c C shim
+(compiled with real MSVC) converts va_list to the slots array before
+rp_va_parse_tuple sees it; layout handling is native C, inherently
+MSVC-correct.
+Next diagnostic: log format string + nslots in rp_va_parse_tuple under
+RUSTPYTHON_TRACE during compile call; compare against expected 11-arg
+signature; also check whether _regex.compile def even uses KEYWORDS
+(flag arm coverage from fn='' earlier suggests plain VARARGS).
