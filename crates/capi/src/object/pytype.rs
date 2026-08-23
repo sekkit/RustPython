@@ -385,7 +385,24 @@ pub unsafe extern "C" fn PyType_GetSlot(ty: *mut PyTypeObject, slot: c_int) -> *
             Py_tp_base => Ok(ty.base.to_owned().map_or(core::ptr::null_mut(), |b| {
                 b.as_object().as_raw().cast_mut().cast()
             })),
-            _ => Ok(core::ptr::null_mut()),
+            // Read the slot word straight out of the C-visible stub so
+            // extensions querying their dispatch tables get real function
+            // pointers instead of NULL (NULL here becomes a call-through-
+            // null inside the extension later).
+            _ => {
+                let raw = ty.as_object().as_raw() as *const usize;
+                let word = match slot {
+                    s if s == slots::Py_tp_methods => Some(232 / 8),
+                    s if s == 66 => Some(248 / 8), // Py_tp_getset (typeslots)
+                    s if s == 16 => Some(128 / 8), // Py_tp_call (legacy id)
+                    s if s == 19 => Some(152 / 8), // Py_tp_getattro (our layout)
+                    _ => None,
+                };
+                Ok(match word {
+                    Some(w) => unsafe { (*raw.add(w)) as *mut c_void },
+                    None => core::ptr::null_mut(),
+                })
+            }
         }
     })
 }
