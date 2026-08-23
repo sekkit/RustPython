@@ -1287,6 +1287,18 @@ impl<T: PyPayload + core::fmt::Debug> PyInner<T> {
     /// PyInner so that `PyInner::gc_prefix()` (which reads `self - sizeof(GcPrefix)`)
     /// stays correct regardless of whether ObjExt/WeakRefList prefixes are present.
     fn new(payload: T, typ: PyTypeRef, dict: Option<PyDictRef>) -> *mut Self {
+        Self::new_with_extra(payload, typ, dict, 0)
+    }
+
+    /// Allocate a PyInner with `extra` trailing bytes after the payload.
+    /// Used by variable-length payloads (e.g. inline-data strings) whose
+    /// CPython-compatible layout requires storage beyond the fixed struct.
+    fn new_with_extra(
+        payload: T,
+        typ: PyTypeRef,
+        dict: Option<PyDictRef>,
+        extra: usize,
+    ) -> *mut Self {
         let member_count = typ.slots.member_count;
         let needs_ext = typ
             .slots
@@ -1330,9 +1342,16 @@ impl<T: PyPayload + core::fmt::Debug> PyInner<T> {
             .unwrap();
         layout = gc_combined;
 
-        let (combined, inner_offset) = layout
-            .extend(core::alloc::Layout::new::<Self>())
-            .unwrap();
+        let payload_layout = if extra > 0 {
+            core::alloc::Layout::from_size_align(
+                core::mem::size_of::<Self>() + extra,
+                core::mem::align_of::<Self>(),
+            )
+            .unwrap()
+        } else {
+            core::alloc::Layout::new::<Self>()
+        };
+        let (combined, inner_offset) = layout.extend(payload_layout).unwrap();
         let combined = combined.pad_to_align();
 
         let alloc_ptr = unsafe { alloc::alloc::alloc(combined) };
