@@ -26,3 +26,9 @@ frame: malachite-nz from_power_of_2_digits inside rustpython_capi -
 bigint conversion path involved when extracting large opcode ints from
 the code list. Next: probe PyLong_AsUnsignedLong with the real large
 opcode values (e.g. >2^32) and check our BigInt->c_ulong conversion.
+CONFIRMED via GetProcAddress: rustpythonapi.dll contains REAL capi code
+(Py_TYPE @ +offset in its range); python314.dll GetProcAddress returns
+NULL for the same name (forwarder-stub export). The exe has a third,
+statically-linked copy. => Dual (actually tri-image) statics CONFIRMED:
+PYD-side capi calls run rustpythonapi.dll copies; interpreter-side run
+exe copies. Two independent TYPE_STUB_CACHEs exist.
