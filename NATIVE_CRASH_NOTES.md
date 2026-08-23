@@ -164,3 +164,7 @@ B) Change data() to return StrData (by value, constructing from raw
 Approach A is correct. Estimated effort: define trait + impl on StrData
 and new StrDataRef, update ~5 signature sites, bulk-fix remaining via
 Deref coercion. 1-2 focused sessions.
+SYMBOL SCAN FINDING: 87/90 symbols resolve through python314.dll.
+PyUnicode_ToLowercase flagged as potential name mismatch - we export
+_PyUnicode_ToLowercase (with underscore). If PYD imports without
+underscore prefix, it resolves via forwarder chain differently.
