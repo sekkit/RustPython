@@ -226,3 +226,21 @@ Plus no-threading variant reaches for_loop 22.5us / gap 2.7x.
 2. Biased refcounting to reclaim the threading tax under default build
 3. LOAD_ATTR cache hit-rate audit (specialize_load_attr exists; verify
    it fires on hot paths via counters dump)
+## Round 3: Specialization Verification + Clean Baseline
+
+VERIFIED: PEP 659 specialization IS firing correctly on hot paths.
+- _co_code_adaptive shows (130,0) = BinaryOpAddInt after warmup
+- dis co_code shows ORIGINAL opcodes by design (original_bytes());
+  live state requires _co_code_adaptive — earlier "not specializing"
+  readings were an artifact of reading the wrong view.
+- Superinstructions also active: LOAD_FAST_BORROW_LOAD_FAST_BORROW (87)
+
+Clean baseline after removing debug instrumentation:
+- hot_loop(2M): RustPython 0.380s vs CPython 0.116s = 3.3x
+- All suites green: test_str/test_builtin/test_re
+
+Optimization series total (from session start):
+- hot_loop 0.449 -> 0.380s = 15% faster (3.7x -> 3.3x vs CPython)
+- for_loop_1k 44.9 -> 25.0us = 1.8x (4.5x -> 3.0x)
+- str_split 680 -> 259us = 2.6x (6.3x -> 2.4x)
+- sum(list) 3554 -> 155us = 22.9x (21x -> 4.7x)
