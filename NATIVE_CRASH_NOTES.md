@@ -168,3 +168,8 @@ SYMBOL SCAN FINDING: 87/90 symbols resolve through python314.dll.
 PyUnicode_ToLowercase flagged as potential name mismatch - we export
 _PyUnicode_ToLowercase (with underscore). If PYD imports without
 underscore prefix, it resolves via forwarder chain differently.
+VERIFIED: PyUnicode_ToLowercase NOT FOUND on python314.dll.
+_PyUnicode_ToLowercase IS exported. However, PYD loads successfully =>
+all imports resolved => either PYD does not import this name (string
+from debug info/data section) or uses a different mechanism. Likely
+false positive from binary string scanning.
