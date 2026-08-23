@@ -105,6 +105,46 @@ pub(crate) fn ensure_object_statics(vm: &VirtualMachine) {
     if STATICS_REFRESHED.load(Ordering::Relaxed) {
         return;
     }
+    // Sentinel placed in .data among the stubs; any startup writer that
+    // overflows the stub region smashes these words and trips the check.
+    #[allow(static_mut_refs)]
+    const CANARY_WORD: u64 = 0xDEAD_BEEF_1234_5678;
+    #[allow(static_mut_refs)]
+    static mut STUB_REGION_CANARY: [u64; 8] = [CANARY_WORD; 8];
+    fn verify_stub_region() {
+        #[allow(static_mut_refs)]
+        unsafe {
+            let mut bad = false;
+            if STUB_REGION_CANARY != [CANARY_WORD; 8] {
+                eprintln!("CANARY: STUB_REGION_CANARY smashed! {:?}", STUB_REGION_CANARY);
+                bad = true;
+            }
+            for (s, name) in [
+                (&raw const PyUnicode_Type, "PyUnicode_Type"),
+                (&raw const PyLong_Type, "PyLong_Type"),
+                (&raw const PyBool_Type, "PyBool_Type"),
+                (&raw const PyFloat_Type, "PyFloat_Type"),
+                (&raw const PyDict_Type, "PyDict_Type"),
+                (&raw const PyList_Type, "PyList_Type"),
+                (&raw const PyTuple_Type, "PyTuple_Type"),
+                (&raw const PyBytes_Type, "PyBytes_Type"),
+            ] {
+                let s = &*s;
+                for i in 22..32 {
+                    if s.words[i] != 0 {
+                        eprintln!(
+                            "CANARY: stub {} tail word {} = {:#x}",
+                            name, i, s.words[i]
+                        );
+                        bad = true;
+                    }
+                }
+            }
+            if bad {
+                eprintln!("CANARY: static-region overflow CONFIRMED");
+            }
+        }
+    }
     let size = rustpython_vm::import::PYOBJECT_HEADER_BYTES;
     #[allow(static_mut_refs)]
     unsafe {
@@ -215,6 +255,7 @@ pub(crate) fn ensure_object_statics(vm: &VirtualMachine) {
     unsafe {
         relay::ensure_relay(vm);
     }
+    verify_stub_region();
     STATICS_REFRESHED.store(true, Ordering::Release);
 }
 
