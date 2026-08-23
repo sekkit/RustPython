@@ -2521,6 +2521,36 @@ impl<T: PyPayload> PyRef<T> {
 impl<T: PyPayload + crate::object::MaybeTraverse + core::fmt::Debug> PyRef<T> {
     #[inline(always)]
     pub fn new_ref(payload: T, typ: crate::builtins::PyTypeRef, dict: Option<PyDictRef>) -> Self {
+        Self::new_ref_with_extra(payload, typ, dict, 0)
+    }
+
+    /// Like `new_ref`, but allocates `extra` trailing bytes after the payload
+    /// and skips the freelist (fixed-size cached blocks cannot host inline
+    /// variable-length data).
+    #[inline]
+    pub fn new_ref_with_extra(
+        payload: T,
+        typ: crate::builtins::PyTypeRef,
+        dict: Option<PyDictRef>,
+        extra: usize,
+    ) -> Self {
+        if extra == 0 {
+            return Self::new_ref_original(payload, typ, dict);
+        }
+        let inner = PyInner::<T>::new_with_extra(payload, typ, dict, extra);
+        Self::from_inner_non_null(inner)
+    }
+
+    /// Shared tail of new_ref/new_ref_with_extra: wrap a raw PyInner pointer.
+    #[inline]
+    fn from_inner_non_null(inner: *mut PyInner<T>) -> Self {
+        // Mirrors the original else-branch construction.
+        let r: Self = unsafe { core::mem::transmute(NonNull::new_unchecked(inner.cast::<T>())) };
+        r
+    }
+
+    #[inline(always)]
+    pub fn new_ref_original(payload: T, typ: crate::builtins::PyTypeRef, dict: Option<PyDictRef>) -> Self {
         let has_dict = dict.is_some();
         let is_heaptype = typ.heaptype_ext.is_some();
 
