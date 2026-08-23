@@ -107,9 +107,40 @@ pub unsafe extern "C" fn _PyObject_NewVar(
 }
 
 /// _PyObject_GC_New: allocate a new GC-tracked object.
+///
+/// CPython's `_PyObject_GC_New` allocates `sizeof(PyGC_Head) + tp_basicsize`
+/// bytes and returns a pointer PAST the GC head. Extensions may use inlined
+/// `_PyObject_GC_TRACK` macros that write to the GC head before the returned
+/// pointer. We must include GC head space and return the adjusted pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _PyObject_GC_New(typeobj: *mut crate::object::PyTypeObject) -> *mut PyObject {
-    unsafe { _PyObject_New(typeobj) }
+    if typeobj.is_null() {
+        return core::ptr::null_mut();
+    }
+    // PyGC_Head is 16 bytes on 64-bit (two pointers: gc_next, gc_prev).
+    const GC_HEAD_SIZE: usize = 16;
+    let basicsize = unsafe { *(typeobj as *const usize).add(4) };
+    let obj_size = basicsize.max(core::mem::size_of::<crate::PyObject>());
+    let total = GC_HEAD_SIZE + obj_size;
+    let raw = unsafe { libc::malloc(total) } as *mut u8;
+    if raw.is_null() {
+        return core::ptr::null_mut();
+    }
+    unsafe {
+        // Zero the entire allocation
+        core::ptr::write_bytes(raw, 0, total);
+        // Object starts after the GC head
+        let obj = raw.add(GC_HEAD_SIZE);
+        // Stamp PyObject header at the object position
+        let header = obj as *mut usize;
+        core::ptr::write(header, 1); // ob_refcnt = 1
+        core::ptr::write(header.add(1), typeobj as usize); // ob_type
+        // Initialize GC head with sentinel values so TRACK macros don't fault
+        let gc_head = raw as *mut usize;
+        core::ptr::write(gc_head, 0); // gc_next = NULL (untracked)
+        core::ptr::write(gc_head.add(1), 0); // gc_prev = NULL
+        obj as *mut crate::PyObject
+    }
 }
 
 /// PyObject_Init: initialize a raw object allocation with the given type.
