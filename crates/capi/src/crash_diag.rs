@@ -89,6 +89,7 @@ const SYMBOL_INFO_SIZEOF_C: usize = 88; // includes Name[1] + tail padding
 
 unsafe extern "system" {
     fn SymInitialize(process: *mut c_void, user_search_path: *const u16, invade_process: i32) -> i32;
+    fn SymRefreshModuleList(process: *mut c_void) -> i32;
     fn SymFromAddr(
         process: *mut c_void,
         address: u64,
@@ -397,6 +398,9 @@ pub fn install() {
             exe_buf[dir_len] = 0;
             let process = GetCurrentProcess();
             if SymInitialize(process, exe_buf.as_ptr(), 1) != 0 {
+                // Force-load symbols for every module (incl. the exe's PDB)
+                // now, outside any exception context.
+                SymRefreshModuleList(process);
                 SYM_READY.store(2, core::sync::atomic::Ordering::Release);
             }
             AddVectoredExceptionHandler(0, veh_handler);
