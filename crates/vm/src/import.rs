@@ -1071,12 +1071,22 @@ pub fn build_c_method_def(
         };
         Ok(vm.ctx.new_method_def(name, callable, flags, doc))
     } else if call_flags == (PyMethodFlags::FASTCALL | PyMethodFlags::KEYWORDS) {
+        let name_static: &'static str = Box::leak(name.to_owned().into_boxed_str());
         let callable = move |args: FuncArgs, vm: &VirtualMachine| unsafe {
+            crate::object::foreign_dispatch::set_current_fn_name(
+                name_static.as_ptr() as usize,
+                name_static.len(),
+            );
             call_c_fast_function_with_keywords(vm, method, flags, has_self, args)
         };
         Ok(vm.ctx.new_method_def(name, callable, flags, doc))
     } else if call_flags == PyMethodFlags::FASTCALL {
+        let name_static: &'static str = Box::leak(name.to_owned().into_boxed_str());
         let callable = move |args: PosArgs, vm: &VirtualMachine| unsafe {
+            crate::object::foreign_dispatch::set_current_fn_name(
+                name_static.as_ptr() as usize,
+                name_static.len(),
+            );
             call_c_fast_function(vm, method, flags, has_self, args)
         };
         Ok(vm.ctx.new_method_def(name, callable, flags, doc))
@@ -1099,7 +1109,12 @@ pub fn build_c_method_def(
             Ok(vm.ctx.new_method_def(name, callable, flags, doc))
         }
     } else if call_flags == PyMethodFlags::VARARGS {
+        let name_static: &'static str = Box::leak(name.to_owned().into_boxed_str());
         let callable = move |args: PosArgs, vm: &VirtualMachine| unsafe {
+            crate::object::foreign_dispatch::set_current_fn_name(
+                name_static.as_ptr() as usize,
+                name_static.len(),
+            );
             call_c_function(vm, method, flags, has_self, Some(args))
         };
         Ok(vm.ctx.new_method_def(name, callable, flags, doc))
