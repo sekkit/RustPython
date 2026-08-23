@@ -482,10 +482,32 @@ impl Context {
     pub fn new_str(&self, s: impl Into<pystr::PyStr>) -> PyRef<PyStr> {
         let s = s.into();
         if let Some(ch) = Self::latin1_singleton_index(&s) {
-            self.latin1_char(ch)
-        } else {
-            s.into_ref(self)
+            return self.latin1_char(ch);
         }
+        // Dual-storage inline path: allocate trailing bytes after the full
+        // fixed struct and mirror the WTF-8 data there. Readers use StrData
+        // as before; once PyStr shrinks to a header-only layout the tail
+        // lands at CPython's compact-data offset (+40) automatically.
+        let bytes: alloc::vec::Vec<u8> = s.as_wtf8().as_bytes().to_vec();
+        let extra = bytes.len() + 1;
+        let r = PyRef::<PyStr>::new_ref_with_extra(
+            s,
+            self.types.str_type.to_owned(),
+            None,
+            extra,
+        );
+        unsafe {
+            use crate::AsObject as _;
+            // PyInner<PyStr> = 16-byte header + sizeof(PyStr); the trailing
+            // extra bytes begin right after that whole fixed region.
+            let struct_end = (r.as_object().as_raw() as usize)
+                + 16
+                + core::mem::size_of::<PyStr>();
+            let tail = struct_end as *mut u8;
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), tail, bytes.len());
+            *tail.add(bytes.len()) = 0; // NUL terminator
+        }
+        r
     }
 
     #[inline]
