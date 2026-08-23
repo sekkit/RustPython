@@ -237,6 +237,12 @@ pub(crate) fn resolve_type_ptr(
 
 /// Look up a dynamic type stub address to find the real type address.
 /// Returns the real type address if the given address is a known stub.
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub extern "C" fn diag_resolve_dynamic_stub_addr(stub_addr: usize) -> Option<usize> {
+    resolve_dynamic_stub_addr(stub_addr)
+}
+
 pub(crate) fn resolve_dynamic_stub_addr(stub_addr: usize) -> Option<usize> {
     let cache = TYPE_STUB_CACHE.lock().unwrap();
     if let Some(ref map) = *cache {
