@@ -34,6 +34,7 @@ tkinter = ["rustpython-stdlib/tkinter"]
 winresource = "0.1"
 
 [dependencies]
+mimalloc = { version = "0.1", default-features = false }
 rustpython-capi = { workspace = true, optional = true }
 rustpython-compiler = { workspace = true }
 rustpython-pylib = { workspace = true, optional = true }
