@@ -151,3 +151,16 @@ tail lands at abs+40 exactly. Steps:
 
 Estimate: 1-2 rounds of intensive editing + full test shakedown.
 THIS IS THE FINAL STRUCTURAL CHANGE for regex compatibility.
+IMPLEMENTATION PLAN UPDATE (header-only PyStr refactor):
+The struct removal is trivial (done+reverted); the hard part is the
+36-call-site migration. data() currently returns &StrData (owned field).
+Without the field, it must return a borrowed view. Two approaches:
+A) StrDataRef<'a> wrapper struct { bytes:&[u8], kind:StrKind } with
+   Deref<Target=StrDataLike> trait so callers mostly work unchanged.
+   Requires a StrDataLike trait abstracting owned vs borrowed access.
+B) Change data() to return StrData (by value, constructing from raw
+   bytes each call). Simpler but allocates per call - unacceptable for
+   hot paths unless we use SmallVec-like inline storage.
+Approach A is correct. Estimated effort: define trait + impl on StrData
+and new StrDataRef, update ~5 signature sites, bulk-fix remaining via
+Deref coercion. 1-2 focused sessions.
