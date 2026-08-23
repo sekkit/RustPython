@@ -244,15 +244,40 @@ pub extern "C" fn diag_resolve_dynamic_stub_addr(stub_addr: usize) -> Option<usi
 }
 
 pub(crate) fn resolve_dynamic_stub_addr(stub_addr: usize) -> Option<usize> {
-    let cache = TYPE_STUB_CACHE.lock().unwrap();
-    if let Some(ref map) = *cache {
-        for (&real, &stub) in map.iter() {
-            if stub == stub_addr {
-                return Some(real);
+    use core::cell::Cell as CCell;
+    thread_local! {
+        static DEPTH: CCell<u8> = const { CCell::new(0) };
+    }
+    let trace = std::env::var("RUSTPYTHON_TRACE").is_ok();
+    let depth = DEPTH.with(|c| {
+        let d = c.get();
+        c.set(d + 1);
+        d
+    });
+    if depth > 0 {
+        // Reentrancy while the mutex guard is held by this same thread would
+        // mean a nested capi call mutated/observed half-built cache state.
+        eprintln!("STUBCACHE-REENTRANT depth={} addr={:#x}", depth, stub_addr);
+    } else if trace {
+        eprintln!("STUBCACHE enter addr={:#x}", stub_addr);
+    }
+    let result = {
+        let cache = TYPE_STUB_CACHE.lock().unwrap();
+        if let Some(ref map) = *cache {
+            if trace {
+                eprintln!("STUBCACHE map_len={}", map.len());
+            }
+            for (&real, &stub) in map.iter() {
+                if stub == stub_addr {
+                    DEPTH.with(|c| c.set(depth));
+                    return Some(real);
+                }
             }
         }
-    }
-    None
+        None
+    };
+    DEPTH.with(|c| c.set(depth));
+    result
 }
 /// (payload vtable address, real type object pointer) pairs for the common
 /// builtin types, captured once from fresh instances.
