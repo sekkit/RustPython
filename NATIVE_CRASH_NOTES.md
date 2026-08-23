@@ -59,3 +59,13 @@ may be stale/wrong for the extension type - verify by dumping
 tp_basicsize read in _PyObject_New vs PatternObject real size, and
 check whether PyType_Ready (currently no-op!) is expected to finalize
 basicsize. CPython extensions rely on PyType_Ready having run.
+Update round 276: PyType_Ready suspect WEAKENED - extensions set
+tp_basicsize themselves in their static type structs before calling
+PyType_Ready (no-op safe for well-formed extensions). Sizing via
+_PyObject_New should be correct.
+Remaining sharpest suspect: PyArg_ParseTuple conversion writing caller
+slots. If our VaSlots sizing/stride mismatches MSVC va_list layout for
+re_compile's format string, one converted value lands in the wrong
+slot => later NULL deref INSIDE re_compile. Next: instrument
+parse_format success path to dump slot values+addresses under
+RUSTPYTHON_TRACE for the compile call.
