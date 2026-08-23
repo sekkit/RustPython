@@ -132,24 +132,11 @@ pub unsafe fn is_foreign_object(obj: *mut PyObject) -> bool {
     if obj.is_null() {
         return false;
     }
-    // Exact answer first: every raw buffer allocated by _PyObject_New is
-    // registered in the objimpl foreign-object set.
-    if crate::objimpl::is_foreign_object(obj as *const u8) {
-        return true;
-    }
-    let ty = unsafe { obj_type_ptr(obj) } as usize;
-    if ty != 0 && is_known_type_stub_addr(ty) {
-        return true;
-    }
-    // Definitive module test: when ob_type points into a loaded module that
-    // is NOT rustpython.exe, the type object belongs to an extension (its
-    // own static PyTypeObject) and this object is foreign. Native RustPython
-    // types live either in the exe image or on the Rust heap (no module).
-    if ty != 0 && addr_in_non_exe_module(ty) {
-        return true;
-    }
-    // Fallback heuristic for buffers allocated by other means.
-    !unsafe { crate::object::pytype::looks_like_native_object(obj) }
+    // Registry-only: every raw buffer allocated by _PyObject_New is
+    // registered here. The vtable/module heuristics produced false
+    // positives on native objects, routing them to libc::free and
+    // corrupting the heap (allocator mismatch).
+    crate::objimpl::is_foreign_object(obj as *const u8)
 }
 
 /// True when `addr` lies inside a loaded module other than the main exe.
