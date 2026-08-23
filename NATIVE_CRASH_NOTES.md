@@ -137,3 +137,17 @@ bytes without breaking readers - DUAL STORAGE transition:
 Blocker found while scoping: new_ref signature lacks extra passthrough;
 needs PyPayload::into_ref_with_extra or a Context::new_str_inline that
 bypasses freelist. Next session implements that bypass (est 1 round).
+Round 289 scoping: data found at offset +88 from obj base (CPython
+expects +40). sizeof(PyStr)=72 (repr(C), with StrData=48B inside).
+THE FIX: remove `data: StrData` from PyStr => sizeof(PyStr)=24 =>
+tail lands at abs+40 exactly. Steps:
+1. PyStr struct: {length: isize, hash: AtomicI, state: u32} = 24B
+2. Store byte_len in length field (ASCII strings: char==byte count)
+   For non-ASCII: store byte count too; char count derived on demand
+3. as_wtf8()/data() return slice from raw self-ptr+40, len from length
+4. ~36 call sites already route through data() - most flip transparently
+5. concat_in_place (*payload).data write needs rework for tail mutation
+6. From<StrData> impls write bytes into tail during new_ref_with_extra
+
+Estimate: 1-2 rounds of intensive editing + full test shakedown.
+THIS IS THE FINAL STRUCTURAL CHANGE for regex compatibility.
