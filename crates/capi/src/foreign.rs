@@ -141,8 +141,39 @@ pub unsafe fn is_foreign_object(obj: *mut PyObject) -> bool {
     if ty != 0 && is_known_type_stub_addr(ty) {
         return true;
     }
+    // Definitive module test: when ob_type points into a loaded module that
+    // is NOT rustpython.exe, the type object belongs to an extension (its
+    // own static PyTypeObject) and this object is foreign. Native RustPython
+    // types live either in the exe image or on the Rust heap (no module).
+    if ty != 0 && addr_in_non_exe_module(ty) {
+        return true;
+    }
     // Fallback heuristic for buffers allocated by other means.
     !unsafe { crate::object::pytype::looks_like_native_object(obj) }
+}
+
+/// True when `addr` lies inside a loaded module other than the main exe.
+fn addr_in_non_exe_module(addr: usize) -> bool {
+    unsafe extern "system" {
+        fn GetModuleHandleExW(flags: u32, name: *const u16, module: *mut *mut c_void) -> i32;
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+    }
+    const FROM_ADDRESS: u32 = 0x4;
+    const UNCHANGED_REFCOUNT: u32 = 0x2;
+    unsafe {
+        let mut containing: *mut c_void = core::ptr::null_mut();
+        if GetModuleHandleExW(
+            FROM_ADDRESS | UNCHANGED_REFCOUNT,
+            addr as *const u16,
+            &mut containing,
+        ) == 0
+            || containing.is_null()
+        {
+            return false; // heap/statics of exe → not foreign-by-module
+        }
+        let exe = GetModuleHandleW(core::ptr::null());
+        !containing.is_null() && containing != exe
+    }
 }
 
 /// True when descriptor tables may be read from the type at `ty`. Dynamic
