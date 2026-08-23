@@ -86,3 +86,14 @@ PyList ops on code list, or PyObject_New'd PatternObject field init
 reading a NULL it got from one of those. Next: entry-log PyDict_*
 family + PyUnicode_AsUTF8AndSize callers under window; first NULL-arg
 log before VEH names the callee.
+Update round 280: DICT-GET never fires - dict family eliminated.
+Parse succeeded with correct 11 args (no self-shift). PRIME THEORY NOW:
+re_compile uses INLINED CPython accessor macros (PyUnicode_GET_LENGTH /
+PyUnicode_READ_CHAR etc.) compiled against CPython str layout - reads
+ob_size/fixed-data at offsets our PyStr layout places differently,
+producing NULL/garbage => AV read [NULL+0x10]. This is the fundamental
+str-object-layout gap: fix requires our str stubs/objects to expose
+CPython-compatible fields at +0x10 for length (and data pointer), or
+exporting non-inline PyUnicode_* replacements for every macro regex
+uses. Verify next: dump bytes at pattern_obj+0x10 from VEH registers -
+rdx holds a heap ptr each crash; check whether it equals pattern obj.

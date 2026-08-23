@@ -58,7 +58,7 @@ pub unsafe extern "C" fn PyDict_SetItemString(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_GetItem(dict: *mut PyObject, key: *mut PyObject) -> *mut PyObject {
-    with_vm(|vm| {
+    let r = with_vm(|vm| {
         let dict = unsafe { &*dict }.try_downcast_ref::<PyDict>(vm)?;
         let key = unsafe { &*key };
 
@@ -66,7 +66,11 @@ pub unsafe extern "C" fn PyDict_GetItem(dict: *mut PyObject, key: *mut PyObject)
             Ok(Some(value)) => Ok(value.as_object().as_raw().cast_mut()),
             Ok(None) | Err(_) => Ok(core::ptr::null_mut()),
         }
-    })
+    });
+    if std::env::var("RUSTPYTHON_TRACE").is_ok() {
+        eprintln!("DICT-GET: dict={:p} key={:p} -> {:p}", dict, key, r);
+    }
+    r
 }
 
 #[unsafe(no_mangle)]
