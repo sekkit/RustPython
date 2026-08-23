@@ -32,3 +32,15 @@ NULL for the same name (forwarder-stub export). The exe has a third,
 statically-linked copy. => Dual (actually tri-image) statics CONFIRMED:
 PYD-side capi calls run rustpythonapi.dll copies; interpreter-side run
 exe copies. Two independent TYPE_STUB_CACHEs exist.
+Update: shims regenerated (make_python_dll_shims.ps1) - crash UNCHANGED.
+Function thunks self-heal via rustpythonapi_init(GetModuleHandle(NULL)),
+so dual-image static theory also eliminated: all capi calls land in exe
+code with exe statics. Eliminated so far: NULL-contract, .data stomp,
+bigint conv, boundary probes, NULL-self, stale shims, dual images.
+
+Remaining: fault truly inside resolve_dynamic_stub_addr LTO range per
+MAP+PDB agreement. Next session: capture full unfiltered STUBCACHE
+trace lines around crash (earlier greps filtered them); determine
+whether enter/map_len print order places fault inside lock() vs iter();
+then dump raw HashMap internals (table ptr, ctrl) from the VEH using
+the known &static address.
