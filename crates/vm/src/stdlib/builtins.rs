@@ -1,35 +1,66 @@
 //! Builtin function definitions.
 //!
 //! Implements the list of [builtin Python functions](https://docs.python.org/3/library/builtins.html).
-use crate::{Py, VirtualMachine, PyObjectRef, builtins::PyInt, builtins::PyModule, class::PyClassImpl};
+use crate::{
+    Py,
+    VirtualMachine,
+    PyObjectRef,
+    builtins::{PyFloat, PyInt, PyModule},
+    class::PyClassImpl,
+};
 pub(crate) use builtins::{DOC, module_def};
 pub use builtins::{ascii, print, reversed};
 
-/// Scan a slice of objects, returning the i128 sum if every element is
-/// an exact int whose value fits i128; None otherwise (caller falls back
-/// to the generic path). Performs no VM calls — safe under a list read
-/// lock.
-fn scan_exact_int_slice(
-    items: &[PyObjectRef],
-    vm: &VirtualMachine,
-) -> Option<i128> {
+/// Result of a numeric scan over container storage.
+enum ScanNum {
+    Int(i128),
+    Float(f64),
+}
+
+/// Scan a slice of objects, accumulating exact ints (i128) and exact floats
+/// (f64) with CPython's promotion semantics: the accumulator switches from
+/// int to float at the first float element. Returns None when any element
+/// is not an exact int/float, or on i128 overflow (caller falls back to the
+/// generic path). Performs no VM calls — safe under a list read lock.
+fn scan_exact_numeric_slice(items: &[PyObjectRef], vm: &VirtualMachine) -> Option<ScanNum> {
     use num_traits::ToPrimitive;
-    let mut acc: i128 = 0;
+    let mut int_acc: i128 = 0;
+    let mut float_acc: f64 = 0.0;
+    let mut float_mode = false;
     for item in items {
-        let int_val = item.downcast_ref_if_exact::<PyInt>(vm)?;
-        let v = int_val.as_bigint().to_i128()?;
-        acc = acc.checked_add(v)?;
+        if let Some(fv) = item.downcast_ref_if_exact::<PyFloat>(vm) {
+            if !float_mode {
+                float_mode = true;
+                float_acc = int_acc as f64;
+            }
+            float_acc += fv.to_f64();
+            continue;
+        }
+        if let Some(iv) = item.downcast_ref_if_exact::<PyInt>(vm) {
+            let v = iv.as_bigint().to_i128()?;
+            if float_mode {
+                float_acc += v as f64;
+            } else {
+                int_acc = int_acc.checked_add(v)?;
+            }
+            continue;
+        }
+        return None;
     }
-    Some(acc)
+    Some(if float_mode {
+        ScanNum::Float(float_acc)
+    } else {
+        ScanNum::Int(int_acc)
+    })
 }
 
 #[pymodule]
 mod builtins {
-    use super::scan_exact_int_slice;
+    use super::{ScanNum, scan_exact_numeric_slice};
     use crate::{
         AsObject, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, TryFromObject, VirtualMachine,
         builtins::{
-            PyByteArray, PyBytes, PyDictRef, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType,
+            PyByteArray, PyBytes, PyDictRef, PyFloat, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType,
             PyUtf8StrRef,
             enumerate::PyReverseSequenceIterator,
             function::{PyCell, PyCellRef, PyFunction},
@@ -1278,37 +1309,65 @@ mod builtins {
             }
         }
 
-        // Fast path: exact list/tuple of ints — iterate internal storage by
-        // reference (zero per-element refcount traffic, no iterator object,
+        // Fast path: exact list/tuple of numbers — iterate internal storage
+        // by reference (zero per-element refcount traffic, no iterator object,
         // no VM calls during the scan so holding a list read-lock is safe).
-        // On any non-int element or i128 overflow we abandon and take the
+        // Ints accumulate in i128; the accumulator promotes to f64 at the
+        // first float element (matching CPython's int+float promotion).
+        // On any non-number element or i128 overflow we abandon and take the
         // generic route from the original accumulator.
-        if sum.downcast_ref_if_exact::<PyInt>(vm).is_some() {
-            let iterable_obj = iterable.as_object();
-            let scanned: Option<Option<i128>> = if let Some(list) =
-                iterable_obj.downcast_ref_if_exact::<crate::builtins::PyList>(vm)
-            {
-                let guard = list.borrow_vec();
-                Some(scan_exact_int_slice(&guard, vm))
-            } else if let Some(tuple) =
-                iterable_obj.downcast_ref_if_exact::<crate::builtins::PyTuple>(vm)
-            {
-                Some(scan_exact_int_slice(tuple.as_slice(), vm))
-            } else {
-                None
-            };
-            if let Some(Some(items_total)) = scanned {
-                let start_val = sum
-                    .downcast_ref::<PyInt>()
-                    .unwrap()
-                    .as_bigint()
-                    .to_i128()
-                    .unwrap_or(0);
-                let total = start_val.checked_add(items_total);
-                if let Some(total) = total {
-                    return Ok(vm.ctx.new_int(total).into());
+        {
+            let start_int = sum.downcast_ref_if_exact::<PyInt>(vm);
+            let start_float = sum.downcast_ref_if_exact::<PyFloat>(vm);
+            if start_int.is_some() || start_float.is_some() {
+                let iterable_obj = iterable.as_object();
+                let scanned: Option<Option<ScanNum>> = if let Some(list) =
+                    iterable_obj.downcast_ref_if_exact::<crate::builtins::PyList>(vm)
+                {
+                    let guard = list.borrow_vec();
+                    Some(scan_exact_numeric_slice(&guard, vm))
+                } else if let Some(tuple) =
+                    iterable_obj.downcast_ref_if_exact::<crate::builtins::PyTuple>(vm)
+                {
+                    Some(scan_exact_numeric_slice(tuple.as_slice(), vm))
+                } else {
+                    None
+                };
+                if let Some(Some(numeric)) = scanned {
+                    let fast_result: Option<PyObjectRef> =
+                        match (numeric, start_int, start_float) {
+                            // All-int list, int start: pure i128 arithmetic
+                            (ScanNum::Int(items), Some(si), _) => si
+                                .as_bigint()
+                                .to_i128()
+                                .and_then(|start_val| start_val.checked_add(items))
+                                .map(|total| vm.ctx.new_int(total).into()),
+                            // All-int list, float start: single float conversion
+                            (ScanNum::Int(items), None, Some(sf)) => Some(
+                                vm.ctx.new_float(sf.to_f64() + items as f64).into(),
+                            ),
+                            // Any floats present: promote start to f64 and add
+                            (ScanNum::Float(ftotal), start_i, _) => {
+                                use num_traits::ToPrimitive;
+                                let base: Option<f64> = match start_float {
+                                    Some(f) => Some(f.to_f64()),
+                                    None => start_i.and_then(|i| i.as_bigint().to_f64()),
+                                };
+                                match base {
+                                    Some(b) if !b.is_nan() => {
+                                        Some(vm.ctx.new_float(b + ftotal).into())
+                                    }
+                                    _ => None, // unconvertible huge int: generic path
+                                }
+                            }
+                            // Unreachable by outer guard (start is int or float)
+                            _ => None,
+                        };
+                    if let Some(result) = fast_result {
+                        return Ok(result);
+                    }
+                    // else: fall through to generic path below
                 }
-                // i128 overflow: fall through to generic BigInt path
             }
         }
 
