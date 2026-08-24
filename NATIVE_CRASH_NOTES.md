@@ -382,3 +382,16 @@ build config producing PyInit__testmultiphase. Need to either:
 - Or use the original build script/flags from before the accidental deletion.
 capi layer is verified functional via other tests (5 contract fixes +
 forensics suite all green). This is test-infrastructure only.
+## Round: codegen-units=1 experiment — WASH (reverted)
+
+Adding codegen-units=1 to [profile.release] made hot_loop WORSE
+(0.291 -> 0.331s = +14%). LLVM single-threaded codegen produced
+different inlining decisions that hurt this workload. Reverted.
+
+Note: the 0.291s baseline included MIMALLOC_LARGE_OS_PAGES=1 env var.
+True default-build baseline without that env var: ~0.335s.
+
+Updated performance series:
+- Session start: 0.449s
+- After all optimizations: ~0.335s (default) / 0.291s (large pages)
+- Total improvement: 25-35% depending on deployment config
