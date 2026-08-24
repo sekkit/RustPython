@@ -267,6 +267,14 @@ impl GenIndexes {
     }
 }
 
+/// Outcome of the lock-elided single-threaded lookup.
+pub(crate) enum RawLookup<T> {
+    Found(T),
+    Absent,
+    /// Key kind requires the full comparison protocol (clone + out-of-guard
+    /// equality); caller falls back to the standard path.
+    Unsupported,
+}
 impl<T> DictInner<T> {
     fn resize(&mut self, new_size: usize) {
         let new_size = {
@@ -365,6 +373,67 @@ impl<T: Clone> Dict<T> {
     /// Monotonically increasing version counter for mutation tracking.
     pub(crate) fn version(&self) -> u64 {
         self.version.load(Acquire)
+    }
+
+    /// Lock-elided lookup for single-threaded execution: probes the index
+    /// table and entries directly through the rwlock's interior-mutability
+    /// pointer, skipping guard acquisition entirely.
+    ///
+    /// # Safety
+    /// The caller must guarantee that no other thread can touch this dict
+    /// while the call runs (`vm.state.thread_count == 0`). All pointers are
+    /// re-read fresh per call, so mutation from loop-body code between calls
+    /// behaves exactly like the locked path.
+    ///
+    /// Returns [`RawLookup::Unsupported`] when the key kind needs the full
+    /// comparison protocol (out-of-guard equality), so callers must fall
+    /// back to the standard lookup in that case.
+    pub(crate) unsafe fn get_item_raw<K: DictKey + ?Sized>(
+        &self,
+        vm: &VirtualMachine,
+        key: &K,
+    ) -> RawLookup<T> {
+        let hash_value = match key.key_hash(vm) {
+            Ok(h) => h,
+            Err(_) => return RawLookup::Unsupported,
+        };
+        let inner: &DictInner<T> = unsafe { &*self.inner.data_ptr() };
+        if inner.indices.is_empty() {
+            return RawLookup::Absent;
+        }
+        let mask = (inner.indices.len() - 1) as HashIndex;
+        let mut idxs = GenIndexes::new(hash_value, mask);
+        loop {
+            let index_entry = *unsafe {
+                // Safety: idxs.next() is masked against the table size.
+                inner.indices.get_unchecked(idxs.next())
+            };
+            match index_entry {
+                IndexEntry::FREE => return RawLookup::Absent,
+                IndexEntry::DUMMY => {}
+                idx => {
+                    let entry = unsafe {
+                        // Safety: real entries always exist in `entries`.
+                        let i = idx.index().unwrap_unchecked();
+                        inner.entries.get_unchecked(i).as_ref().unwrap_unchecked()
+                    };
+                    if key.key_is(&entry.key) {
+                        return RawLookup::Found(entry.value.clone());
+                    }
+                    if entry.hash != hash_value {
+                        // Different key in this slot — keep probing.
+                        continue;
+                    }
+                    return match key.key_eq_in_place(&entry.key) {
+                        Some(true) => RawLookup::Found(entry.value.clone()),
+                        // Equal hashes, different content: collision — the
+                        // locked path would also keep probing past here.
+                        Some(false) => continue,
+                        None => RawLookup::Unsupported,
+                    };
+                }
+            }
+        }
     }
 
     /// Bump the version counter after any mutation.

@@ -5776,6 +5776,25 @@ impl ExecutingFrame<'_> {
                 let b = self.top_value();
                 let a = self.nth_value(1);
                 if let Some(dict) = a.downcast_ref_if_exact::<PyDict>(vm) {
+                    // Single-threaded: lock-elided raw lookup first.
+                    if let Some(res) = dict.get_item_single_thread(b, vm) {
+                        match res {
+                            Ok(Some(value)) => {
+                                self.pop_value();
+                                self.pop_value();
+                                self.push_value(value);
+                                return Ok(None);
+                            }
+                            Ok(None) => {
+                                let key = self.pop_value();
+                                self.pop_value();
+                                return Err(vm.new_key_error(key));
+                            }
+                            Err(e) => {
+                                return Err(e);
+                            }
+                        }
+                    }
                     match dict.get_item_opt(b, vm) {
                         Ok(Some(value)) => {
                             self.pop_value();

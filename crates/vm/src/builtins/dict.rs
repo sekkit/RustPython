@@ -808,6 +808,29 @@ impl Py<PyDict> {
         }
     }
 
+    /// Lock-elided [`Self::get_item_opt`] equivalent for single-threaded
+    /// execution.
+    ///
+    /// Returns `None` when the fast path does not apply (multi-threaded,
+    /// subclassed dict, or a key kind needing the full comparison protocol);
+    /// otherwise `Some(result)` with the same shape as `get_item_opt`.
+    pub(crate) fn get_item_single_thread(
+        &self,
+        key: &PyObject,
+        vm: &VirtualMachine,
+    ) -> Option<PyResult<Option<PyObjectRef>>> {
+        if vm.state.thread_count.load() != 0 || !self.exact_dict(vm) {
+            return None;
+        }
+        // SAFETY: no other thread can touch this dict right now.
+        let lookup = unsafe { self.entries.get_item_raw(vm, key) };
+        match lookup {
+            crate::dict_inner::RawLookup::Found(v) => Some(Ok(Some(v))),
+            crate::dict_inner::RawLookup::Absent => Some(Ok(None)),
+            crate::dict_inner::RawLookup::Unsupported => None,
+        }
+    }
+
     /// Return a cached-entry hint for exact dict fast paths.
     pub(crate) fn hint_for_key<K: DictKey + ?Sized>(
         &self,
