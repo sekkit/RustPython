@@ -297,3 +297,21 @@ hot_loop(2M): 0.380 -> 0.308s = 19% faster. Series cumulative:
 Remaining per-instruction atomic ops after this: read_op (Acquire),
 read_arg (Relaxed), eval_breaker (Relaxed) = 3 loads, all necessary
 for cross-thread quickening/signal semantics.
+## Dispatch Loop Tuning Complete (this optimization series)
+
+Landed micro-optimizations:
+1. fetch_add lasti (3-4 atomic ops -> 1 RMW): hot_loop -19%
+2. read_op Acquire -> Relaxed: ~1.5% + ARM portability
+3. Lazy f_lineno (per-instruction bookkeeping removed): ~5% iter
+4. mimalloc global allocator: allocation-dense ops up to 3.2x
+
+Verified optimal already:
+- cache_entries(): static u8[256] lookup table
+- OpArgState::extend: #[inline(always)] trivial shift-or
+- eval_breaker: single relaxed atomic load
+- DictKey for Py<PyStr>: cached hash + identity/bytes fast paths
+
+Remaining ~6x micro-op floor = dispatch match + PyRef stack traffic +
+calling convention. Next architectural levers (multi-session):
+superinstruction fusion, tail-call dispatch (nightly become), biased
+refcounting. All suites green; capi extension functional.
