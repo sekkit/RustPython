@@ -2,68 +2,299 @@
 //!
 //! Implements the list of [builtin Python functions](https://docs.python.org/3/library/builtins.html).
 use crate::{
-    Py,
-    VirtualMachine,
-    PyObjectRef,
-    builtins::{PyFloat, PyInt, PyModule},
+    AsObject, Py, PyObject, PyObjectRef, VirtualMachine,
+    builtins::{PyBaseExceptionRef, PyComplex, PyFloat, PyInt, PyModule},
     class::PyClassImpl,
 };
 pub(crate) use builtins::{DOC, module_def};
 pub use builtins::{ascii, print, reversed};
+use malachite_bigint::BigInt;
 
-/// Result of a numeric scan over container storage.
-enum ScanNum {
-    Int(i128),
-    Float(f64),
+/// Improved Kahan–Babuška algorithm by Arnold Neumaier
+/// (Neumaier, A. 1974, *Rundungsfehleranalyse einiger Verfahren zur
+/// Summation endlicher Summen*, Z. angew. Math. Mech. 54: 39-51),
+/// ported verbatim from CPython's `Python/bltinmodule.c` `CompensatedSum`
+/// so that `sum()` over floats and complexes is bit-identical to CPython.
+#[derive(Clone, Copy)]
+struct CompensatedSum {
+    hi: f64,
+    lo: f64,
 }
 
-/// Scan a slice of objects, accumulating exact ints (i128) and exact floats
-/// (f64) with CPython's promotion semantics: the accumulator switches from
-/// int to float at the first float element. Returns None when any element
-/// is not an exact int/float, or on i128 overflow (caller falls back to the
-/// generic path). Performs no VM calls — safe under a list read lock.
+impl CompensatedSum {
+    #[inline]
+    const fn new(x: f64) -> Self {
+        Self { hi: x, lo: 0.0 }
+    }
+
+    #[inline]
+    fn add(self, x: f64) -> Self {
+        let t = self.hi + x;
+        // Parenthesization matters: the correction term is summed first
+        // (matching CPython's `total.lo += (hi - t) + x`, where `+=` binds
+        // looser than `+`), then folded into `lo`. Adding `lo` first lets a
+        // huge `(hi - t)` swallow it via rounding.
+        let lo = if self.hi.abs() >= x.abs() {
+            self.lo + ((self.hi - t) + x)
+        } else {
+            self.lo + ((x - t) + self.hi)
+        };
+        Self { hi: t, lo }
+    }
+
+    /// Avoid losing the sign of a negative result, and don't let adding the
+    /// compensation convert an infinite or overflowed sum to a NaN
+    /// (mirrors CPython's `cs_to_double`).
+    #[inline]
+    const fn to_double(self) -> f64 {
+        if self.lo != 0.0 && self.lo.is_finite() {
+            self.hi + self.lo
+        } else {
+            self.hi
+        }
+    }
+}
+
+/// Fast-path accumulator state for `sum()`, mirroring CPython's progression
+/// int -> float -> complex through `bltinmodule.c`.
+#[derive(Clone)]
+enum FastAcc {
+    /// CPython's int loop accumulates in a Py_ssize_t; overflow or an
+    /// out-of-range item bails to the generic path permanently.
+    Int(i64),
+    Float(CompensatedSum),
+    /// Real and imaginary chains are compensated independently, exactly like
+    /// CPython's `re_sum` / `im_sum` pair.
+    Complex(CompensatedSum, CompensatedSum),
+}
+
+/// CPython `Py_ssize_t` bounds, which gate its int fast-path accumulator.
+const PY_SSIZE_T_MAX: i64 = i64::MAX;
+const PY_SSIZE_T_MIN: i64 = i64::MIN;
+
+/// Outcome of feeding one element to the fast accumulator.
+enum FeedOutcome {
+    /// Element absorbed; carries the new accumulator state.
+    Fed(FastAcc),
+    /// Element cannot be absorbed on the fast path; caller materializes the
+    /// accumulator, adds this element generically, and continues generically
+    /// (mirrors CPython's fall-through out of the specialized loops).
+    FallBack(FastAcc),
+    /// Converting a huge int to f64 overflowed (CPython's
+    /// `PyLong_AsDouble` raises OverflowError here).
+    Overflowed,
+}
+
+/// Mirrors CPython's `PyLong_AsDouble`: only finite doubles count;
+/// out-of-range converts report `None` so the caller raises OverflowError.
+fn bigint_to_double(v: &BigInt) -> Option<f64> {
+    use num_traits::ToPrimitive;
+    v.to_f64().filter(|f| f.is_finite())
+}
+
+impl FastAcc {
+    /// Classify the `start` argument for the compensated fast paths.
+    ///
+    /// Returns `None` for bool seeds so that `sum([], False)` still returns
+    /// the very same object; everything else numeric enters the pipeline.
+    fn seed(sum_obj: &PyObject, vm: &VirtualMachine) -> Option<Self> {
+        if sum_obj.class().is(vm.ctx.types.bool_type) {
+            return None;
+        }
+        if let Some(int_obj) = sum_obj.downcast_ref_if_exact::<PyInt>(vm) {
+            use num_traits::ToPrimitive;
+            // Beyond Py_ssize_t, CPython never enters its int loop; the whole
+            // summation goes generic, so refuse the fast path here too.
+            return int_obj
+                .as_bigint()
+                .to_i64()
+                .filter(|&v| (PY_SSIZE_T_MIN..=PY_SSIZE_T_MAX).contains(&v))
+                .map(FastAcc::Int);
+        }
+        if let Some(float_obj) = sum_obj.downcast_ref_if_exact::<PyFloat>(vm) {
+            return Some(Self::Float(CompensatedSum::new(float_obj.to_f64())));
+        }
+        if let Some(complex_obj) = sum_obj.downcast_ref_if_exact::<PyComplex>(vm) {
+            let z = complex_obj.to_complex64();
+            return Some(Self::Complex(
+                CompensatedSum::new(z.re),
+                CompensatedSum::new(z.im),
+            ));
+        }
+        None
+    }
+
+    fn materialize(self, vm: &VirtualMachine) -> PyObjectRef {
+        match self {
+            Self::Int(v) => vm.ctx.new_int(v).into(),
+            Self::Float(cs) => vm.ctx.new_float(cs.to_double()).into(),
+            Self::Complex(re, im) => vm
+                .ctx
+                .new_complex(num_complex::Complex64::new(re.to_double(), im.to_double()))
+                .into(),
+        }
+    }
+
+    /// Absorb one element, mirroring CPython's per-mode item acceptance:
+    ///
+    /// - int mode: exact ints and bools within Py_ssize_t, added exactly.
+    /// - float mode: exact floats, then *any* int (`PyLong_Check`),
+    ///   compensated via Neumaier steps.
+    /// - complex mode: exact complexes, then any int, then any float
+    ///   (`PyFloat_Check`) — real operands only ever touch the real chain,
+    ///   which is what preserves the sign of an imaginary zero.
+    fn feed(self, item: &PyObject, vm: &VirtualMachine) -> FeedOutcome {
+        match self {
+            Self::Int(v) => Self::feed_int(v, item, vm),
+            other => other.feed_compensated(item, vm),
+        }
+    }
+
+    fn feed_int(v: i64, item: &PyObject, vm: &VirtualMachine) -> FeedOutcome {
+        // Exact float element: the int accumulator promotes to a compensated
+        // float chain, mirroring CPython's fall-through — its int loop
+        // materializes `PyNumber_Add(int_result, item)` (one conversion
+        // rounding plus one addition rounding) and the float loop then seeds
+        // an empty compensation from that value.
+        if let Some(float_obj) = item.downcast_ref_if_exact::<PyFloat>(vm) {
+            let x = float_obj.to_f64();
+            // `as` casts round to nearest, matching CPython's conversion.
+            let hi = (v as f64) + x;
+            return FeedOutcome::Fed(Self::Float(CompensatedSum { hi, lo: 0.0 }));
+        }
+        // Exact complex element: promotes to compensated real+imag chains.
+        // The generic real+complex add leaves the imaginary part untouched,
+        // so the imaginary chain seeds from `z.im` alone.
+        if let Some(complex_obj) = item.downcast_ref_if_exact::<PyComplex>(vm) {
+            let z = complex_obj.to_complex64();
+            let hi = (v as f64) + z.re;
+            return FeedOutcome::Fed(Self::Complex(
+                CompensatedSum { hi, lo: 0.0 },
+                CompensatedSum::new(z.im),
+            ));
+        }
+        // CPython's int loop accepts `PyLong_CheckExact(item) || PyBool_Check(item)`,
+        // accumulating in a Py_ssize_t: an item that doesn't fit a C long, or
+        // a sum that leaves the ssize_t range, bails to the generic path.
+        let is_plain_int = item.downcast_ref_if_exact::<PyInt>(vm).is_some();
+        let is_bool = item.class().is(vm.ctx.types.bool_type);
+        if !is_plain_int && !is_bool {
+            return FeedOutcome::FallBack(Self::Int(v));
+        }
+        let Some(int_obj) = item.downcast_ref::<PyInt>() else {
+            return FeedOutcome::FallBack(Self::Int(v));
+        };
+        use num_traits::ToPrimitive;
+        let Some(x) = int_obj.as_bigint().to_i64() else {
+            return FeedOutcome::FallBack(Self::Int(v));
+        };
+        match v.checked_add(x) {
+            Some(total) => FeedOutcome::Fed(Self::Int(total)),
+            None => FeedOutcome::FallBack(Self::Int(v)),
+        }
+    }
+
+    /// Shared stepping for the compensated float/complex modes.
+    fn feed_compensated(self, item: &PyObject, vm: &VirtualMachine) -> FeedOutcome {
+        // Exact float element.
+        if let Some(float_obj) = item.downcast_ref_if_exact::<PyFloat>(vm) {
+            let x = float_obj.to_f64();
+            return match self {
+                Self::Float(cs) => FeedOutcome::Fed(Self::Float(cs.add(x))),
+                // Real operand: imaginary chain untouched (C11 Annex G
+                // mixed-mode rules, see CPython complexobject.c).
+                Self::Complex(re, im) => FeedOutcome::Fed(Self::Complex(re.add(x), im)),
+                _ => FeedOutcome::FallBack(self),
+            };
+        }
+        // Exact complex element while in float mode: CPython materializes the
+        // float partial, adds the complex generically (real part rounded
+        // once, imaginary untouched), and its complex loop seeds empty
+        // compensations from that result.
+        if let Self::Float(cs) = self
+            && let Some(complex_obj) = item.downcast_ref_if_exact::<PyComplex>(vm) {
+                let z = complex_obj.to_complex64();
+                return FeedOutcome::Fed(Self::Complex(
+                    CompensatedSum::new(cs.to_double() + z.re),
+                    CompensatedSum::new(z.im),
+                ));
+            }
+        // Exact complex element (complex mode).
+        if let Some(complex_obj) = item.downcast_ref_if_exact::<PyComplex>(vm) {
+            let z = complex_obj.to_complex64();
+            return match self {
+                Self::Complex(re, im) => {
+                    FeedOutcome::Fed(Self::Complex(re.add(z.re), im.add(z.im)))
+                }
+                other => FeedOutcome::FallBack(other),
+            };
+        }
+        // Any int subclass (incl. bool), like CPython's `PyLong_Check(item)`
+        // acceptance in the compensated loops.
+        if let Some(int_obj) = item.downcast_ref::<PyInt>() {
+            let Some(x) = bigint_to_double(int_obj.as_bigint()) else {
+                return FeedOutcome::Overflowed;
+            };
+            return match self {
+                Self::Float(cs) => FeedOutcome::Fed(Self::Float(cs.add(x))),
+                Self::Complex(re, im) => FeedOutcome::Fed(Self::Complex(re.add(x), im)),
+                _ => FeedOutcome::FallBack(self),
+            };
+        }
+        // Subclassed floats in complex mode (`PyFloat_Check`, non-exact):
+        // CPython's float path requires CheckExact, its complex path accepts
+        // subclasses; only reachable from complex mode because the exact
+        // float arm above already matched otherwise.
+        if let Self::Complex(re, im) = self
+            && let Some(float_obj) = item.downcast_ref::<PyFloat>() {
+                let x = float_obj.to_f64();
+                return FeedOutcome::Fed(Self::Complex(re.add(x), im));
+            }
+        FeedOutcome::FallBack(self)
+    }
+}
+
+/// Result of a compensated scan over container storage.
+enum ScanOutcome {
+    /// Whole slice absorbed on the fast path.
+    Complete(FastAcc),
+    /// Fast path stopped at index `resume`; everything before it lives in
+    /// `partial`. Materialize `partial`, add element `resume` generically,
+    /// and drain the remainder generically.
+    Partial { partial: FastAcc, resume: usize },
+}
+
+/// Zero-copy compensated scan over a slice of objects. Performs no VM calls
+/// that could observe the container, so callers may hold a list read lock.
 fn scan_exact_numeric_slice(
     items: &[PyObjectRef],
     vm: &VirtualMachine,
-    mut int_acc: i128,
-    mut float_acc: f64,
-    mut float_mode: bool,
-) -> Option<ScanNum> {
-    use num_traits::ToPrimitive;
-    for item in items {
-        if let Some(fv) = item.downcast_ref_if_exact::<PyFloat>(vm) {
-            if !float_mode {
-                float_mode = true;
-                float_acc = int_acc as f64;
+    mut acc: FastAcc,
+) -> Result<ScanOutcome, PyBaseExceptionRef> {
+    for (i, item) in items.iter().enumerate() {
+        match acc.feed(item, vm) {
+            FeedOutcome::Fed(next) => acc = next,
+            FeedOutcome::FallBack(original) => {
+                return Ok(ScanOutcome::Partial {
+                    partial: original,
+                    resume: i,
+                });
             }
-            float_acc += fv.to_f64();
-            continue;
-        }
-        if let Some(iv) = item.downcast_ref_if_exact::<PyInt>(vm) {
-            let v = iv.as_bigint().to_i128()?;
-            if float_mode {
-                float_acc += v as f64;
-            } else {
-                int_acc = int_acc.checked_add(v)?;
+            FeedOutcome::Overflowed => {
+                return Err(vm.new_overflow_error("int too large to convert to float"));
             }
-            continue;
         }
-        return None;
     }
-    Some(if float_mode {
-        ScanNum::Float(float_acc)
-    } else {
-        ScanNum::Int(int_acc)
-    })
+    Ok(ScanOutcome::Complete(acc))
 }
 
 #[pymodule]
 mod builtins {
-    use super::{ScanNum, scan_exact_numeric_slice};
+    use super::{FastAcc, FeedOutcome, PyBaseExceptionRef, ScanOutcome, scan_exact_numeric_slice};
     use crate::{
         AsObject, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, TryFromObject, VirtualMachine,
         builtins::{
-            PyByteArray, PyBytes, PyDictRef, PyFloat, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType,
+            PyByteArray, PyBytes, PyDictRef, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType,
             PyUtf8StrRef,
             enumerate::PyReverseSequenceIterator,
             function::{PyCell, PyCellRef, PyFunction},
@@ -1282,7 +1513,7 @@ mod builtins {
                     let b = range.stop.as_bigint();
                     let step = range.step.as_bigint();
                     let zero = BigInt::zero();
-                    let diff = b - &*a;
+                    let diff = b - a;
                     // CPython range length: for step>0: (diff+step-1)/step;
                     // for step<0: (diff+step+1)/step; truncated division,
                     // then clamped at >= 0.
@@ -1290,20 +1521,20 @@ mod builtins {
                         Sign::Plus => (&diff + step - &one) / step,
                         Sign::Minus => (&diff + step + &one) / step,
                         Sign::NoSign => {
-                            return Err(vm.new_value_error("range() arg 3 must not be zero"))
+                            return Err(vm.new_value_error("range() arg 3 must not be zero"));
                         }
                     };
                     let count = if raw_count.sign() == Sign::Minus {
-                        zero.clone()
+                        zero
                     } else {
                         raw_count
                     };
                     let count_m1 = &count - &one;
                     let half: BigInt = &(&count * &count_m1) / &two;
                     let series: BigInt = &count * a + step * &half;
-                    let total = match series.checked_add(
-                        &sum.downcast_ref::<PyInt>().unwrap().as_bigint(),
-                    ) {
+                    let total = match series
+                        .checked_add(sum.downcast_ref::<PyInt>().unwrap().as_bigint())
+                    {
                         Some(t) => t,
                         None => return Err(vm.new_overflow_error("sum() overflow")),
                     };
@@ -1312,104 +1543,78 @@ mod builtins {
             }
         }
 
-        // Fast path: exact list/tuple of numbers — iterate internal storage
-        // by reference (zero per-element refcount traffic, no iterator object,
-        // no VM calls during the scan so holding a list read-lock is safe).
-        // Ints accumulate in i128; the accumulator promotes to f64 at the
-        // first float element (matching CPython's int+float promotion).
-        // On any non-number element or i128 overflow we abandon and take the
-        // generic route from the original accumulator.
-        {
-            let start_int = sum.downcast_ref_if_exact::<PyInt>(vm);
-            let start_float = sum.downcast_ref_if_exact::<PyFloat>(vm);
-            if start_int.is_some() || start_float.is_some() {
-                use num_traits::ToPrimitive;
-                // Seed accumulators with the start value so IEEE signed-zero
-                // and promotion semantics match sequential addition exactly.
-                let (seed_int, seed_float, seed_float_mode) = match start_float {
-                    Some(f) => (0i128, f.to_f64(), true),
-                    None => (
-                        start_int
-                            .and_then(|i| i.as_bigint().to_i128())
-                            .unwrap_or(0),
-                        0.0,
-                        false,
-                    ),
-                };
-                let iterable_obj = iterable.as_object();
-                let scanned: Option<Option<ScanNum>> = if let Some(list) =
-                    iterable_obj.downcast_ref_if_exact::<crate::builtins::PyList>(vm)
-                {
-                    let guard = list.borrow_vec();
-                    Some(scan_exact_numeric_slice(
-                        &guard,
-                        vm,
-                        seed_int,
-                        seed_float,
-                        seed_float_mode,
-                    ))
-                } else if let Some(tuple) =
-                    iterable_obj.downcast_ref_if_exact::<crate::builtins::PyTuple>(vm)
-                {
-                    Some(scan_exact_numeric_slice(
-                        tuple.as_slice(),
-                        vm,
-                        seed_int,
-                        seed_float,
-                        seed_float_mode,
-                    ))
-                } else {
-                    None
-                };
-                if let Some(Some(numeric)) = scanned {
-                    let fast_result: Option<PyObjectRef> = match numeric {
-                        ScanNum::Int(total) => Some(vm.ctx.new_int(total).into()),
-                        ScanNum::Float(ftotal) => Some(vm.ctx.new_float(ftotal).into()),
-                    };
-                    if let Some(result) = fast_result {
-                        return Ok(result);
-                    }
-                    // else: fall through to generic path below
-                }
-            }
-        }
+        // Compensated numeric summation mirroring CPython's bltinmodule.c
+        // float/complex fast paths (Neumaier summation), including its
+        // int -> float -> complex fall-through semantics.
+        if let Some(seed) = FastAcc::seed(&sum, vm) {
+            let iterable_obj = iterable.as_object();
 
-        // Fast path: sum of i64 integers. Bypasses the generic vm._add
-        // dispatch per element — matches CPython's int-only fast path.
-        // Only for exact ints (not bool, which is a subclass).
-        let is_exact_int = sum.downcast_ref_if_exact::<PyInt>(vm).is_some();
-        if is_exact_int {
-            use num_traits::ToPrimitive;
-            let mut acc: i128 = sum.downcast_ref::<PyInt>().unwrap().as_bigint().to_i64().unwrap_or(0) as i128;
-            let mut overflow = false;
+            // Exact list/tuple elements: zero-copy compensated scan over
+            // internal storage — no per-element refcount traffic, no
+            // iterator object, no VM calls during the scan.
+            let scanned: Option<Result<ScanOutcome, PyBaseExceptionRef>> =
+                if let Some(list) = iterable_obj.downcast_ref_if_exact::<PyList>(vm) {
+                    let guard = list.borrow_vec();
+                    Some(scan_exact_numeric_slice(&guard, vm, seed.clone()))
+                } else { iterable_obj.downcast_ref_if_exact::<PyTuple>(vm).map(|tuple| scan_exact_numeric_slice(tuple.as_slice(), vm, seed.clone())) };
+            if let Some(scanned) = scanned {
+                return match scanned? {
+                    ScanOutcome::Complete(acc) => Ok(acc.materialize(vm)),
+                    ScanOutcome::Partial { partial, resume } => {
+                        // Materialize the compensated prefix and finish the
+                        // remainder generically, exactly like CPython's
+                        // fall-through out of its specialized loops. The
+                        // remaining elements are copied out first so the
+                        // container lock is released before arbitrary user
+                        // code (`__radd__`) can run.
+                        let mut sum = partial.materialize(vm);
+                        let rest: Vec<PyObjectRef> = {
+                            let iterable_obj = iterable.as_object();
+                            if let Some(list) = iterable_obj.downcast_ref_if_exact::<PyList>(vm) {
+                                let guard = list.borrow_vec();
+                                guard[resume..].to_vec()
+                            } else if let Some(tuple) =
+                                iterable_obj.downcast_ref_if_exact::<PyTuple>(vm)
+                            {
+                                tuple.as_slice()[resume..].to_vec()
+                            } else {
+                                unreachable!("container type changed between scans");
+                            }
+                        };
+                        for item in &rest {
+                            sum = vm._add(&sum, item)?;
+                        }
+                        Ok(sum)
+                    }
+                };
+            }
+
+            // Any other iterable: iterator-driven compensated machine with
+            // the same acceptance rules and fall-through as CPython.
+            let mut acc = Some(seed);
+            let mut generic_sum: Option<PyObjectRef> = None;
             for item in iterable.iter(vm)? {
                 let item = item?;
-                if !overflow {
-                    // Only exact ints enter the fast path (not bool subclasses)
-                    if item.downcast_ref_if_exact::<PyInt>(vm).is_some() {
-                        if let Some(int_val) = item.downcast_ref::<PyInt>() {
-                            if let Some(v) = int_val.as_bigint().to_i64() {
-                                match acc.checked_add(v as i128) {
-                                    Some(result) => {
-                                        if result >= i64::MIN as i128 && result <= i64::MAX as i128 {
-                                            acc = result;
-                                            continue;
-                                        }
-                                    }
-                                    None => {}
-                                }
-                            }
+                if let Some(current_acc) = acc.take() {
+                    match current_acc.feed(&item, vm) {
+                        FeedOutcome::Fed(next) => acc = Some(next),
+                        FeedOutcome::FallBack(original) => {
+                            generic_sum = Some(original.materialize(vm));
+                        }
+                        FeedOutcome::Overflowed => {
+                            return Err(vm.new_overflow_error("int too large to convert to float"));
                         }
                     }
-                    overflow = true;
-                    sum = vm.ctx.new_int(acc as i64).into();
                 }
-                sum = vm._add(&sum, &item)?;
+                if let Some(current) = generic_sum.as_ref() {
+                    generic_sum = Some(vm._add(current, &item)?);
+                }
             }
-            if !overflow {
-                return Ok(vm.ctx.new_int(acc as i64).into());
-            }
-            return Ok(sum);
+            return Ok(match (generic_sum, acc) {
+                (Some(s), _) => s,
+                (None, Some(a)) => a.materialize(vm),
+                (None, None) => unreachable!("accumulator lost without fallback"),
+            });
         }
 
         for item in iterable.iter(vm)? {
