@@ -356,3 +356,16 @@ Frozen build measurements:
 Recommendation: keep default build non-frozen; use --features
 freeze-stdlib for import-heavy embedded/CLI scenarios. Future: trim
 pylib freeze set to core bootstrap modules to reclaim bare startup.
+## Round 20 addendum: frozen-stdlib build BROKEN - reverted to default
+
+freeze-stdlib binary fails at interpreter init: frozen warnings.py
+setattr on _contextvars.Token hits our immutable Token type ->
+"essential initialization failed". Root cause: Lib snapshot bytecode
+version-drift vs current VM expectations; freeze requires either
+(a) VM-compatible Lib pin, or (b) Token mutability alignment.
+Default non-frozen build restored and fully green. Junction removed;
+pylib/Lib symlink placeholder intact for future Linux/CI frozen builds.
+
+Deployment guidance: use default build; frozen mode needs the above
+fixes plus trimming pylib freeze set (bare startup regressed 47->157ms
+with full-Lib registry).
