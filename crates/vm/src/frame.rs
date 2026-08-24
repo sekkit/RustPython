@@ -10006,6 +10006,37 @@ impl ExecutingFrame<'_> {
             return;
         }
 
+        // Native builtin (`builtin_function_or_method`, incl. pre-bound
+        // methods like `ap = lst.append`): previously never specialized,
+        // forcing every call through the generic vectorcall path.
+        if !self_or_null_is_some
+            && let Some(native) = callable.downcast_ref_if_exact::<PyNativeFunction>(vm)
+        {
+            if self.specialization_eval_frame_active(vm) {
+                return;
+            }
+            let call_conv = native.value.flags
+                & (PyMethodFlags::VARARGS
+                    | PyMethodFlags::FASTCALL
+                    | PyMethodFlags::NOARGS
+                    | PyMethodFlags::O
+                    | PyMethodFlags::KEYWORDS);
+            let new_op = if call_conv == PyMethodFlags::O && nargs == 1 {
+                Some(Instruction::CallBuiltinO)
+            } else if call_conv == PyMethodFlags::FASTCALL {
+                Some(Instruction::CallBuiltinFast)
+            } else if call_conv == (PyMethodFlags::FASTCALL | PyMethodFlags::KEYWORDS) {
+                Some(Instruction::CallBuiltinFastWithKeywords)
+            } else {
+                None
+            };
+            if let Some(new_op) = new_op {
+                self.specialize_at(instr_idx, cache_base, new_op);
+            }
+            // Unmatched conventions stay on the generic path.
+            return;
+        }
+
         // Bound Python method object (`method`) specialization.
         if !self_or_null_is_some
             && let Some(bound_method) = callable.downcast_ref_if_exact::<PyBoundMethod>(vm)
