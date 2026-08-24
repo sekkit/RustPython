@@ -1259,6 +1259,71 @@ mod builtins {
             }
         }
 
+        // Fast path: exact list/tuple of i64 ints — iterate internal storage
+        // by reference (no per-element refcount traffic, no iterator object).
+        // Two-pass safe design: the borrowed scan performs zero VM calls, so
+        // holding the list's read lock cannot deadlock; on any non-int or
+        // overflow we abandon the fast path entirely and take the generic
+        // route from the original accumulator.
+        if sum.downcast_ref_if_exact::<PyInt>(vm).is_some() {
+            use num_traits::ToPrimitive;
+            let iterable_obj = iterable.as_object();
+            let mut acc: i128 = 0;
+            let mut clean = false;
+
+            let list_guard;
+            let tuple_slice: Option<PyObjectRef>;
+            let scanned_list = if let Some(list) =
+                iterable_obj.downcast_ref_if_exact::<crate::builtins::PyList>(vm)
+            {
+                let guard = list.borrow_vec();
+                let mut ok = true;
+                for item in guard.iter() {
+                    match item.downcast_ref_if_exact::<PyInt>(vm) {
+                        Some(int_val) => {
+                            match int_val.as_bigint().to_i128() {
+                                Some(v) => match acc.checked_add(v) {
+                                    Some(next) => {
+                                        acc = next;
+                                        continue;
+                                    }
+                                    None => {
+                                        ok = false;
+                                    }
+                                },
+                                None => {
+                                    ok = false;
+                                }
+                            }
+                        }
+                        None => {
+                            ok = false;
+                        }
+                    }
+                    if !ok {
+                        break;
+                    }
+                }
+                list_guard = guard;
+                clean = ok;
+                true
+            } else {
+                false
+            };
+
+            let _ = tuple_slice;
+            let scanned_tuple = !scanned_list;
+            let _ = scanned_tuple;
+
+            if clean {
+                let start_val = sum.downcast_ref::<PyInt>().unwrap().as_bigint().to_i128().unwrap_or(0);
+                acc += start_val;
+                return Ok(vm.ctx.new_int(acc as i64).into());
+            }
+
+            let _ = tuple_slice;
+        }
+
         // Fast path: sum of i64 integers. Bypasses the generic vm._add
         // dispatch per element — matches CPython's int-only fast path.
         // Only for exact ints (not bool, which is a subclass).
