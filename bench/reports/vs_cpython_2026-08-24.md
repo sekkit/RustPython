@@ -59,3 +59,25 @@ Round drivers:
   method); the residual is per-dispatch overhead, not missing caches.
 - Top follow-up candidates: vectorcall tightening for fn_call, and
   borrow-semantics activation (LOAD_FAST_BORROW currently clones).
+
+## Decomposition findings (call & iteration, follow-up round)
+
+Staged micro-benchmarks (1M calls / 200x14k lookups, best-of-5):
+
+- Function calls are uniformly ~130ns/call slower than CPython regardless
+  of body (`pass` / 1-arg / 2-arg+add all ~3.7–4.0x). The tailcall
+  trampoline path IS taken (no nested recursion); residual sits in frame
+  push/pop + dispatch entry — needs a native sampling profiler to split
+  further (none available in this environment).
+- Half of the dict-lookup gap is **list iteration itself (4.2x)**:
+  `PyListIterator::fast_next` acquires two locks per element (iterator
+  state mutex + `borrow_vec` read guard) plus PyIterReturn/Option
+  layering, ≈90ns/element vs CPython's lock-free GIL-index step. Fixing
+  requires a single-thread-mode lock-elision design that preserves
+  mutation-during-iteration safety — its own project.
+- Dict probe cost after the byte-eq fast path is ~3x CPython (hash is
+  cached; remaining = probe arithmetic through DictKey trait + guards).
+
+Priority order from data: (1) list-iterator lock elision,
+(2) fn_call native-profile campaign, (3) borrow activation (blocked on
+freethreaded priority).
