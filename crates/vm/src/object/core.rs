@@ -442,12 +442,7 @@ pub mod foreign_dispatch {
 
     /// Set the four C-API foreign-dispatch callbacks.  Called once by the
     /// capi crate during `Py_Initialize`.
-    pub fn set(
-        getattr: *mut (),
-        call: *mut (),
-        is_foreign: *mut (),
-        wrap_foreign: *mut (),
-    ) {
+    pub fn set(getattr: *mut (), call: *mut (), is_foreign: *mut (), wrap_foreign: *mut ()) {
         GETATTR.store(getattr, Ordering::Relaxed);
         CALL.store(call, Ordering::Relaxed);
         IS_FOREIGN.store(is_foreign, Ordering::Relaxed);
@@ -492,17 +487,29 @@ pub mod foreign_dispatch {
     }
 
     /// Returns the foreign-getattr function pointer, or NULL.
-    pub fn getattr_fn() -> Option<unsafe extern "C" fn(*mut super::PyObject, *mut super::PyObject) -> *mut super::PyObject> {
+    pub fn getattr_fn() -> Option<
+        unsafe extern "C" fn(*mut super::PyObject, *mut super::PyObject) -> *mut super::PyObject,
+    > {
         let ptr = GETATTR.load(Ordering::Relaxed);
-        if ptr.is_null() { None } else {
+        if ptr.is_null() {
+            None
+        } else {
             Some(unsafe { core::mem::transmute(ptr) })
         }
     }
 
     /// Returns the foreign-call function pointer, or NULL.
-    pub fn call_fn() -> Option<unsafe extern "C" fn(*mut super::PyObject, *mut super::PyObject, *mut super::PyObject) -> *mut super::PyObject> {
+    pub fn call_fn() -> Option<
+        unsafe extern "C" fn(
+            *mut super::PyObject,
+            *mut super::PyObject,
+            *mut super::PyObject,
+        ) -> *mut super::PyObject,
+    > {
         let ptr = CALL.load(Ordering::Relaxed);
-        if ptr.is_null() { None } else {
+        if ptr.is_null() {
+            None
+        } else {
             Some(unsafe { core::mem::transmute(ptr) })
         }
     }
@@ -512,8 +519,11 @@ pub mod foreign_dispatch {
     /// not installed (normal RustPython objects).
     pub fn is_foreign(obj: *const super::PyObject) -> bool {
         let ptr = IS_FOREIGN.load(Ordering::Relaxed);
-        if ptr.is_null() { return false; }
-        let f: unsafe extern "C" fn(*mut super::PyObject) -> bool = unsafe { core::mem::transmute(ptr) };
+        if ptr.is_null() {
+            return false;
+        }
+        let f: unsafe extern "C" fn(*mut super::PyObject) -> bool =
+            unsafe { core::mem::transmute(ptr) };
         unsafe { f(obj as *mut super::PyObject) }
     }
 }
@@ -1319,8 +1329,7 @@ impl<T: PyPayload + core::fmt::Debug> PyInner<T> {
         let mut layout = core::alloc::Layout::from_size_align(0, 1).unwrap();
 
         let ext_start = if needs_ext {
-            let (combined, offset) =
-                layout.extend(core::alloc::Layout::new::<ObjExt>()).unwrap();
+            let (combined, offset) = layout.extend(core::alloc::Layout::new::<ObjExt>()).unwrap();
             layout = combined;
             Some(offset)
         } else {
@@ -1502,7 +1511,7 @@ impl ToOwned for PyObject {
 
     #[inline(always)]
     fn to_owned(&self) -> Self::Owned {
-        self.0.ref_count.inc();
+        self.0.ref_count.inc_biased();
         PyObjectRef {
             ptr: NonNull::from(self),
         }
@@ -1876,7 +1885,8 @@ impl PyObject {
     /// _PyGC_FINALIZED in Py_GIL_DISABLED mode.
     #[inline]
     pub fn gc_finalized(&self) -> bool {
-        GcBits::from_bits_retain(self.0.gc_prefix().gc_bits.load(Ordering::Relaxed)).contains(GcBits::FINALIZED)
+        GcBits::from_bits_retain(self.0.gc_prefix().gc_bits.load(Ordering::Relaxed))
+            .contains(GcBits::FINALIZED)
     }
 
     /// Mark the object as finalized. Should be called before __del__.
@@ -1889,7 +1899,10 @@ impl PyObject {
     /// Set a GC bit atomically.
     #[inline]
     pub(crate) fn set_gc_bit(&self, bit: GcBits) {
-        self.0.gc_prefix().gc_bits.fetch_or(bit.bits(), Ordering::Relaxed);
+        self.0
+            .gc_prefix()
+            .gc_bits
+            .fetch_or(bit.bits(), Ordering::Relaxed);
     }
 
     /// Get the GC generation index for this object.
@@ -1902,7 +1915,10 @@ impl PyObject {
     /// Must only be called while holding the generation list's write lock.
     #[inline]
     pub(crate) fn set_gc_generation(&self, generation: u8) {
-        self.0.gc_prefix().gc_generation.store(generation, Ordering::Relaxed);
+        self.0
+            .gc_prefix()
+            .gc_generation
+            .store(generation, Ordering::Relaxed);
     }
 
     /// _PyObject_GC_TRACK
@@ -2003,7 +2019,8 @@ impl PyObject {
 
     /// _PyObject_GC_IS_TRACKED
     pub fn is_gc_tracked(&self) -> bool {
-        GcBits::from_bits_retain(self.0.gc_prefix().gc_bits.load(Ordering::Relaxed)).contains(GcBits::TRACKED)
+        GcBits::from_bits_retain(self.0.gc_prefix().gc_bits.load(Ordering::Relaxed))
+            .contains(GcBits::TRACKED)
     }
 
     /// Get the referents (objects directly referenced) of this object.
@@ -2164,7 +2181,7 @@ impl<'a, T: PyPayload> From<&'a Py<T>> for &'a PyObject {
 impl Drop for PyObjectRef {
     #[inline]
     fn drop(&mut self) {
-        if self.0.ref_count.dec() {
+        if self.0.ref_count.dec_biased() {
             unsafe { PyObject::drop_slow(self.ptr) }
         }
     }
@@ -2376,7 +2393,7 @@ impl<T> ToOwned for Py<T> {
 
     #[inline(always)]
     fn to_owned(&self) -> Self::Owned {
-        self.0.ref_count.inc();
+        self.0.ref_count.inc_biased();
         PyRef {
             ptr: NonNull::from(self),
         }
@@ -2468,7 +2485,7 @@ impl<T: fmt::Debug> fmt::Debug for PyRef<T> {
 impl<T> Drop for PyRef<T> {
     #[inline]
     fn drop(&mut self) {
-        if self.0.ref_count.dec() {
+        if self.0.ref_count.dec_biased() {
             unsafe { PyObject::drop_slow(self.ptr.cast::<PyObject>()) }
         }
     }
@@ -2551,7 +2568,11 @@ impl<T: PyPayload + crate::object::MaybeTraverse + core::fmt::Debug> PyRef<T> {
     }
 
     #[inline(always)]
-    pub fn new_ref_original(payload: T, typ: crate::builtins::PyTypeRef, dict: Option<PyDictRef>) -> Self {
+    pub fn new_ref_original(
+        payload: T,
+        typ: crate::builtins::PyTypeRef,
+        dict: Option<PyDictRef>,
+    ) -> Self {
         let has_dict = dict.is_some();
         let is_heaptype = typ.heaptype_ext.is_some();
 
