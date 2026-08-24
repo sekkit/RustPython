@@ -244,3 +244,17 @@ Optimization series total (from session start):
 - for_loop_1k 44.9 -> 25.0us = 1.8x (4.5x -> 3.0x)
 - str_split 680 -> 259us = 2.6x (6.3x -> 2.4x)
 - sum(list) 3554 -> 155us = 22.9x (21x -> 4.7x)
+## Round 8: PyStr freelist experiment — REVERTED (hangs)
+
+Adding MAX_FREELIST=400/HAS_FREELIST to PyStr compiled fine but caused
+test_str to HANG. Likely cause: strings are heavily interned/shared;
+freelist reuse races with intern-table references or the GC traverse
+path expects stable object identity for str payloads. Unlike int/float
+(immutable value cells, no interning), strings participate in
+interning + weakref + hash caching lifetimes that the generic freelist
+does not account for.
+
+Conclusion: string allocation speedup must come from elsewhere:
+- Context::new_str fast paths (already partially: dual-storage write)
+- Intern table hit-rate improvements
+- Possibly a size-classed small-string arena separate from freelist
