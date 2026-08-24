@@ -1,5 +1,6 @@
 use super::{
-    PositionIterInternal, PyGenericAlias, PyStrRef, PyType, PyTypeRef, iter::builtins_iter,
+    IterStatus, PositionIterInternal, PyGenericAlias, PyStrRef, PyType, PyTypeRef,
+    iter::builtins_iter,
 };
 use crate::builtins::PyInt;
 use crate::common::lock::LazyLock;
@@ -747,6 +748,26 @@ impl PyTupleIterator {
                 PyIterReturn::Return(v) => Some(v),
                 PyIterReturn::StopIteration(_) => None,
             })
+    }
+
+    /// Lock-elided variant of [`Self::fast_next`] for single-threaded
+    /// execution (tuples are immutable; only the position is mutable state).
+    ///
+    /// # Safety
+    /// The caller must guarantee that no other thread can touch this
+    /// iterator (`vm.state.thread_count == 0`).
+    pub(crate) unsafe fn fast_next_elided(&self) -> Option<PyObjectRef> {
+        // SAFETY: caller guarantees single-threaded access; the data pointers
+        // come from the locks' own interior-mutability cells.
+        let internal: &mut PositionIterInternal<PyTupleRef> =
+            unsafe { &mut *self.internal.data_ptr() };
+        let tuple: &PyTuple = match &internal.status {
+            IterStatus::Active(t) => t,
+            IterStatus::Exhausted => return None,
+        };
+        let item = tuple.get(internal.position)?.clone();
+        internal.position += 1;
+        Some(item)
     }
 }
 

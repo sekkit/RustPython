@@ -7160,7 +7160,14 @@ impl ExecutingFrame<'_> {
                 let target = bytecode::Label::from_u32(self.lasti() + 1 + u32::from(arg));
                 let iter = self.top_value();
                 if let Some(list_iter) = iter.downcast_ref_if_exact::<PyListIterator>(vm) {
-                    if let Some(value) = list_iter.fast_next() {
+                    let value = if vm.state.thread_count.load() == 0 {
+                        // SAFETY: single-threaded execution — no concurrent
+                        // access to the iterator or the list buffer.
+                        unsafe { list_iter.fast_next_elided() }
+                    } else {
+                        list_iter.fast_next()
+                    };
+                    if let Some(value) = value {
                         self.push_value(value);
                     } else {
                         self.for_iter_jump_on_exhausted(target);
@@ -7175,7 +7182,13 @@ impl ExecutingFrame<'_> {
                 let target = bytecode::Label::from_u32(self.lasti() + 1 + u32::from(arg));
                 let iter = self.top_value();
                 if let Some(tuple_iter) = iter.downcast_ref_if_exact::<PyTupleIterator>(vm) {
-                    if let Some(value) = tuple_iter.fast_next() {
+                    let value = if vm.state.thread_count.load() == 0 {
+                        // SAFETY: single-threaded execution.
+                        unsafe { tuple_iter.fast_next_elided() }
+                    } else {
+                        tuple_iter.fast_next()
+                    };
+                    if let Some(value) = value {
                         self.push_value(value);
                     } else {
                         self.for_iter_jump_on_exhausted(target);

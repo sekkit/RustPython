@@ -1,5 +1,5 @@
 use super::{
-    PositionIterInternal, PyGenericAlias, PyTupleRef, PyType, PyTypeRef,
+    IterStatus, PositionIterInternal, PyGenericAlias, PyTupleRef, PyType, PyTypeRef,
     iter::{builtins_iter, builtins_reversed},
 };
 use crate::atomic_func;
@@ -961,6 +961,32 @@ impl PyListIterator {
                 PyIterReturn::Return(v) => Some(v),
                 PyIterReturn::StopIteration(_) => None,
             })
+    }
+
+    /// Lock-elided variant of [`Self::fast_next`] for single-threaded
+    /// execution: reads the iterator position and the list buffer directly
+    /// through their interior-mutability data pointers, skipping the
+    /// iterator mutex and the list rwlock guard per element.
+    ///
+    /// # Safety
+    /// The caller must guarantee that no other thread can touch this
+    /// iterator or the underlying list while the call runs (i.e.
+    /// `vm.state.thread_count == 0`). State is re-read fresh on every call,
+    /// so mutation from loop-body code between calls behaves exactly like
+    /// the locked path.
+    pub(crate) unsafe fn fast_next_elided(&self) -> Option<PyObjectRef> {
+        // SAFETY: caller guarantees single-threaded access; data pointers come
+        // from the locks' own interior-mutability cells.
+        let internal: &mut PositionIterInternal<PyListRef> =
+            unsafe { &mut *self.internal.data_ptr() };
+        let list: &Py<PyList> = match &internal.status {
+            IterStatus::Active(l) => l,
+            IterStatus::Exhausted => return None,
+        };
+        let vec: &[PyObjectRef] = unsafe { &*list.elements.data_ptr() };
+        let item = vec.get(internal.position)?.clone();
+        internal.position += 1;
+        Some(item)
     }
 }
 
