@@ -159,6 +159,31 @@ unsafe required, works today on stable Rust.
 - Do not skip Phase 1/2 to chase the JIT (CPython data shows Tier 1
   delivers most of the total win)
 
+## Delivered (2026-08 session)
+
+- **Neumaier-compensated `sum()`** — verbatim port of CPython main's
+  `CompensatedSum` machinery for float and complex chains, including the
+  int→float→complex fall-through and C11-Annex-G mixed-mode rules that
+  preserve imaginary signed zeros. List/tuple inputs scan storage
+  zero-copy; the compensated prefix is materialized on bail-out exactly
+  like CPython's exit from its specialized loops. Port note: CPython's
+  `total.lo += (hi - t) + x` binds looser than `+`; translating it as
+  `(lo + (hi - t)) + x` lets huge corrections swallow the compensation
+  via rounding — keep the parentheses.
+- **Header-only PyStr (SSO)** — pure-ASCII strings ≤ 22 bytes live inside
+  the PyStr header (`StrStorage::Sso`, sized to the Vec slot it replaces);
+  creation/clone/drop of short strings involve no heap allocation.
+- **Biased reference counting** — single-threaded execution updates count
+  words with plain loads/stores; a sticky multi-thread flag (flipped by
+  `new_thread()`) routes everything through atomics. A naive
+  "unpublished = thread-confined" gate alone is unsound here: interned /
+  registry-shared objects stay reachable cross-thread without the cache-
+  published bit (verified by a threading-build crash before gating).
+- **Superinstruction status** — LOAD_FAST_LOAD_FAST,
+  STORE_FAST_LOAD_FAST, STORE_FAST_STORE_FAST and
+  LOAD_FAST_BORROW_LOAD_FAST_BORROW are emitted by codegen and executed
+  (borrow loads currently fall back to clones at runtime).
+
 ## References
 - Faster CPython: https://github.com/faster-cpython
 - PEP 659 (specializing adaptive): https://peps.python.org/pep-0659/
