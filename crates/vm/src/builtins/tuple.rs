@@ -1,6 +1,7 @@
 use super::{
     PositionIterInternal, PyGenericAlias, PyStrRef, PyType, PyTypeRef, iter::builtins_iter,
 };
+use crate::builtins::PyInt;
 use crate::common::lock::LazyLock;
 use crate::common::{hash, hash::PyHash, lock::PyMutex, wtf8::wtf8_concat};
 use crate::object::{Traverse, TraverseFn};
@@ -487,6 +488,35 @@ impl PyTuple {
     }
 
     fn __contains__(&self, needle: PyObjectRef, vm: &VirtualMachine) -> PyResult<bool> {
+        // Fast path: exact-int needle — direct value comparison over the
+        // immutable slice (no per-element dispatch). Non-exact elements fall
+        // back to generic comparison preserving subclass __eq__.
+        if let Some(needle_int) = needle.downcast_ref_if_exact::<PyInt>(vm) {
+            let needle_big = needle_int.as_bigint();
+            let slice = self.elements.as_slice();
+            let mut leftovers: Vec<usize> = Vec::new();
+            let mut found = false;
+            for (i, item) in slice.iter().enumerate() {
+                match item.downcast_ref_if_exact::<PyInt>(vm) {
+                    Some(item_int) => {
+                        if item_int.as_bigint() == needle_big {
+                            found = true;
+                            break;
+                        }
+                    }
+                    None => leftovers.push(i),
+                }
+            }
+            if found {
+                return Ok(true);
+            }
+            for &i in &leftovers {
+                if slice[i].rich_compare_bool(&needle, PyComparisonOp::Eq, vm)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
         self._contains(&needle, vm)
     }
 

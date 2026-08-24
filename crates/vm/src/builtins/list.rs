@@ -332,6 +332,42 @@ impl PyList {
     }
 
     pub(crate) fn __contains__(&self, needle: PyObjectRef, vm: &VirtualMachine) -> PyResult<bool> {
+        // Fast path: exact-int needle — scan borrowed storage comparing
+        // values directly (no per-element lock churn, refcount traffic, or
+        // rich-compare dispatch). Non-exact-int elements are collected and
+        // compared generically afterwards, preserving subclass __eq__.
+        if let Some(needle_int) = needle.downcast_ref_if_exact::<PyInt>(vm) {
+            let needle_big = needle_int.as_bigint();
+            let guard = self.borrow_vec();
+            let mut leftovers: Vec<usize> = Vec::new();
+            let mut found = false;
+            for (i, item) in guard.iter().enumerate() {
+                match item.downcast_ref_if_exact::<PyInt>(vm) {
+                    Some(item_int) => {
+                        if item_int.as_bigint() == needle_big {
+                            found = true;
+                            break;
+                        }
+                    }
+                    None => leftovers.push(i),
+                }
+            }
+            drop(guard);
+            if found {
+                return Ok(true);
+            }
+            // Generic comparison only for the non-exact-int leftovers
+            // (bools, int subclasses, other types), preserving __eq__.
+            if !leftovers.is_empty() {
+                let guard = self.borrow_vec();
+                for &i in &leftovers {
+                    if guard[i].rich_compare_bool(&needle, PyComparisonOp::Eq, vm)? {
+                        return Ok(true);
+                    }
+                }
+            }
+            return Ok(false);
+        }
         self.mut_contains(vm, &needle)
     }
 
