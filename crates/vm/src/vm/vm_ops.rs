@@ -424,6 +424,24 @@ impl VirtualMachine {
     inplace_ternary_func!(_ipow, InplacePower, Power, "**=");
 
     pub fn _add(&self, a: &PyObject, b: &PyObject) -> PyResult {
+        // Fast path: exact int + exact int (bypasses full protocol dispatch)
+        if let (Some(ai), Some(bi)) = (
+            a.downcast_ref_if_exact::<crate::builtins::PyInt>(self),
+            b.downcast_ref_if_exact::<crate::builtins::PyInt>(self),
+        ) {
+            use num_traits::ToPrimitive;
+            if let (Some(x), Some(y)) = (
+                ai.as_bigint().to_i64(),
+                bi.as_bigint().to_i64(),
+            ) {
+                if let Some(result) = x.checked_add(y) {
+                    return Ok(self.ctx.new_int(result).into());
+                }
+            }
+            // i64 overflow or big int: use BigInt arithmetic
+            let result = ai.as_bigint() + bi.as_bigint();
+            return Ok(self.ctx.new_int(result).into());
+        }
         let result = self.binary_op1(a, b, PyNumberBinaryOp::Add)?;
         if !result.is(&self.ctx.not_implemented) {
             return Ok(result);
