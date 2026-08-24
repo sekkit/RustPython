@@ -227,6 +227,17 @@ impl PySequenceIterator {
 impl SelfIter for PySequenceIterator {}
 impl IterNext for PySequenceIterator {
     fn next(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyIterReturn> {
+        // CPython parity (issue 22939): a sequence iterator whose index has
+        // reached sys.maxsize raises OverflowError on the next step instead
+        // of wrapping.
+        {
+            let internal = zelf.internal.lock();
+            if matches!(internal.status, IterStatus::Active(_))
+                && internal.position >= isize::MAX as usize
+            {
+                return Err(vm.new_overflow_error("iterator index overflow"));
+            }
+        }
         zelf.internal.lock().next(|obj, pos| {
             let seq = obj.sequence_unchecked();
             PyIterReturn::from_getitem_result(seq.get_item(pos as isize, vm), vm)
