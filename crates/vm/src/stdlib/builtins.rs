@@ -1211,6 +1211,54 @@ mod builtins {
             _ => (),
         });
 
+        // O(1) arithmetic-series fast path: sum(range_obj) where range has
+        // exact-int bounds and start is an exact int (or absent). Uses the
+        // closed-form series formula — O(1) vs CPython's O(n) iteration.
+        {
+            let start_is_int = sum.downcast_ref_if_exact::<PyInt>(vm).is_some();
+            if start_is_int {
+                use malachite_bigint::{BigInt, Sign};
+                use num_traits::Zero;
+                let iterable_obj = iterable.as_object();
+                if let Some(range) =
+                    iterable_obj.downcast_ref_if_exact::<crate::builtins::PyRange>(vm)
+                {
+                    let one = BigInt::from(1);
+                    let two = BigInt::from(2);
+                    let a = range.start.as_bigint();
+                    let b = range.stop.as_bigint();
+                    let step = range.step.as_bigint();
+                    let zero = BigInt::zero();
+                    let diff = b - &*a;
+                    // CPython range length: for step>0: (diff+step-1)/step;
+                    // for step<0: (diff+step+1)/step; truncated division,
+                    // then clamped at >= 0.
+                    let raw_count = match step.sign() {
+                        Sign::Plus => (&diff + step - &one) / step,
+                        Sign::Minus => (&diff + step + &one) / step,
+                        Sign::NoSign => {
+                            return Err(vm.new_value_error("range() arg 3 must not be zero"))
+                        }
+                    };
+                    let count = if raw_count.sign() == Sign::Minus {
+                        zero.clone()
+                    } else {
+                        raw_count
+                    };
+                    let count_m1 = &count - &one;
+                    let half: BigInt = &(&count * &count_m1) / &two;
+                    let series: BigInt = &count * a + step * &half;
+                    let total = match series.checked_add(
+                        &sum.downcast_ref::<PyInt>().unwrap().as_bigint(),
+                    ) {
+                        Some(t) => t,
+                        None => return Err(vm.new_overflow_error("sum() overflow")),
+                    };
+                    return Ok(vm.ctx.new_int(total).into());
+                }
+            }
+        }
+
         // Fast path: sum of i64 integers. Bypasses the generic vm._add
         // dispatch per element — matches CPython's int-only fast path.
         // Only for exact ints (not bool, which is a subclass).
