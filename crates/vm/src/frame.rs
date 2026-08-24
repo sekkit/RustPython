@@ -2972,12 +2972,10 @@ impl ExecutingFrame<'_> {
         // Execute until return or exception:
         let mut arg_state = bytecode::OpArgState::default();
         loop {
-            let idx = self.lasti() as usize;
-            // Advance lasti past the current instruction BEFORE firing the
-            // line event.  This ensures that f_lineno (which reads
-            // locations[lasti - 1]) returns the line of the instruction
-            // being traced, not the previous one.
-            self.update_lasti(|i| *i += 1);
+            // Single RMW advances lasti and yields the executing instruction's
+            // index — replaces the previous load/increment-store/re-load
+            // triple (3 atomic ops -> 1).
+            let idx = self.lasti.fetch_add(1, atomic::Ordering::Relaxed) as usize;
 
             // Fire 'line' trace event when line number changes.
             // Only fire if this frame has a per-frame trace function set
@@ -3088,11 +3086,15 @@ impl ExecutingFrame<'_> {
                 #[cfg(feature = "threading")]
                 vm.run_scheduled_gc();
             }
-            let lasti_before = self.lasti();
+            // lasti is already idx+1 from the fetch_add above; if the
+            // instruction fell through (no jump), skip its inline cache
+            // entries with a single direct store.
             let result = self.execute_instruction(op, arg, &mut do_extend_arg, vm);
-            // Skip inline cache entries if instruction fell through (no jump).
-            if caches > 0 && self.lasti() == lasti_before {
-                self.update_lasti(|i| *i += caches as u32);
+            if caches > 0 && self.lasti.load(atomic::Ordering::Relaxed) as usize == idx + 1 {
+                self.lasti.store(
+                    (idx + 1 + caches) as u32,
+                    atomic::Ordering::Relaxed,
+                );
             }
             match result {
                 Ok(None) => {}
