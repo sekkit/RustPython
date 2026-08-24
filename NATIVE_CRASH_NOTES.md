@@ -330,3 +330,14 @@ specialization + inline caches + tailcalls + superinstructions already
 landed). Remaining perf gap (~2.9x hot loop, ~6x micro-op floor) stems
 from Rust safety overhead vs 30 years of C micro-tuning. Further gains
 need the multi-session items in PERFORMANCE_ROADMAP.md.
+## Round: mimalloc large-pages tuning (deployment option)
+
+MIMALLOC_LARGE_OS_PAGES=1: hot_loop 0.303 -> 0.291s (~4%).
+Other benchmarks within noise. Requires admin/SeLockMemoryPrivilege
+on Windows; silently falls back otherwise. Recommend as runtime env
+option in deployment docs, not a code change.
+
+Dispatch-loop and allocator tuning now exhausted at micro level.
+Remaining ~2.9x hot-loop / ~6x micro-op floor requires the roadmap
+architectural items (superinstruction fusion, tail-call tuning,
+biased refcounting).
