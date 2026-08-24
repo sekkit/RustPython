@@ -1,12 +1,31 @@
 //! Builtin function definitions.
 //!
 //! Implements the list of [builtin Python functions](https://docs.python.org/3/library/builtins.html).
-use crate::{Py, VirtualMachine, builtins::{PyInt, PyModule}, class::PyClassImpl};
+use crate::{Py, VirtualMachine, PyObjectRef, builtins::PyInt, builtins::PyModule, class::PyClassImpl};
 pub(crate) use builtins::{DOC, module_def};
 pub use builtins::{ascii, print, reversed};
 
+/// Scan a slice of objects, returning the i128 sum if every element is
+/// an exact int whose value fits i128; None otherwise (caller falls back
+/// to the generic path). Performs no VM calls — safe under a list read
+/// lock.
+fn scan_exact_int_slice(
+    items: &[PyObjectRef],
+    vm: &VirtualMachine,
+) -> Option<i128> {
+    use num_traits::ToPrimitive;
+    let mut acc: i128 = 0;
+    for item in items {
+        let int_val = item.downcast_ref_if_exact::<PyInt>(vm)?;
+        let v = int_val.as_bigint().to_i128()?;
+        acc = acc.checked_add(v)?;
+    }
+    Some(acc)
+}
+
 #[pymodule]
 mod builtins {
+    use super::scan_exact_int_slice;
     use crate::{
         AsObject, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, TryFromObject, VirtualMachine,
         builtins::{
@@ -1259,69 +1278,38 @@ mod builtins {
             }
         }
 
-        // Fast path: exact list/tuple of i64 ints — iterate internal storage
-        // by reference (no per-element refcount traffic, no iterator object).
-        // Two-pass safe design: the borrowed scan performs zero VM calls, so
-        // holding the list's read lock cannot deadlock; on any non-int or
-        // overflow we abandon the fast path entirely and take the generic
-        // route from the original accumulator.
+        // Fast path: exact list/tuple of ints — iterate internal storage by
+        // reference (zero per-element refcount traffic, no iterator object,
+        // no VM calls during the scan so holding a list read-lock is safe).
+        // On any non-int element or i128 overflow we abandon and take the
+        // generic route from the original accumulator.
         if sum.downcast_ref_if_exact::<PyInt>(vm).is_some() {
-            use num_traits::ToPrimitive;
             let iterable_obj = iterable.as_object();
-            let mut acc: i128 = 0;
-            let mut clean = false;
-
-            let list_guard;
-            let tuple_slice: Option<PyObjectRef>;
-            let scanned_list = if let Some(list) =
+            let scanned: Option<Option<i128>> = if let Some(list) =
                 iterable_obj.downcast_ref_if_exact::<crate::builtins::PyList>(vm)
             {
                 let guard = list.borrow_vec();
-                let mut ok = true;
-                for item in guard.iter() {
-                    match item.downcast_ref_if_exact::<PyInt>(vm) {
-                        Some(int_val) => {
-                            match int_val.as_bigint().to_i128() {
-                                Some(v) => match acc.checked_add(v) {
-                                    Some(next) => {
-                                        acc = next;
-                                        continue;
-                                    }
-                                    None => {
-                                        ok = false;
-                                    }
-                                },
-                                None => {
-                                    ok = false;
-                                }
-                            }
-                        }
-                        None => {
-                            ok = false;
-                        }
-                    }
-                    if !ok {
-                        break;
-                    }
-                }
-                list_guard = guard;
-                clean = ok;
-                true
+                Some(scan_exact_int_slice(&guard, vm))
+            } else if let Some(tuple) =
+                iterable_obj.downcast_ref_if_exact::<crate::builtins::PyTuple>(vm)
+            {
+                Some(scan_exact_int_slice(tuple.as_slice(), vm))
             } else {
-                false
+                None
             };
-
-            let _ = tuple_slice;
-            let scanned_tuple = !scanned_list;
-            let _ = scanned_tuple;
-
-            if clean {
-                let start_val = sum.downcast_ref::<PyInt>().unwrap().as_bigint().to_i128().unwrap_or(0);
-                acc += start_val;
-                return Ok(vm.ctx.new_int(acc as i64).into());
+            if let Some(Some(items_total)) = scanned {
+                let start_val = sum
+                    .downcast_ref::<PyInt>()
+                    .unwrap()
+                    .as_bigint()
+                    .to_i128()
+                    .unwrap_or(0);
+                let total = start_val.checked_add(items_total);
+                if let Some(total) = total {
+                    return Ok(vm.ctx.new_int(total).into());
+                }
+                // i128 overflow: fall through to generic BigInt path
             }
-
-            let _ = tuple_slice;
         }
 
         // Fast path: sum of i64 integers. Bypasses the generic vm._add
