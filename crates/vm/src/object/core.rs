@@ -1841,6 +1841,7 @@ impl PyObject {
     }
 
     #[inline(always)]
+    #[inline]
     pub fn downcast_ref_if_exact<T: PyPayload>(&self, vm: &VirtualMachine) -> Option<&Py<T>> {
         self.class()
             .is(T::class(&vm.ctx))
