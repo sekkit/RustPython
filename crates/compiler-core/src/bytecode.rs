@@ -724,7 +724,7 @@ impl CodeUnits {
     pub fn read_op(&self, index: usize) -> Instruction {
         let units = unsafe { &*self.units.get() };
         let ptr = units.as_ptr().wrapping_add(index) as *const AtomicU8;
-        let byte = unsafe { &*ptr }.load(Ordering::Acquire);
+        let byte = unsafe { &*ptr }.load(Ordering::Relaxed);
         // SAFETY: Only valid Instruction values are stored via replace_op/compare_exchange_op.
         unsafe { mem::transmute::<u8, Instruction>(byte) }
     }
