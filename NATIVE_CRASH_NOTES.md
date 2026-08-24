@@ -284,3 +284,16 @@ operations — closing it requires:
 Iteration-heavy composites improved dramatically: list_compr 3.1x (was 4.2),
 list_contains 2.6x (was 3.2), tuple_in 2.1x (was 2.3), str_split 2.5x
 (was 6.3 pre-mimalloc).
+## Round: fetch_add lasti — 19% dispatch win
+
+lasti was an atomic field touched 3-4x per instruction (load idx,
+closure increment load+store, reload lasti_before, cache-skip store).
+Replaced with single `fetch_add(1, Relaxed)` returning the executing
+index; cache-skip now writes idx+1+caches directly.
+
+hot_loop(2M): 0.380 -> 0.308s = 19% faster. Series cumulative:
+0.449 -> 0.308s = 31% faster (gap 3.7x -> 2.9x vs CPython).
+
+Remaining per-instruction atomic ops after this: read_op (Acquire),
+read_arg (Relaxed), eval_breaker (Relaxed) = 3 loads, all necessary
+for cross-thread quickening/signal semantics.
