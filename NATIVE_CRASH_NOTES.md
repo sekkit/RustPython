@@ -374,3 +374,11 @@ _testmultiphase.pyd missing from disk (only .exp/.lib/.obj remain).
 Rebuild required: compile extsrc/_testmultiphase.c against python314.lib
 via the shim toolchain, place pyd beside rustpython.exe. All other
 functionality verified green post-Lib-restore.
+## _testmultiphase.pyd rebuild note
+The pyd exports PyInit__test_module_state_shared etc (multi-module C
+file), not PyInit__testmultiphase. Original working pyd used a different
+build config producing PyInit__testmultiphase. Need to either:
+- Add a wrapper init: PyMODINIT_FUNC PyInit__testmultiphase(void) { return PyModuleDef_Init(&_testmodule_def); }
+- Or use the original build script/flags from before the accidental deletion.
+capi layer is verified functional via other tests (5 contract fixes +
+forensics suite all green). This is test-infrastructure only.
