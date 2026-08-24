@@ -208,6 +208,8 @@ mod _locale {
         let Some(result) = result else {
             return Err(vm.new_exception_msg(error, "unsupported locale setting".into()));
         };
+        // Signal the VM that locale-aware formatting is now active.
+        rustpython_vm::format::mark_locale_active();
         Ok(pystr_from_bytes(vm, &result))
     }
 

@@ -6,12 +6,37 @@ use crate::{
     stdlib::builtins,
 };
 
+use libc::{setlocale, LC_NUMERIC};
 use crate::common::format::*;
 use crate::common::wtf8::{Wtf8, Wtf8Buf};
 
+/// Whether the program has explicitly opted into locale-aware formatting
+/// via `locale.setlocale()`. Starts false to match CPython's behavior of
+/// not calling `setlocale(LC_ALL, "")` at startup.
+static LOCALE_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Mark that the program has explicitly set a locale, enabling `{:n}`
+/// grouping. Called from the `_locale` module's `setlocale` binding.
+pub fn mark_locale_active() {
+    LOCALE_ACTIVE.store(true, core::sync::atomic::Ordering::Release);
+}
+
 /// Get locale information from C `localeconv()` for the 'n' format specifier.
+///
+/// Matches CPython: `{:n}` only applies grouping when the program has
+/// explicitly opted in via `locale.setlocale()`. Without that call, the
+/// CRT may still report system-locale data on some platforms, but applying
+/// it would produce unexpected thousands separators.
 #[cfg(any(unix, windows))]
 pub(crate) fn get_locale_info() -> LocaleInfo {
+    if !LOCALE_ACTIVE.load(core::sync::atomic::Ordering::Acquire) {
+        return LocaleInfo {
+            thousands_sep: String::new(),
+            decimal_point: ".".to_string(),
+            grouping: vec![],
+        };
+    }
     let lc = crate::host_env::locale::localeconv_data();
     #[allow(
         clippy::unnecessary_cast,
