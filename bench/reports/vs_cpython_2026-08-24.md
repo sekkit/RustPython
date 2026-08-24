@@ -90,6 +90,17 @@ Staged micro-benchmarks (1M calls / 200x14k lookups, best-of-5):
 - Dict probe cost after the byte-eq fast path is ~3x CPython (hash is
   cached; remaining = probe arithmetic through DictKey trait + guards).
 
+Negative result (round: lasti): replacing the per-instruction locked
+`lasti.fetch_add` with relaxed load+store changed nothing measurable
+(all cases within noise, float_arith slightly worse) - the LOCK prefix
+is not a meaningful component of the dispatch floor. ExecutingFrame is
+&mut-exclusive so the split was sound; it just was not where the time
+goes. Remaining per-instruction cost candidates: Instruction enum
+match width, PyStackRef (Option<PyObjectRef>) stack moves,
+arg_state/cache_entries handling, eval-breaker check.
+
+Fresh paired numbers (machine fast state): geomean 2.57x;
+dict_str_lookup improved to 3.40x after in-place key equality.
 Priority order from data: (1) list-iterator lock elision,
 (2) fn_call native-profile campaign, (3) borrow activation (blocked on
 freethreaded priority).
