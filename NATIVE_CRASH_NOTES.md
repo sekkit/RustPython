@@ -341,3 +341,18 @@ Dispatch-loop and allocator tuning now exhausted at micro level.
 Remaining ~2.9x hot-loop / ~6x micro-op floor requires the roadmap
 architectural items (superinstruction fusion, tail-call tuning,
 biased refcounting).
+## Round: freeze-stdlib enabled — mixed results, deployment option
+
+Fixed crates/pylib/Lib symlink placeholder on Windows via absolute
+junction (mklink /J with ABSOLUTE target; relative targets resolve
+against CWD at creation and break). Junction required for py_freeze
+proc-macro read_dir.
+
+Frozen build measurements:
+- import json+datetime: 113ms -> 48ms (2.35x faster; gap 3.1x -> 1.3x)
+- bare startup: 47ms -> 157ms WORSE (full-Lib 2368-file frozen registry
+  init cost; pylib junction currently exposes entire root Lib)
+
+Recommendation: keep default build non-frozen; use --features
+freeze-stdlib for import-heavy embedded/CLI scenarios. Future: trim
+pylib freeze set to core bootstrap modules to reclaim bare startup.
