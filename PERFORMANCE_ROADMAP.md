@@ -173,12 +173,15 @@ unsafe required, works today on stable Rust.
 - **Header-only PyStr (SSO)** — pure-ASCII strings ≤ 22 bytes live inside
   the PyStr header (`StrStorage::Sso`, sized to the Vec slot it replaces);
   creation/clone/drop of short strings involve no heap allocation.
-- **Biased reference counting** — single-threaded execution updates count
-  words with plain loads/stores; a sticky multi-thread flag (flipped by
-  `new_thread()`) routes everything through atomics. A naive
-  "unpublished = thread-confined" gate alone is unsound here: interned /
-  registry-shared objects stay reachable cross-thread without the cache-
-  published bit (verified by a threading-build crash before gating).
+- **Biased reference counting** — ATTEMPTED AND WITHDRAWN. Plain
+  (non-atomic) count updates gated on a single-thread-mode flag crashed
+  `--features threading` builds inside `default_dealloc<PyType>`
+  (`hint::unreachable_unchecked` on a NULL type deref during teardown):
+  replacing locked RMWs with plain stores lets the compiler move the
+  count store across teardown calls, re-opening a latent ordering
+  hazard in object destruction. Reverted in
+  88db6cbea; a future attempt must first make dealloc ordering
+  independent of when the count store lands (or use deferred RC).
 - **Superinstruction status** — LOAD_FAST_LOAD_FAST,
   STORE_FAST_LOAD_FAST, STORE_FAST_STORE_FAST and
   LOAD_FAST_BORROW_LOAD_FAST_BORROW are emitted by codegen and executed
