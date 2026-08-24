@@ -2065,7 +2065,7 @@ class BuiltinTest(ComplexesAreIdenticalMixin, unittest.TestCase):
     @unittest.skipIf(HAVE_DOUBLE_ROUNDING,
                          "sum accuracy not guaranteed on machines with double rounding")
     @support.cpython_only    # Other implementations may choose a different algorithm
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; sum() doesn't use math.fsum for float precision
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; sum() lacks Neumaier compensated summation for floats
     def test_sum_accuracy(self):
         self.assertEqual(sum([0.1] * 10), 1.0)
         self.assertEqual(sum([1.0, 10E100, 1.0, -10E100]), 2.0)
