@@ -101,6 +101,10 @@ arg_state/cache_entries handling, eval-breaker check.
 
 Fresh paired numbers (machine fast state): geomean 2.57x;
 dict_str_lookup improved to 3.40x after in-place key equality.
+Negative result (round: float binop stack ops): replacing pop2+push1
+with direct slot write + truncate made float_arith ~6% SLOWER.
+push_value/pop_value are already optimal inline operations on the
+contiguous stack buffer; explicit index arithmetic adds overhead.
 Priority order from data: (1) list-iterator lock elision,
 (2) fn_call native-profile campaign, (3) borrow activation (blocked on
 freethreaded priority).
