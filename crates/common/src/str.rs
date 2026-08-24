@@ -270,12 +270,16 @@ impl<'a> StrDataRef<'a> {
 /// buffer, which backs the C-API inline string path without a separate heap
 /// indirection. `StrStorage::Sso` keeps short ASCII strings entirely inside
 /// the header — no heap allocation, no pointer chase, and cloning copies the
-/// bytes instead of allocating.
+/// bytes instead of allocating. `StrStorage::Grow` is a `Wtf8Buf` with spare
+/// capacity used by in-place concatenation (`s += ...` on a uniquely-owned
+/// string): the buffer reallocs geometrically instead of copying from scratch
+/// per append.
 #[derive(Debug, Clone)]
 enum StrStorage {
     Heap(Box<Wtf8>),
     Inline(Vec<u8>),
     Sso(SsoBuf),
+    Grow(Wtf8Buf),
 }
 
 /// Capacity of the small-string-optimization buffer inside [`StrData`].
@@ -568,7 +572,7 @@ impl StrData {
     #[inline]
     pub fn inline_bytes(&self) -> Option<&[u8]> {
         match &self.data {
-            StrStorage::Heap(_) | StrStorage::Sso(_) => None,
+            StrStorage::Heap(_) | StrStorage::Sso(_) | StrStorage::Grow(_) => None,
             StrStorage::Inline(bytes) => Some(bytes.as_slice()),
         }
     }
@@ -579,7 +583,41 @@ impl StrData {
             StrStorage::Heap(b) => &**b,
             StrStorage::Inline(bytes) => unsafe { Wtf8::from_bytes_unchecked(bytes.as_slice()) },
             StrStorage::Sso(buf) => unsafe { Wtf8::from_bytes_unchecked(buf.as_slice()) },
+            StrStorage::Grow(buf) => buf.as_slice(),
         }
+    }
+
+    /// In-place ASCII append for uniquely-owned strings.
+    ///
+    /// Appends `other` (which must be pure ASCII) to the growable buffer,
+    /// reallocating geometrically. Returns `false` when the current storage
+    /// is not yet growable — the caller should convert via
+    /// [`Self::to_growable_ascii`] and retry semantics instead.
+    pub fn append_ascii_in_place(&mut self, other: &Wtf8) -> bool {
+        debug_assert!(other.is_ascii(), "append_ascii_in_place requires ASCII");
+        let buf = match &mut self.data {
+            StrStorage::Grow(buf) => buf,
+            _ => return false,
+        };
+        buf.push_str(other.as_str().expect("ASCII is valid UTF-8"));
+        self.len = buf.len().into();
+        true
+    }
+
+    /// Re-seed this storage as a growable ASCII buffer holding the current
+    /// bytes plus `other` (pure ASCII), reserving spare capacity so a run of
+    /// appends amortizes to O(total).
+    pub fn to_growable_ascii(&mut self, other: &Wtf8) {
+        debug_assert!(other.is_ascii(), "to_growable_ascii requires ASCII");
+        let cur_len = self.as_wtf8().len();
+        let mut buf = Wtf8Buf::with_capacity((cur_len + other.len()) * 2 + 16);
+        if cur_len > 0 {
+            buf.push_str(self.as_wtf8().as_str().expect("caller guarantees ASCII"));
+        }
+        buf.push_str(other.as_str().expect("ASCII is valid UTF-8"));
+        self.len = buf.len().into();
+        self.kind = StrKind::Ascii;
+        self.data = StrStorage::Grow(buf);
     }
 
     // TODO: rename to to_str

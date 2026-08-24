@@ -1554,6 +1554,18 @@ impl PyObject {
     pub(crate) fn mark_cache_published(&self) {
         self.0.ref_count.mark_published();
     }
+
+    /// Whether the count word carries the leaked (interned) flag.
+    #[inline]
+    pub(crate) fn rc_is_leaked(&self) -> bool {
+        self.0.ref_count.is_leaked()
+    }
+
+    /// Whether the object was published to a lock-free cache.
+    #[inline]
+    pub(crate) fn rc_is_published(&self) -> bool {
+        self.0.ref_count.is_published()
+    }
 }
 
 impl PyObjectRef {

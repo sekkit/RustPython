@@ -1712,6 +1712,40 @@ impl PyRef<PyStr> {
         if other.is_empty() {
             return;
         }
+        let obj = self.as_object();
+        // In-place append only under strict uniqueness: single-threaded
+        // execution, never leaked/interned, never published to a lock-free
+        // cache (borrowed readers may hold byte slices), and the only strong
+        // reference. Otherwise fall through to a fresh allocation.
+        let can_mutate = obj.strong_count() == 1
+            && !obj.rc_is_leaked()
+            && !obj.rc_is_published()
+            // Byte mutation is only safe while no other interpreter thread
+            // exists that could observe the buffer mid-append.
+            && vm.state.thread_count.load() == 0;
+        if can_mutate && (*self).kind().is_ascii() && other.is_ascii() {
+            unsafe {
+                let payload = self.payload() as *const PyStr as *mut PyStr;
+                if !(*payload).data.append_ascii_in_place(other) {
+                    (*payload).data.to_growable_ascii(other);
+                }
+                let bytes = (*payload).data.as_wtf8().as_bytes();
+                (*payload).length = bytes.len() as isize;
+                // Refresh the 8-byte C-API mirror of the leading bytes (the
+                // prefix is unchanged by an append, but the string may have
+                // grown past 8 bytes / up from empty).
+                let n = bytes.len().min(8);
+                let mirror: *mut [u8; 8] = core::ptr::addr_of_mut!((*payload).inline);
+                unsafe {
+                    let mirror_slice = &mut *mirror;
+                    mirror_slice[..n].copy_from_slice(&bytes[..n]);
+                }
+                (*payload)
+                    .hash
+                    .store(hash::SENTINEL, atomic::Ordering::Relaxed);
+            }
+            return;
+        }
         let mut s = Wtf8Buf::with_capacity(self.byte_len() + other.len());
         s.push_wtf8(self.as_ref());
         s.push_wtf8(other);

@@ -375,8 +375,8 @@ impl Wtf8Buf {
     }
 
     #[inline]
-    pub fn as_slice(&self) -> &Wtf8 {
-        unsafe { Wtf8::from_bytes_unchecked(&self.bytes) }
+    pub const fn as_slice(&self) -> &Wtf8 {
+        unsafe { Wtf8::from_bytes_unchecked(self.bytes.as_slice()) }
     }
 
     #[inline]
