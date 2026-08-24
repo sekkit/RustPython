@@ -369,3 +369,8 @@ pylib/Lib symlink placeholder intact for future Linux/CI frozen builds.
 Deployment guidance: use default build; frozen mode needs the above
 fixes plus trimming pylib freeze set (bare startup regressed 47->157ms
 with full-Lib registry).
+## Round 20 final note
+_testmultiphase.pyd missing from disk (only .exp/.lib/.obj remain).
+Rebuild required: compile extsrc/_testmultiphase.c against python314.lib
+via the shim toolchain, place pyd beside rustpython.exe. All other
+functionality verified green post-Lib-restore.
