@@ -108,3 +108,21 @@ contiguous stack buffer; explicit index arithmetic adds overhead.
 Priority order from data: (1) list-iterator lock elision,
 (2) fn_call native-profile campaign, (3) borrow activation (blocked on
 freethreaded priority).
+
+## Realistic composite benchmark (round 13)
+
+| pattern | cpython_ms | rustpy_ms | ratio |
+|---|---:|---:|---:|
+| join_10k | 0.7 | 1.8 | 2.6x |
+| comp_filter_50k | 3.2 | 11.8 | 3.7x |
+| class_method_20k | 6.9 | 45.1 | **6.5x** |
+| sort_30k | 14.3 | 55.7 | 3.9x |
+| json_roundtrip_2k | 2.4 | 50.7 | **21.1x** |
+| str_format_20k | 10.0 | 28.0 | 2.8x |
+| nested_access_10k | 0.9 | 4.0 | 4.4x |
+
+Key finding: json_roundtrip is 21x slower because RP lacks the C-accelerated
+`_json` module and falls back to pure Python. This single missing extension
+accounts for the largest real-world performance gap.
+Second priority: class_method at 6.5x (instantiation + attribute lookup +
+method dispatch chain).
