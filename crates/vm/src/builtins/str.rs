@@ -1723,14 +1723,18 @@ impl PyRef<PyStr> {
             // Byte mutation is only safe while no other interpreter thread
             // exists that could observe the buffer mid-append.
             && vm.state.thread_count.load() == 0;
-        if can_mutate && (*self).kind().is_ascii() && other.is_ascii() {
+        if can_mutate {
             unsafe {
                 let payload = self.payload() as *const PyStr as *mut PyStr;
-                if !(*payload).data.append_ascii_in_place(other) {
-                    (*payload).data.to_growable_ascii(other);
+                if !(*payload).data.append_in_place(other) {
+                    (*payload).data.to_growable(other);
                 }
+                // The kind may have widened (ASCII + non-ASCII); refresh the
+                // CPython-compatible state bitfield from the new kind.
+                let kind = (*payload).data.kind();
+                (*payload).length = (*payload).data.char_len() as isize;
+                (*payload).state = PyStr::state_from_kind(kind);
                 let bytes = (*payload).data.as_wtf8().as_bytes();
-                (*payload).length = bytes.len() as isize;
                 // Refresh the 8-byte C-API mirror of the leading bytes (the
                 // prefix is unchanged by an append, but the string may have
                 // grown past 8 bytes / up from empty).

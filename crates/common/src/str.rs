@@ -587,36 +587,47 @@ impl StrData {
         }
     }
 
-    /// In-place ASCII append for uniquely-owned strings.
+    /// In-place append for uniquely-owned strings.
     ///
-    /// Appends `other` (which must be pure ASCII) to the growable buffer,
-    /// reallocating geometrically. Returns `false` when the current storage
-    /// is not yet growable — the caller should convert via
-    /// [`Self::to_growable_ascii`] and retry semantics instead.
-    pub fn append_ascii_in_place(&mut self, other: &Wtf8) -> bool {
-        debug_assert!(other.is_ascii(), "append_ascii_in_place requires ASCII");
+    /// Appends `other` (any WTF-8) to the growable buffer, reallocating
+    /// geometrically. Returns `false` when the current storage is not yet
+    /// growable — the caller should convert via [`Self::to_growable`]
+    /// instead. The character count of the appended piece is computed over
+    /// the appended bytes only, so a run of appends stays O(total).
+    pub fn append_in_place(&mut self, other: &Wtf8) -> bool {
+        let old_char_len = self.char_len();
         let buf = match &mut self.data {
             StrStorage::Grow(buf) => buf,
             _ => return false,
         };
-        buf.push_str(other.as_str().expect("ASCII is valid UTF-8"));
-        self.len = buf.len().into();
+        buf.reserve(other.len());
+        buf.push_wtf8(other);
+        let added = if other.is_ascii() {
+            other.len()
+        } else {
+            other.code_points().count()
+        };
+        self.len = (old_char_len + added).into();
         true
     }
 
-    /// Re-seed this storage as a growable ASCII buffer holding the current
-    /// bytes plus `other` (pure ASCII), reserving spare capacity so a run of
-    /// appends amortizes to O(total).
-    pub fn to_growable_ascii(&mut self, other: &Wtf8) {
-        debug_assert!(other.is_ascii(), "to_growable_ascii requires ASCII");
-        let cur_len = self.as_wtf8().len();
-        let mut buf = Wtf8Buf::with_capacity((cur_len + other.len()) * 2 + 16);
-        if cur_len > 0 {
-            buf.push_str(self.as_wtf8().as_str().expect("caller guarantees ASCII"));
+    /// Re-seed this storage as a growable buffer holding the current bytes
+    /// plus `other`, reserving spare capacity so a run of appends amortizes
+    /// to O(total). The kind is re-deduced (an ASCII string concatenated
+    /// with non-ASCII becomes Utf8/Wtf8).
+    pub fn to_growable(&mut self, other: &Wtf8) {
+        let mut buf = Wtf8Buf::with_capacity((self.as_wtf8().len() + other.len()) * 2 + 16);
+        if !self.as_wtf8().is_empty() {
+            buf.push_wtf8(self.as_wtf8());
         }
-        buf.push_str(other.as_str().expect("ASCII is valid UTF-8"));
-        self.len = buf.len().into();
-        self.kind = StrKind::Ascii;
+        buf.push_wtf8(other);
+        let kind = buf.str_kind();
+        let chars = match kind {
+            StrKind::Ascii => buf.len(),
+            _ => buf.as_slice().code_points().count(),
+        };
+        self.len = chars.into();
+        self.kind = kind;
         self.data = StrStorage::Grow(buf);
     }
 
