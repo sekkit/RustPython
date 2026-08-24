@@ -199,6 +199,10 @@ impl Wtf8Concat for Py<PyStr> {
 
 impl<'a> From<&'a AsciiStr> for PyStr {
     fn from(s: &'a AsciiStr) -> Self {
+        // Short ASCII strings live entirely in the header: no allocation.
+        if let Some(data) = StrData::try_sso_ascii(s.as_bytes()) {
+            return data.into();
+        }
         s.to_owned().into()
     }
 }
@@ -223,12 +227,20 @@ impl From<AsciiChar> for PyStr {
 
 impl<'a> From<&'a str> for PyStr {
     fn from(s: &'a str) -> Self {
+        // Short pure-ASCII strings live entirely in the header: no allocation.
+        if let Some(data) = StrData::try_sso_ascii(s.as_bytes()) {
+            return data.into();
+        }
         s.to_owned().into()
     }
 }
 
 impl<'a> From<&'a Wtf8> for PyStr {
     fn from(s: &'a Wtf8) -> Self {
+        // try_sso_ascii's ASCII check covers the WTF-8-is-ASCII case.
+        if let Some(data) = StrData::try_sso_ascii(s.as_bytes()) {
+            return data.into();
+        }
         s.to_owned().into()
     }
 }
@@ -1285,12 +1297,12 @@ impl PyStr {
         }
         if items.len() == 1 {
             // CPython returns the single element itself for one-element joins.
-            let first = items[0].downcast_ref_if_exact::<PyStr>(vm)?;
+            let first = items[0].downcast_ref_if_exact::<Self>(vm)?;
             return Some(first.to_owned());
         }
         let mut total: usize = 0;
         for item in items {
-            let s = item.downcast_ref_if_exact::<PyStr>(vm)?;
+            let s = item.downcast_ref_if_exact::<Self>(vm)?;
             total = total.saturating_add(s.as_wtf8().len());
         }
         total = total.saturating_add(sep.len().saturating_mul(items.len() - 1));
@@ -1299,7 +1311,7 @@ impl PyStr {
             if i > 0 {
                 buf.push_wtf8(sep);
             }
-            let s = item.downcast_ref_if_exact::<PyStr>(vm).unwrap();
+            let s = item.downcast_ref_if_exact::<Self>(vm).unwrap();
             buf.push_wtf8(s.as_wtf8());
         }
         Some(vm.ctx.new_str(buf))

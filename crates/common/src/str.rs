@@ -184,7 +184,9 @@ impl<'a> StrDataRef<'a> {
     #[inline]
     pub fn as_str_kind(&self) -> PyKindStr<'_> {
         match self.kind {
-            StrKind::Ascii => PyKindStr::Ascii(unsafe { AsciiStr::from_ascii_unchecked(self.bytes) }),
+            StrKind::Ascii => {
+                PyKindStr::Ascii(unsafe { AsciiStr::from_ascii_unchecked(self.bytes) })
+            }
             StrKind::Utf8 => PyKindStr::Utf8(unsafe { core::str::from_utf8_unchecked(self.bytes) }),
             StrKind::Wtf8 => PyKindStr::Wtf8(self.as_wtf8()),
         }
@@ -266,11 +268,54 @@ impl<'a> StrDataRef<'a> {
 /// `StrStorage::Heap` owns the data in a heap box (the default for ordinary
 /// RustPython strings). `StrStorage::Inline` owns the data in a `Vec<u8>`
 /// buffer, which backs the C-API inline string path without a separate heap
-/// indirection.
+/// indirection. `StrStorage::Sso` keeps short ASCII strings entirely inside
+/// the header — no heap allocation, no pointer chase, and cloning copies the
+/// bytes instead of allocating.
 #[derive(Debug, Clone)]
 enum StrStorage {
     Heap(Box<Wtf8>),
     Inline(Vec<u8>),
+    Sso(SsoBuf),
+}
+
+/// Capacity of the small-string-optimization buffer inside [`StrData`].
+///
+/// An SSO buffer must fit into the space the `Vec<u8>` variant already
+/// occupies (24 bytes): one length byte plus up to 22 payload bytes, so
+/// adding it does not grow `StrData` (or the `PyStr` header that embeds it).
+const SSO_CAP: usize = 22;
+
+const _: () = assert!(size_of::<SsoBuf>() <= size_of::<Vec<u8>>());
+
+/// Header-owned bytes of a small pure-ASCII string.
+#[derive(Debug, Clone)]
+struct SsoBuf {
+    len: u8,
+    bytes: [u8; SSO_CAP],
+}
+
+impl SsoBuf {
+    /// Capture `bytes` for header storage; `None` when they are too long or
+    /// not pure ASCII.
+    #[inline]
+    fn new(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() > SSO_CAP || !bytes.is_ascii() {
+            return None;
+        }
+        let mut buf = [0u8; SSO_CAP];
+        buf[..bytes.len()].copy_from_slice(bytes);
+        Some(Self {
+            len: bytes.len() as u8,
+            bytes: buf,
+        })
+    }
+
+    #[inline]
+    const fn as_slice(&self) -> &[u8] {
+        let len = self.len as usize;
+        let (head, _) = self.bytes.split_at(len);
+        head
+    }
 }
 
 /// A [`Wtf8Index`] built on first use.
@@ -375,6 +420,12 @@ impl From<Box<Wtf8>> for StrData {
         // doing the check is ~10x faster for ascii, and is actually only 2% slower worst case for
         // non-ascii; see https://github.com/RustPython/RustPython/pull/2586#issuecomment-844611532
         let kind = value.str_kind();
+        if kind.is_ascii() {
+            // Short ASCII strings move into the header; the box is freed.
+            if let Some(data) = Self::try_sso_ascii(value.as_bytes()) {
+                return data;
+            }
+        }
         unsafe { Self::new_str_unchecked(value, kind) }
     }
 }
@@ -385,6 +436,11 @@ impl From<Box<str>> for StrData {
         // doing the check is ~10x faster for ascii, and is actually only 2% slower worst case for
         // non-ascii; see https://github.com/RustPython/RustPython/pull/2586#issuecomment-844611532
         let kind = value.str_kind();
+        if kind.is_ascii() {
+            if let Some(data) = Self::try_sso_ascii(value.as_bytes()) {
+                return data;
+            }
+        }
         unsafe { Self::new_str_unchecked(value.into(), kind) }
     }
 }
@@ -392,6 +448,10 @@ impl From<Box<str>> for StrData {
 impl From<Box<AsciiStr>> for StrData {
     #[inline]
     fn from(value: Box<AsciiStr>) -> Self {
+        // Short ASCII strings live entirely in the header; free the box.
+        if let Some(data) = Self::try_sso_ascii(value.as_bytes()) {
+            return data;
+        }
         Self {
             len: value.len().into(),
             data: StrStorage::Heap(value.into()),
@@ -403,7 +463,7 @@ impl From<Box<AsciiStr>> for StrData {
 
 impl From<AsciiChar> for StrData {
     fn from(ch: AsciiChar) -> Self {
-        AsciiString::from(ch).into_boxed_ascii_str().into()
+        Self::try_sso_ascii(&[ch.as_byte()]).expect("1-byte ASCII always fits SSO")
     }
 }
 
@@ -438,6 +498,20 @@ impl From<CodePoint> for StrData {
 }
 
 impl StrData {
+    /// Store a short pure-ASCII string entirely inside the header — no heap
+    /// allocation at all. Returns `None` when the bytes are too long or not
+    /// ASCII, in which case callers fall back to boxed storage.
+    #[inline]
+    pub fn try_sso_ascii(bytes: &[u8]) -> Option<Self> {
+        let buf = SsoBuf::new(bytes)?;
+        Some(Self {
+            len: (bytes.len()).into(),
+            data: StrStorage::Sso(buf),
+            kind: StrKind::Ascii,
+            index: Wtf8IndexSlot::new(),
+        })
+    }
+
     /// # Safety
     ///
     /// Given `bytes` must be valid data for given `kind`
@@ -494,7 +568,7 @@ impl StrData {
     #[inline]
     pub fn inline_bytes(&self) -> Option<&[u8]> {
         match &self.data {
-            StrStorage::Heap(_) => None,
+            StrStorage::Heap(_) | StrStorage::Sso(_) => None,
             StrStorage::Inline(bytes) => Some(bytes.as_slice()),
         }
     }
@@ -504,6 +578,7 @@ impl StrData {
         match &self.data {
             StrStorage::Heap(b) => &**b,
             StrStorage::Inline(bytes) => unsafe { Wtf8::from_bytes_unchecked(bytes.as_slice()) },
+            StrStorage::Sso(buf) => unsafe { Wtf8::from_bytes_unchecked(buf.as_slice()) },
         }
     }
 
@@ -528,12 +603,12 @@ impl StrData {
     #[inline]
     pub fn as_str_kind(&self) -> PyKindStr<'_> {
         match self.kind {
-            StrKind::Ascii => {
-                PyKindStr::Ascii(unsafe { AsciiStr::from_ascii_unchecked(self.as_wtf8().as_bytes()) })
-            }
-            StrKind::Utf8 => {
-                PyKindStr::Utf8(unsafe { core::str::from_utf8_unchecked(self.as_wtf8().as_bytes()) })
-            }
+            StrKind::Ascii => PyKindStr::Ascii(unsafe {
+                AsciiStr::from_ascii_unchecked(self.as_wtf8().as_bytes())
+            }),
+            StrKind::Utf8 => PyKindStr::Utf8(unsafe {
+                core::str::from_utf8_unchecked(self.as_wtf8().as_bytes())
+            }),
             StrKind::Wtf8 => PyKindStr::Wtf8(self.as_wtf8()),
         }
     }
@@ -1025,5 +1100,68 @@ mod tests {
 
         let s = "0😀😃😄😁😆😅😂🤣9";
         assert_eq!(get_chars(s, 3..7), "😄😁😆😅");
+    }
+
+    #[test]
+    fn sso_roundtrip_accessors() {
+        let d = StrData::try_sso_ascii(b"hello").expect("fits");
+        assert_eq!(d.as_str(), Some("hello"));
+        assert_eq!(d.as_wtf8(), "hello");
+        assert_eq!(d.kind(), StrKind::Ascii);
+        assert_eq!(d.len(), 5);
+        assert_eq!(d.char_len(), 5);
+        assert!(!d.is_empty());
+        // SSO is not the C-API inline-buffer path.
+        assert!(d.inline_bytes().is_none());
+        match d.as_str_kind() {
+            PyKindStr::Ascii(a) => assert_eq!(a.as_str(), "hello"),
+            _ => panic!("expected ascii kind"),
+        }
+    }
+
+    #[test]
+    fn sso_empty_string() {
+        let d = StrData::try_sso_ascii(b"").expect("empty fits");
+        assert_eq!(d.len(), 0);
+        assert!(d.is_empty());
+        assert_eq!(d.as_str(), Some(""));
+    }
+
+    #[test]
+    fn sso_boundary_lengths() {
+        let max = "x".repeat(SSO_CAP);
+        let d = StrData::try_sso_ascii(max.as_bytes()).expect("cap-length fits");
+        assert_eq!(d.len(), SSO_CAP);
+        let over = "y".repeat(SSO_CAP + 1);
+        assert!(StrData::try_sso_ascii(over.as_bytes()).is_none());
+        // An SSO buffer never grows StrStorage past the Vec variant's slot.
+        assert!(size_of::<SsoBuf>() <= size_of::<Vec<u8>>());
+    }
+
+    #[test]
+    fn sso_rejects_non_ascii() {
+        assert!(StrData::try_sso_ascii("héllo".as_bytes()).is_none());
+    }
+
+    #[test]
+    fn sso_from_boxed_uses_header_for_short() {
+        let short = StrData::from("abcdef".to_owned().into_boxed_str());
+        assert!(matches!(short.data, StrStorage::Sso(_)));
+        assert_eq!(short.as_str(), Some("abcdef"));
+
+        let long = StrData::from("z".repeat(SSO_CAP + 1).into_boxed_str());
+        assert!(matches!(long.data, StrStorage::Heap(_)));
+        assert_eq!(long.len(), SSO_CAP + 1);
+
+        let boxed_ascii = StrData::from(
+            ascii::AsciiString::from_ascii("abc")
+                .expect("ascii")
+                .into_boxed_ascii_str(),
+        );
+        assert!(matches!(boxed_ascii.data, StrStorage::Sso(_)));
+
+        let one_char = StrData::from(ascii::AsciiChar::from_ascii(b'q').expect("ascii"));
+        assert!(matches!(one_char.data, StrStorage::Sso(_)));
+        assert_eq!(one_char.as_str(), Some("q"));
     }
 }
