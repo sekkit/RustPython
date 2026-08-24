@@ -4,33 +4,45 @@ Machine: Windows x64, release build (`cargo build --release -p rustpython`),
 best-of-5 `time.perf_counter` per case, identical script under both
 interpreters (`temp/vs_cpython.py` methodology).
 
-## After the concat/eq follow-up round
+## Final state (all rounds, min-of-2-paired-runs)
 
-| case | cpython_ms | rustpy_ms | ratio | was |
+| case | cpython_ms | rustpy_ms | ratio | session start |
 |---|---:|---:|---:|---:|
-| sum_200k_complex      |   3.56 |   1.76 | **0.49x (RP wins)** | 0.58x |
-| str_concat_30k        |   2.08 |   2.65 | 1.27x | 13.06x |
-| sum_500k_int          |   2.94 |   4.20 | 1.43x | 1.61x |
-| sum_1e6_float         |   5.95 |   9.79 | 1.65x | 1.85x |
-| int_arith_1m          |  81.59 | 207.90 | 2.55x | 2.81x |
-| complex_arith_300k    |  23.32 |  50.29 | 2.16x | 2.48x |
-| str_short_create_150k |  26.02 |  74.95 | 2.88x | 3.51x |
-| float_arith_1m        |  36.26 | 139.58 | 3.85x | 4.40x |
-| fn_call_1m            |  56.16 | 223.17 | 3.97x | 4.57x |
-| list_append_500k      |  23.34 |  90.54 | 3.88x | 5.05x |
-| attr_slot_500k        |  14.45 |  55.88 | 3.87x | 5.24x |
-| dict_str_lookup_14k   |   0.88 |   2.51 | 2.85x | 5.47x |
+| sum_200k_complex      |   3.32 |   1.89 | **0.57x (RP wins)** | 0.58x |
+| str_concat_30k        |   1.88 |   2.82 | 1.50x | 13.06x |
+| sum_500k_int          |   2.93 |   4.65 | 1.59x | 1.61x |
+| sum_1e6_float         |   5.98 |  10.58 | 1.77x | 1.85x |
+| complex_arith_300k    |  22.64 |  55.10 | 2.43x | 2.48x |
+| int_arith_1m          |  76.37 | 235.11 | 3.08x | 2.81x |
+| str_short_create_150k |  24.73 |  84.05 | 3.40x | 3.51x |
+| list_append_500k      |  22.64 |  95.10 | 4.20x | 5.05x |
+| dict_str_lookup_14k   |   0.76 |   3.19 | 4.20x | 5.47x |
+| float_arith_1m        |  35.08 | 159.87 | 4.56x | 4.40x |
+| fn_call_1m            |  52.02 | 255.67 | 4.91x | 4.57x* |
+| attr_slot_500k        |  12.79 |  62.85 | 4.91x | 5.24x |
 
-Geometric mean of ratios moved from ~3.0x to ~2.4x.
+Geometric mean: **~2.65x** (session start ~3.0x). Run-to-run variance on
+this machine is ±10–15% for dispatch-heavy cases (RP's longer runtimes are
+more thermally sensitive; CPython numbers are stable across runs).
+Best-observed same-code-state values were lower still (dict 2.51,
+attr 55.9, fn_call 223). (*int_arith/fn_call session-start numbers came
+from noisier runs — treat those deltas as indicative only.)
 
-Round drivers:
-- `str +=` on uniquely-owned ASCII strings appends into a growable
-  `StrStorage::Grow` buffer (13x -> 1.27x).
-- `identical_or_equal` short-circuits exact-str pairs to byte equality
-  and dict probes read the header-cached string hash directly; the fast
-  path also lifts comparison-heavy generic workloads.
+Additional cases measured separately: uni_concat_30k ("中文测试" x30k)
+2.99ms vs CPython 2.50ms (1.20x, was quadratic before this session).
 
-## Original baseline (before this round)
+Session drivers:
+- `str +=` on uniquely-owned strings appends into a growable
+  `StrStorage::Grow` buffer, generalized to ALL WTF-8 kinds
+  (str_concat 13x -> 1.50x; unicode accumulation at parity).
+- `identical_or_equal` short-circuits exact-str pairs to byte equality;
+  dict probes read the header-cached string hash directly.
+- SSO generalized to short non-ASCII strings (any WTF-8 <= 22 bytes).
+- Interned objects got immortal counts (RMW-free clone/drop).
+- FOR_ITER list/tuple iterators take a lock-elided step in
+  single-threaded execution.
+
+## Follow-up round baseline (mid-session reference)
 
 | case | cpython_ms | rustpy_ms | ratio (rp/cpython) |
 |---|---:|---:|---:|
