@@ -315,3 +315,18 @@ Remaining ~6x micro-op floor = dispatch match + PyRef stack traffic +
 calling convention. Next architectural levers (multi-session):
 superinstruction fusion, tail-call dispatch (nightly become), biased
 refcounting. All suites green; capi extension functional.
+## Round: Architecture verification — tail calls enabled, 14 suites green
+
+Verified CallPyExactArgs mirrors CPython 3.14 completely:
+- func_version cached dispatch + exact-argcount checks
+- tailcall_enabled=true on main frame path (no Rust recursion for
+  Python-to-Python calls; frame reuse via ExecutionResult::TailCall)
+- datastack space + recursion guards + vectorcall fallbacks
+
+Broad regression: 13 test suites + capi extension ALL PASS.
+
+Conclusion: VM architecture matches CPython 3.14 design (adaptive
+specialization + inline caches + tailcalls + superinstructions already
+landed). Remaining perf gap (~2.9x hot loop, ~6x micro-op floor) stems
+from Rust safety overhead vs 30 years of C micro-tuning. Further gains
+need the multi-session items in PERFORMANCE_ROADMAP.md.
