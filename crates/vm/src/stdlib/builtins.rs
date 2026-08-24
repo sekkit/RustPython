@@ -22,11 +22,14 @@ enum ScanNum {
 /// int to float at the first float element. Returns None when any element
 /// is not an exact int/float, or on i128 overflow (caller falls back to the
 /// generic path). Performs no VM calls — safe under a list read lock.
-fn scan_exact_numeric_slice(items: &[PyObjectRef], vm: &VirtualMachine) -> Option<ScanNum> {
+fn scan_exact_numeric_slice(
+    items: &[PyObjectRef],
+    vm: &VirtualMachine,
+    mut int_acc: i128,
+    mut float_acc: f64,
+    mut float_mode: bool,
+) -> Option<ScanNum> {
     use num_traits::ToPrimitive;
-    let mut int_acc: i128 = 0;
-    let mut float_acc: f64 = 0.0;
-    let mut float_mode = false;
     for item in items {
         if let Some(fv) = item.downcast_ref_if_exact::<PyFloat>(vm) {
             if !float_mode {
@@ -1320,49 +1323,49 @@ mod builtins {
             let start_int = sum.downcast_ref_if_exact::<PyInt>(vm);
             let start_float = sum.downcast_ref_if_exact::<PyFloat>(vm);
             if start_int.is_some() || start_float.is_some() {
+                use num_traits::ToPrimitive;
+                // Seed accumulators with the start value so IEEE signed-zero
+                // and promotion semantics match sequential addition exactly.
+                let (seed_int, seed_float, seed_float_mode) = match start_float {
+                    Some(f) => (0i128, f.to_f64(), true),
+                    None => (
+                        start_int
+                            .and_then(|i| i.as_bigint().to_i128())
+                            .unwrap_or(0),
+                        0.0,
+                        false,
+                    ),
+                };
                 let iterable_obj = iterable.as_object();
                 let scanned: Option<Option<ScanNum>> = if let Some(list) =
                     iterable_obj.downcast_ref_if_exact::<crate::builtins::PyList>(vm)
                 {
                     let guard = list.borrow_vec();
-                    Some(scan_exact_numeric_slice(&guard, vm))
+                    Some(scan_exact_numeric_slice(
+                        &guard,
+                        vm,
+                        seed_int,
+                        seed_float,
+                        seed_float_mode,
+                    ))
                 } else if let Some(tuple) =
                     iterable_obj.downcast_ref_if_exact::<crate::builtins::PyTuple>(vm)
                 {
-                    Some(scan_exact_numeric_slice(tuple.as_slice(), vm))
+                    Some(scan_exact_numeric_slice(
+                        tuple.as_slice(),
+                        vm,
+                        seed_int,
+                        seed_float,
+                        seed_float_mode,
+                    ))
                 } else {
                     None
                 };
                 if let Some(Some(numeric)) = scanned {
-                    let fast_result: Option<PyObjectRef> =
-                        match (numeric, start_int, start_float) {
-                            // All-int list, int start: pure i128 arithmetic
-                            (ScanNum::Int(items), Some(si), _) => si
-                                .as_bigint()
-                                .to_i128()
-                                .and_then(|start_val| start_val.checked_add(items))
-                                .map(|total| vm.ctx.new_int(total).into()),
-                            // All-int list, float start: single float conversion
-                            (ScanNum::Int(items), None, Some(sf)) => Some(
-                                vm.ctx.new_float(sf.to_f64() + items as f64).into(),
-                            ),
-                            // Any floats present: promote start to f64 and add
-                            (ScanNum::Float(ftotal), start_i, _) => {
-                                use num_traits::ToPrimitive;
-                                let base: Option<f64> = match start_float {
-                                    Some(f) => Some(f.to_f64()),
-                                    None => start_i.and_then(|i| i.as_bigint().to_f64()),
-                                };
-                                match base {
-                                    Some(b) if !b.is_nan() => {
-                                        Some(vm.ctx.new_float(b + ftotal).into())
-                                    }
-                                    _ => None, // unconvertible huge int: generic path
-                                }
-                            }
-                            // Unreachable by outer guard (start is int or float)
-                            _ => None,
-                        };
+                    let fast_result: Option<PyObjectRef> = match numeric {
+                        ScanNum::Int(total) => Some(vm.ctx.new_int(total).into()),
+                        ScanNum::Float(ftotal) => Some(vm.ctx.new_float(ftotal).into()),
+                    };
                     if let Some(result) = fast_result {
                         return Ok(result);
                     }
