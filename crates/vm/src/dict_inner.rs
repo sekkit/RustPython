@@ -1206,6 +1206,11 @@ impl DictKey for PyObject {
 
     #[inline(always)]
     fn key_hash(&self, vm: &VirtualMachine) -> PyResult<HashValue> {
+        // Exact str: the hash is cached in the string header; read it
+        // directly instead of dispatching through the hash protocol.
+        if let Some(s) = self.downcast_ref_if_exact::<PyStr>(vm) {
+            return Ok(s.hash(vm));
+        }
         self.hash(vm)
     }
 

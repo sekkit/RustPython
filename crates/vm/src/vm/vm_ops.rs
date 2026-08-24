@@ -81,10 +81,17 @@ impl VirtualMachine {
 
     pub fn identical_or_equal(&self, a: &PyObject, b: &PyObject) -> PyResult<bool> {
         if a.is(b) {
-            Ok(true)
-        } else {
-            self.bool_eq(a, b)
+            return Ok(true);
         }
+        // Exact-str fast path (mirrors CPython's lookdict_unicode): byte
+        // equality without entering the rich-comparison protocol. Exactness
+        // guarantees no custom __eq__ is bypassed.
+        if let Some(a_str) = a.downcast_ref_if_exact::<crate::builtins::PyStr>(self) {
+            if let Some(b_str) = b.downcast_ref_if_exact::<crate::builtins::PyStr>(self) {
+                return Ok(a_str.as_wtf8() == b_str.as_wtf8());
+            }
+        }
+        self.bool_eq(a, b)
     }
 
     pub fn bool_seq_lt(&self, a: &PyObject, b: &PyObject) -> PyResult<Option<bool>> {
