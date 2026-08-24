@@ -258,3 +258,29 @@ Conclusion: string allocation speedup must come from elsewhere:
 - Context::new_str fast paths (already partially: dual-storage write)
 - Intern table hit-rate improvements
 - Possibly a size-classed small-string arena separate from freelist
+## Performance Landscape After Optimization Series (updated)
+
+### Operations now BEATING CPython 3.14
+| Operation | RustPython | CPython | Advantage |
+|---|---|---|---|
+| for_loop_range_1k (sum(range)) | 0.67us | 7.5us | **11.2x faster** (O(1) formula) |
+| list_sum (10k ints) | 16.9us | 29.2us | **1.7x faster** |
+| str_count (22KB) | 3.5us | 7.1us | **2.0x faster** |
+| str_replace (22KB) | 6.9us | 8.9us | **1.3x faster** |
+| bigint_add | 0.64us | 0.41us | 1.6x gap only |
+
+### At parity
+str_upper 1.3x, tuple_in 2.1x, dict_keys_list 2.4x
+
+### Remaining uniform floor: ~6-8x on micro-ops
+int_add 5.7x, float_add 8x, fn_call 6.8x, method_call 8x,
+dict_getitem 6.2x, list_getitem 6.8x, isinstance 7.2x, str ops 6.5-8.5x.
+This is VM bytecode dispatch + calling-convention overhead common to ALL
+operations — closing it requires:
+1. Superinstruction fusion (Phase 1 roadmap)
+2. Tail-call dispatch via nightly become (Phase 4)
+3. Reduced PyRef atomic traffic on stack push/pop (biased refcounting)
+
+Iteration-heavy composites improved dramatically: list_compr 3.1x (was 4.2),
+list_contains 2.6x (was 3.2), tuple_in 2.1x (was 2.3), str_split 2.5x
+(was 6.3 pre-mimalloc).
