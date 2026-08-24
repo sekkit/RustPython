@@ -104,9 +104,17 @@ impl RefCount {
         State::from_raw(self.state.load(Ordering::Relaxed)).strong() as usize
     }
 
-    /// Increment strong count
+    /// Increment strong count.
+    ///
+    /// Leaked (interned / immortal) objects take a no-increment fast path:
+    /// their count is frozen for the process lifetime, so clones skip the
+    /// read-modify-write entirely and cannot drift the count toward
+    /// overflow.
     #[inline]
     pub fn inc(&self) {
+        if self.is_leaked() {
+            return;
+        }
         let val = State::from_raw(self.state.fetch_add(COUNT, Ordering::Relaxed));
         if val.destructed() || (val.strong() as usize) > STRONG - 1 {
             refcount_overflow();
@@ -120,6 +128,9 @@ impl RefCount {
     #[inline]
     pub fn inc_by(&self, n: usize) {
         debug_assert!(n <= STRONG);
+        if self.is_leaked() {
+            return;
+        }
         let val = State::from_raw(self.state.fetch_add(n * COUNT, Ordering::Relaxed));
         if val.destructed() || (val.strong() as usize) > STRONG - n {
             refcount_overflow();
@@ -130,8 +141,16 @@ impl RefCount {
     #[inline]
     #[must_use]
     pub fn safe_inc(&self) -> bool {
+        if self.is_leaked() {
+            // Immortal: readers may keep the borrowed pointer; there is no
+            // count to maintain.
+            return true;
+        }
         let mut old = State::from_raw(self.state.load(Ordering::Relaxed));
         loop {
+            if old.leaked() {
+                return true;
+            }
             if old.destructed() || old.strong() == 0 {
                 return false;
             }
@@ -152,15 +171,16 @@ impl RefCount {
     }
 
     /// Decrement strong count. Returns true when count drops to 0.
+    ///
+    /// Leaked (immortal) objects are never decremented: their count stays
+    /// frozen instead of drifting downward for the process lifetime.
     #[inline]
     #[must_use]
     pub fn dec(&self) -> bool {
-        let old = State::from_raw(self.state.fetch_sub(COUNT, Ordering::Release));
-
-        // LEAKED objects never reach 0
-        if old.leaked() {
+        if self.is_leaked() {
             return false;
         }
+        let old = State::from_raw(self.state.fetch_sub(COUNT, Ordering::Release));
 
         if old.strong() == 1 {
             core::sync::atomic::fence(Ordering::Acquire);
@@ -313,5 +333,21 @@ mod tests {
         assert!(!rc.dec()); // strong = 1
         assert!(rc.dec()); // strong = 0 -> true
         assert!(rc.is_published());
+    }
+
+    #[test]
+    fn immortal_count_is_frozen() {
+        let rc = RefCount::new();
+        rc.inc();
+        rc.inc(); // strong = 3
+        rc.leak();
+        let frozen = rc.get();
+        rc.inc();
+        rc.inc_by(5);
+        assert!(rc.safe_inc());
+        assert!(!rc.dec());
+        assert!(!rc.dec());
+        assert_eq!(rc.get(), frozen, "immortal count must not move");
+        assert!(rc.is_leaked());
     }
 }

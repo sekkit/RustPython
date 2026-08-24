@@ -54,7 +54,8 @@ Round drivers:
   compensated scan.
 - Remaining gap concentrates in dispatch-heavy bytecode (calls,
   attribute/slot access) at ~3.9–4.0x — consistent with the documented
-  architectural dispatch floor.
-- Top follow-up candidates: LOAD_ATTR/STORE_ATTR inline caches
-  (roadmap Phase 2), vectorcall tightening for fn_call, and wider SSO
-  reuse in hashing/equality paths for short-string creation.
+  architectural dispatch floor. LOAD_ATTR/STORE_ATTR inline caches are
+  already implemented here (all CPython variants incl. slots/values/
+  method); the residual is per-dispatch overhead, not missing caches.
+- Top follow-up candidates: vectorcall tightening for fn_call, and
+  borrow-semantics activation (LOAD_FAST_BORROW currently clones).
