@@ -2,7 +2,7 @@ use super::VirtualMachine;
 use crate::stdlib::_warnings;
 use crate::{
     Py, PyRef,
-    builtins::{PyInt, PyStr, PyStrInterned, PyStrRef, PyType, PyUtf8Str},
+    builtins::{PyFloat, PyInt, PyStr, PyStrInterned, PyStrRef, PyType, PyUtf8Str},
     object::{AsObject, PyObject, PyObjectRef, PyResult},
     protocol::{PyNumberBinaryOp, PyNumberTernaryOp},
     types::PyComparisonOp,
@@ -441,6 +441,13 @@ impl VirtualMachine {
             // i64 overflow or big int: use BigInt arithmetic
             let result = ai.as_bigint() + bi.as_bigint();
             return Ok(self.ctx.new_int(result).into());
+        }
+        // Fast path: exact float + exact float
+        if let (Some(af), Some(bf)) = (
+            a.downcast_ref_if_exact::<PyFloat>(self),
+            b.downcast_ref_if_exact::<PyFloat>(self),
+        ) {
+            return Ok(self.ctx.new_float(af.to_f64() + bf.to_f64()).into());
         }
         let result = self.binary_op1(a, b, PyNumberBinaryOp::Add)?;
         if !result.is(&self.ctx.not_implemented) {
