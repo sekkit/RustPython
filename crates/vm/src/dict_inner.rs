@@ -1046,16 +1046,19 @@ impl<T: Clone> Dict<T> {
                             };
                             let ret = (idx, index_index);
 
-                            #[expect(
-                                clippy::redundant_else,
-                                reason = "Keeping the empty `else` block here for documentation"
-                            )]
                             if key.key_is(&entry.key) {
                                 break 'outer ret;
-                            } else if entry.hash == hash_value {
-                                break (entry.key.clone(), ret);
-                            } else {
+                            } else if entry.hash != hash_value {
                                 // entry mismatch
+                            } else if let Some(eq) = key.key_eq_in_place(&entry.key) {
+                                // Pure comparison (exact str): safe to run
+                                // while holding the read guard — no stored-key
+                                // clone, no guard drop/reacquire per probe.
+                                if eq {
+                                    break 'outer ret;
+                                }
+                            } else {
+                                break (entry.key.clone(), ret);
                             }
                         }
                     }
@@ -1192,6 +1195,13 @@ pub trait DictKey {
     fn key_hash(&self, vm: &VirtualMachine) -> PyResult<HashValue>;
     fn key_is(&self, other: &PyObject) -> bool;
     fn key_eq(&self, vm: &VirtualMachine, other_key: &PyObject) -> PyResult<bool>;
+    /// In-place equality for comparisons that cannot run arbitrary Python
+    /// code (and are therefore safe to perform while holding the dict's read
+    /// guard): `Some(eq)` when this key type supports it, `None` when the
+    /// caller must clone the stored key and compare outside the lock.
+    fn key_eq_in_place(&self, other_key: &PyObject) -> Option<bool> {
+        None
+    }
     fn key_as_isize(&self, vm: &VirtualMachine) -> PyResult<isize>;
 }
 
@@ -1222,6 +1232,16 @@ impl DictKey for PyObject {
     #[inline(always)]
     fn key_eq(&self, vm: &VirtualMachine, other_key: &PyObject) -> PyResult<bool> {
         vm.identical_or_equal(self, other_key)
+    }
+
+    #[inline]
+    fn key_eq_in_place(&self, other_key: &PyObject) -> Option<bool> {
+        // Both sides exact str: pure byte comparison — no protocol dispatch,
+        // no custom __eq__ bypassed.
+        let ctx: &crate::vm::Context = &crate::vm::Context::genesis();
+        let a = self.downcast_ref_if_exact_ctx::<PyStr>(ctx)?;
+        let b = other_key.downcast_ref_if_exact_ctx::<PyStr>(ctx)?;
+        Some(a.as_wtf8() == b.as_wtf8())
     }
 
     #[inline]

@@ -1860,6 +1860,15 @@ impl PyObject {
             .then(|| unsafe { self.downcast_unchecked_ref::<T>() })
     }
 
+    /// [`Self::downcast_ref_if_exact`] against the genesis context — for
+    /// hot paths that don't have a `&VirtualMachine` at hand.
+    #[inline]
+    pub fn downcast_ref_if_exact_ctx<T: PyPayload>(&self, ctx: &crate::vm::Context) -> Option<&Py<T>> {
+        self.class()
+            .is(T::class(ctx))
+            .then(|| unsafe { self.downcast_unchecked_ref::<T>() })
+    }
+
     /// # Safety
     /// T must be the exact payload type
     #[inline(always)]
