@@ -991,6 +991,7 @@ impl VirtualMachine {
     /// specific guaranteed behavior.
     #[cfg(feature = "threading")]
     pub fn new_thread(&self) -> ThreadedVirtualMachine {
+        crate::builtins::list::enter_multi_thread_mode();
         let global_trace = self.state.global_trace_func.lock().clone();
         let global_profile = self.state.global_profile_func.lock().clone();
         let use_tracing = global_trace.is_some() || global_profile.is_some();

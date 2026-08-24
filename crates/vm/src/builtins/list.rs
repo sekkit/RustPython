@@ -33,6 +33,15 @@ use core::ops::DerefMut;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+/// Tracks whether the interpreter has spawned any non-main threads.
+/// Single-threaded hot paths elide locks; this flag is sticky once set.
+static MULTI_THREAD: AtomicU32 = AtomicU32::new(0);
+
+/// Called by the VM before spawning an interpreter thread.
+pub(crate) fn enter_multi_thread_mode() {
+    MULTI_THREAD.store(1, Ordering::Relaxed);
+}
+
 #[pyclass(module = false, name = "list", unhashable = true, traverse = "manual")]
 #[derive(Default)]
 pub struct PyList {
@@ -182,7 +191,23 @@ pub type PyListRef = PyRef<PyList>;
 impl PyList {
     #[pymethod]
     pub(crate) fn append(&self, x: PyObjectRef) {
-        self.borrow_vec_mut().push(x);
+        if MULTI_THREAD.load(Ordering::Relaxed) == 0 {
+            // SAFETY: single-threaded — no concurrent list access.
+            unsafe { self.append_elided(x) };
+        } else {
+            self.borrow_vec_mut().push(x);
+        }
+    }
+
+
+    /// Lock-elided append for single-threaded execution.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this list
+    /// (`vm.state.thread_count == 0`).
+    pub(crate) unsafe fn append_elided(&self, x: PyObjectRef) {
+        let vec: &mut Vec<PyObjectRef> = unsafe { &mut *self.elements.data_ptr() };
+        vec.push(x);
     }
 
     #[pymethod]
