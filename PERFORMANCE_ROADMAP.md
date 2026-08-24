@@ -170,7 +170,7 @@ unsafe required, works today on stable Rust.
   `total.lo += (hi - t) + x` binds looser than `+`; translating it as
   `(lo + (hi - t)) + x` lets huge corrections swallow the compensation
   via rounding — keep the parentheses.
-- **Header-only PyStr (SSO)** — pure-ASCII strings ≤ 22 bytes live inside
+- **Header-only PyStr (SSO)** — short strings (any WTF-8) ≤ 22 bytes live inside
   the PyStr header (`StrStorage::Sso`, sized to the Vec slot it replaces);
   creation/clone/drop of short strings involve no heap allocation.
 - **Biased reference counting** — ATTEMPTED AND WITHDRAWN. Plain

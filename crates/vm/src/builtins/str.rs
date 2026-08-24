@@ -200,7 +200,7 @@ impl Wtf8Concat for Py<PyStr> {
 impl<'a> From<&'a AsciiStr> for PyStr {
     fn from(s: &'a AsciiStr) -> Self {
         // Short ASCII strings live entirely in the header: no allocation.
-        if let Some(data) = StrData::try_sso_ascii(s.as_bytes()) {
+        if let Some(data) = StrData::try_sso(s.as_bytes()) {
             return data.into();
         }
         s.to_owned().into()
@@ -228,7 +228,7 @@ impl From<AsciiChar> for PyStr {
 impl<'a> From<&'a str> for PyStr {
     fn from(s: &'a str) -> Self {
         // Short pure-ASCII strings live entirely in the header: no allocation.
-        if let Some(data) = StrData::try_sso_ascii(s.as_bytes()) {
+        if let Some(data) = StrData::try_sso(s.as_bytes()) {
             return data.into();
         }
         s.to_owned().into()
@@ -238,7 +238,7 @@ impl<'a> From<&'a str> for PyStr {
 impl<'a> From<&'a Wtf8> for PyStr {
     fn from(s: &'a Wtf8) -> Self {
         // try_sso_ascii's ASCII check covers the WTF-8-is-ASCII case.
-        if let Some(data) = StrData::try_sso_ascii(s.as_bytes()) {
+        if let Some(data) = StrData::try_sso(s.as_bytes()) {
             return data.into();
         }
         s.to_owned().into()

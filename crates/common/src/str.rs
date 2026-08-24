@@ -268,7 +268,7 @@ impl<'a> StrDataRef<'a> {
 /// `StrStorage::Heap` owns the data in a heap box (the default for ordinary
 /// RustPython strings). `StrStorage::Inline` owns the data in a `Vec<u8>`
 /// buffer, which backs the C-API inline string path without a separate heap
-/// indirection. `StrStorage::Sso` keeps short ASCII strings entirely inside
+/// indirection. `StrStorage::Sso` keeps short strings (any WTF-8) entirely inside
 /// the header — no heap allocation, no pointer chase, and cloning copies the
 /// bytes instead of allocating. `StrStorage::Grow` is a `Wtf8Buf` with spare
 /// capacity used by in-place concatenation (`s += ...` on a uniquely-owned
@@ -299,11 +299,12 @@ struct SsoBuf {
 }
 
 impl SsoBuf {
-    /// Capture `bytes` for header storage; `None` when they are too long or
-    /// not pure ASCII.
+    /// Capture `bytes` for header storage; `None` when they are too long.
+    /// Any WTF-8 is accepted (ASCII or not) — the kind lives in
+    /// [`StrData::kind`], not in the buffer.
     #[inline]
     fn new(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() > SSO_CAP || !bytes.is_ascii() {
+        if bytes.len() > SSO_CAP {
             return None;
         }
         let mut buf = [0u8; SSO_CAP];
@@ -424,11 +425,8 @@ impl From<Box<Wtf8>> for StrData {
         // doing the check is ~10x faster for ascii, and is actually only 2% slower worst case for
         // non-ascii; see https://github.com/RustPython/RustPython/pull/2586#issuecomment-844611532
         let kind = value.str_kind();
-        if kind.is_ascii() {
-            // Short ASCII strings move into the header; the box is freed.
-            if let Some(data) = Self::try_sso_ascii(value.as_bytes()) {
-                return data;
-            }
+        if let Some(data) = Self::try_sso(value.as_bytes()) {
+            return data;
         }
         unsafe { Self::new_str_unchecked(value, kind) }
     }
@@ -440,10 +438,8 @@ impl From<Box<str>> for StrData {
         // doing the check is ~10x faster for ascii, and is actually only 2% slower worst case for
         // non-ascii; see https://github.com/RustPython/RustPython/pull/2586#issuecomment-844611532
         let kind = value.str_kind();
-        if kind.is_ascii() {
-            if let Some(data) = Self::try_sso_ascii(value.as_bytes()) {
-                return data;
-            }
+        if let Some(data) = Self::try_sso(value.as_bytes()) {
+            return data;
         }
         unsafe { Self::new_str_unchecked(value.into(), kind) }
     }
@@ -502,18 +498,37 @@ impl From<CodePoint> for StrData {
 }
 
 impl StrData {
-    /// Store a short pure-ASCII string entirely inside the header — no heap
-    /// allocation at all. Returns `None` when the bytes are too long or not
-    /// ASCII, in which case callers fall back to boxed storage.
+    /// Store a short string (≤ 22 bytes, any WTF-8) entirely inside the
+    /// header — no heap allocation at all. Returns `None` when the bytes are
+    /// too long, in which case callers fall back to boxed storage.
+    ///
+    /// The kind is deduced from the bytes; for non-ASCII the character count
+    /// is computed once here (the buffer is at most 22 bytes, so the scan is
+    /// trivial) and cached in the length slot like every other storage.
     #[inline]
-    pub fn try_sso_ascii(bytes: &[u8]) -> Option<Self> {
+    pub fn try_sso(bytes: &[u8]) -> Option<Self> {
         let buf = SsoBuf::new(bytes)?;
+        let wtf8 = unsafe { Wtf8::from_bytes_unchecked(buf.as_slice()) };
+        let kind = wtf8.str_kind();
+        let char_len = match kind {
+            StrKind::Ascii => bytes.len(),
+            _ => wtf8.code_points().count(),
+        };
         Some(Self {
-            len: (bytes.len()).into(),
+            len: char_len.into(),
             data: StrStorage::Sso(buf),
-            kind: StrKind::Ascii,
+            kind,
             index: Wtf8IndexSlot::new(),
         })
+    }
+
+    /// ASCII-only specialization of [`Self::try_sso`].
+    #[inline]
+    pub fn try_sso_ascii(bytes: &[u8]) -> Option<Self> {
+        if !bytes.is_ascii() {
+            return None;
+        }
+        Self::try_sso(bytes)
     }
 
     /// # Safety
@@ -1188,8 +1203,36 @@ mod tests {
     }
 
     #[test]
-    fn sso_rejects_non_ascii() {
+    fn sso_ascii_wrapper_still_requires_ascii() {
         assert!(StrData::try_sso_ascii("héllo".as_bytes()).is_none());
+    }
+
+    #[test]
+    fn sso_accepts_short_non_ascii() {
+        // UTF-8: é is two bytes; char_len counts code points.
+        let d = StrData::try_sso("héllo".as_bytes()).expect("6 bytes fit");
+        assert_eq!(d.kind(), StrKind::Utf8);
+        assert_eq!(d.char_len(), 5, "char length, not byte length");
+        assert_eq!(d.len(), 6, "byte length");
+        assert_eq!(d.as_str(), Some("héllo"));
+
+        // WTF-8 with a lone surrogate (ED A0 80).
+        let mut wtf8_bytes = b"a".to_vec();
+        wtf8_bytes.extend_from_slice(&[0xED, 0xA0, 0x80]);
+        let d = StrData::try_sso(&wtf8_bytes).expect("3 bytes fit");
+        assert_eq!(d.kind(), StrKind::Wtf8);
+        assert_eq!(d.char_len(), 2);
+
+        // 22-byte UTF-8 string fits; 23 does not.
+        let max = "é".repeat(11); // 22 bytes, 11 chars
+        let d = StrData::try_sso(max.as_bytes()).expect("22-byte utf8 fits");
+        assert_eq!(d.char_len(), 11);
+        assert!(StrData::try_sso("é".repeat(12).as_bytes()).is_none());
+
+        // Round-trip through the boxed path keeps SSO for short non-ASCII.
+        let from_box = StrData::from("中文".to_owned().into_boxed_str());
+        assert!(matches!(from_box.data, StrStorage::Sso(_)));
+        assert_eq!(from_box.char_len(), 2);
     }
 
     #[test]
