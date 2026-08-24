@@ -7057,7 +7057,16 @@ impl ExecutingFrame<'_> {
                 let b = self.top_value(); // haystack
                 if let Some(dict) = b.downcast_ref_if_exact::<PyDict>(vm) {
                     let a = self.nth_value(1); // needle
-                    let found = dict.get_item_opt(a, vm)?.is_some();
+                    // Single-threaded: lock-elided raw probe first.
+                    let fast_found = if vm.state.thread_count.load() == 0 {
+                        dict.contains_single_thread(a, vm)
+                    } else {
+                        None
+                    };
+                    let found = match fast_found {
+                        Some(f) => f,
+                        None => dict.get_item_opt(a, vm)?.is_some(),
+                    };
                     self.pop_value();
                     self.pop_value();
                     let invert = bytecode::Invert::try_from(u32::from(arg) as u8)

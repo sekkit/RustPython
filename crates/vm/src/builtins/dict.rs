@@ -831,6 +831,27 @@ impl Py<PyDict> {
         }
     }
 
+    /// Lock-elided [`Self::contains_key`] for single-threaded execution.
+    /// Returns `None` when the fast path does not apply (same conditions as
+    /// [`Self::get_item_single_thread`]).
+    pub(crate) fn contains_single_thread(
+        &self,
+        key: &PyObject,
+        vm: &VirtualMachine,
+    ) -> Option<bool> {
+        if vm.state.thread_count.load() != 0 || !self.exact_dict(vm) {
+            return None;
+        }
+        // SAFETY: no other thread can touch this dict right now. The value
+        // clone on a hit is dropped immediately — only membership matters.
+        let lookup = unsafe { self.entries.get_item_raw(vm, key) };
+        match lookup {
+            crate::dict_inner::RawLookup::Found(_) => Some(true),
+            crate::dict_inner::RawLookup::Absent => Some(false),
+            crate::dict_inner::RawLookup::Unsupported => None,
+        }
+    }
+
     /// Return a cached-entry hint for exact dict fast paths.
     pub(crate) fn hint_for_key<K: DictKey + ?Sized>(
         &self,
