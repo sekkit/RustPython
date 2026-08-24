@@ -458,6 +458,23 @@ impl VirtualMachine {
     }
 
     pub fn _iadd(&self, a: &PyObject, b: &PyObject) -> PyResult {
+        // Fast path: exact int += exact int (ints are immutable, same as +)
+        if let (Some(ai), Some(bi)) = (
+            a.downcast_ref_if_exact::<crate::builtins::PyInt>(self),
+            b.downcast_ref_if_exact::<crate::builtins::PyInt>(self),
+        ) {
+            use num_traits::ToPrimitive;
+            if let (Some(x), Some(y)) = (
+                ai.as_bigint().to_i64(),
+                bi.as_bigint().to_i64(),
+            ) {
+                if let Some(result) = x.checked_add(y) {
+                    return Ok(self.ctx.new_int(result).into());
+                }
+            }
+            let result = ai.as_bigint() + bi.as_bigint();
+            return Ok(self.ctx.new_int(result).into());
+        }
         let result = self.binary_iop1(a, b, PyNumberBinaryOp::InplaceAdd, PyNumberBinaryOp::Add)?;
         if !result.is(&self.ctx.not_implemented) {
             return Ok(result);
@@ -515,6 +532,23 @@ impl VirtualMachine {
     }
 
     pub fn _imul(&self, a: &PyObject, b: &PyObject) -> PyResult {
+        // Fast path: exact int *= exact int
+        if let (Some(ai), Some(bi)) = (
+            a.downcast_ref_if_exact::<crate::builtins::PyInt>(self),
+            b.downcast_ref_if_exact::<crate::builtins::PyInt>(self),
+        ) {
+            use num_traits::ToPrimitive;
+            if let (Some(x), Some(y)) = (
+                ai.as_bigint().to_i64(),
+                bi.as_bigint().to_i64(),
+            ) {
+                if let Some(result) = x.checked_mul(y) {
+                    return Ok(self.ctx.new_int(result).into());
+                }
+            }
+            let result = ai.as_bigint() * bi.as_bigint();
+            return Ok(self.ctx.new_int(result).into());
+        }
         let result = self.binary_iop1(
             a,
             b,
