@@ -8696,6 +8696,15 @@ impl ExecutingFrame<'_> {
                 }
             }
             bytecode::BinaryOperator::Remainder | bytecode::BinaryOperator::InplaceRemainder => {
+                // CPython optimization: `"%s" % exact_str` returns the str
+                // directly without creating a new object.
+                if let Some(fmt) = a_ref.downcast_ref_if_exact::<PyStr>(vm)
+                    && fmt.as_wtf8().as_bytes() == b"%s"
+                    && let Some(arg_str) = b_ref.downcast_ref_if_exact::<PyStr>(vm)
+                {
+                    self.push_value(b_ref.to_owned());
+                    return Ok(None);
+                }
                 if let (Some(a), Some(b)) = (
                     a_ref.downcast_ref_if_exact::<PyInt>(vm),
                     b_ref.downcast_ref_if_exact::<PyInt>(vm),
