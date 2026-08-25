@@ -5780,27 +5780,42 @@ impl ExecutingFrame<'_> {
                 if let (Some(list), Some(idx)) = (
                     a.downcast_ref_if_exact::<PyList>(vm),
                     b.downcast_ref_if_exact::<PyInt>(vm),
-                ) && let Some(i) = specialization_nonnegative_compact_index(idx, vm)
+                ) && let Some(si) = idx.try_to_primitive::<isize>(vm).ok()
                 {
+                    // Resolve Python indexing semantics (negative wraps from
+                    // the end) against the current length, lock-free when
+                    // single-threaded.
+                    let resolve = |len: usize| -> Option<usize> {
+                        if si >= 0 {
+                            usize::try_from(si).ok()
+                        } else {
+                            usize::try_from(si.checked_add(len as isize)?).ok()
+                        }
+                    };
                     // Single-threaded: lock-elided raw read.
                     if vm.state.thread_count.load() == 0 {
                         // SAFETY: no other thread can touch this list.
-                        if let Some(value) = unsafe { list.get_raw(i) } {
-                            self.pop_value();
-                            self.pop_value();
-                            self.push_value(value);
-                            return Ok(None);
-                        }
+                        let len = unsafe { list.len_raw() };
+                        if let Some(i) = resolve(len)
+                            && let Some(value) = (unsafe { list.get_raw(i) })
+                            {
+                                self.pop_value();
+                                self.pop_value();
+                                self.push_value(value);
+                                return Ok(None);
+                            }
                     } else {
                         let vec = list.borrow_vec();
-                        if i < vec.len() {
-                            let value = vec.do_get(i);
-                            drop(vec);
-                            self.pop_value();
-                            self.pop_value();
-                            self.push_value(value);
-                            return Ok(None);
-                        }
+                        if let Some(i) = resolve(vec.len())
+                            && i < vec.len()
+                            {
+                                let value = vec.do_get(i);
+                                drop(vec);
+                                self.pop_value();
+                                self.pop_value();
+                                self.push_value(value);
+                                return Ok(None);
+                            }
                     }
                 }
                 self.execute_bin_op(vm, bytecode::BinaryOperator::Subscr)
