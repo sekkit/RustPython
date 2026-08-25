@@ -972,6 +972,34 @@ fn do_sort(
     key_func: Option<PyObjectRef>,
     reverse: bool,
 ) -> PyResult<()> {
+    // Fast path: no key_func, all exact ints that fit in i64.
+    // Extract to a native i64 array, sort with the hardware comparator
+    // (no per-comparison downcast/BigInt dispatch), and write back.
+    // Mirrors CPython's unsafe_long_compare specialization.
+    if key_func.is_none() && !reverse {
+        use num_traits::ToPrimitive;
+        let mut compact: Vec<(i64, PyObjectRef)> = Vec::with_capacity(values.len());
+        let mut all_fit = true;
+        for v in values.iter() {
+            match v.downcast_ref_if_exact::<PyInt>(vm) {
+                Some(i) => match i.as_bigint().to_i64() {
+                    Some(k) => compact.push((k, v.clone())),
+                    None => { all_fit = false; break; }
+                },
+                None => { all_fit = false; break; }
+            }
+        }
+        if all_fit {
+            if reverse {
+                compact.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            } else {
+                compact.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            }
+            *values = compact.into_iter().map(|(_, obj)| obj).collect();
+            return Ok(());
+        }
+    }
+
     if let Some(ref key_func) = key_func {
         let mut items = values
             .iter()
