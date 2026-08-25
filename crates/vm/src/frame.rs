@@ -3010,7 +3010,6 @@ impl ExecutingFrame<'_> {
             let op = self.code.instructions.read_op(idx);
             let arg = arg_state.extend(self.code.instructions.read_arg(idx));
             let mut do_extend_arg = false;
-            let caches = op.cache_entries();
 
             // Always update prev_line so f_lineno returns the correct line
             // even when the frame is observed mid-call (e.g. sys._getframe,
@@ -3088,13 +3087,18 @@ impl ExecutingFrame<'_> {
             }
             // lasti is already idx+1 from the fetch_add above; if the
             // instruction fell through (no jump), skip its inline cache
-            // entries with a single direct store.
+            // entries with a single direct store. cache_entries() is a
+            // 3-deep opcode dispatch chain, so compute it lazily — only
+            // for fall-through instructions (jumps never need it).
             let result = self.execute_instruction(op, arg, &mut do_extend_arg, vm);
-            if caches > 0 && self.lasti.load(atomic::Ordering::Relaxed) as usize == idx + 1 {
-                self.lasti.store(
-                    (idx + 1 + caches) as u32,
-                    atomic::Ordering::Relaxed,
-                );
+            if self.lasti.load(atomic::Ordering::Relaxed) as usize == idx + 1 {
+                let caches = op.cache_entries();
+                if caches > 0 {
+                    self.lasti.store(
+                        (idx + 1 + caches) as u32,
+                        atomic::Ordering::Relaxed,
+                    );
+                }
             }
             match result {
                 Ok(None) => {}
