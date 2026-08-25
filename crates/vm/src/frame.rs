@@ -4325,21 +4325,25 @@ impl ExecutingFrame<'_> {
                 // Save current slot value and clear it (for inlined comprehensions).
                 // Pushes NULL (None at Option level) if slot was empty, so that
                 // StoreFast can restore the empty state after the comprehension.
-                let idx = var_num.get(arg);
-                let x = self.localsplus.fastlocals_mut()[idx].take();
+                let idx = var_num.get(arg).as_usize();
+                // SAFETY: bytecode compiler guarantees var_num < nlocals.
+                let x = unsafe { self.localsplus.fastlocals_mut().get_unchecked_mut(idx) }.take();
                 self.push_value_opt(x);
                 Ok(None)
             }
             Instruction::LoadFastCheck { var_num } => {
                 // Same as LoadFast but explicitly checks for unbound locals
                 // (LoadFast in RustPython already does this check)
-                let idx = var_num.get(arg);
-                let x = self.localsplus.fastlocals()[idx].clone().ok_or_else(|| {
-                    vm.new_unbound_local_error(format!(
-                        "local variable '{}' referenced before assignment",
-                        self.code.varnames[idx]
-                    ))
-                })?;
+                let idx = var_num.get(arg).as_usize();
+                // SAFETY: bytecode compiler guarantees var_num < nlocals.
+                let x = unsafe { self.localsplus.fastlocals().get_unchecked(idx) }
+                    .clone()
+                    .ok_or_else(|| {
+                        vm.new_unbound_local_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            self.code.varnames[idx]
+                        ))
+                    })?;
                 self.push_value(x);
                 Ok(None)
             }
@@ -4349,16 +4353,17 @@ impl ExecutingFrame<'_> {
                 let oparg = var_nums.get(arg);
                 let (idx1, idx2) = oparg.indexes();
                 let fastlocals = self.localsplus.fastlocals();
-                let x1 = fastlocals[idx1].clone().ok_or_else(|| {
+                // SAFETY: compiler guarantees both VarNums < nlocals.
+                let x1 = unsafe { fastlocals.get_unchecked(idx1.as_usize()) }.clone().ok_or_else(|| {
                     vm.new_unbound_local_error(format!(
                         "local variable '{}' referenced before assignment",
-                        self.code.varnames[idx1]
+                        self.code.varnames[idx1.as_usize()]
                     ))
                 })?;
-                let x2 = fastlocals[idx2].clone().ok_or_else(|| {
+                let x2 = unsafe { fastlocals.get_unchecked(idx2.as_usize()) }.clone().ok_or_else(|| {
                     vm.new_unbound_local_error(format!(
                         "local variable '{}' referenced before assignment",
-                        self.code.varnames[idx2]
+                        self.code.varnames[idx2.as_usize()]
                     ))
                 })?;
                 self.push_value(x1);
@@ -4369,13 +4374,16 @@ impl ExecutingFrame<'_> {
             // push_borrowed() is available but disabled until stack
             // lifetime issues at yield/exception points are resolved.
             Instruction::LoadFastBorrow { var_num } => {
-                let idx = var_num.get(arg);
-                let x = self.localsplus.fastlocals()[idx].clone().ok_or_else(|| {
-                    vm.new_unbound_local_error(format!(
-                        "local variable '{}' referenced before assignment",
-                        self.code.varnames[idx]
-                    ))
-                })?;
+                let idx = var_num.get(arg).as_usize();
+                // SAFETY: bytecode compiler guarantees var_num < nlocals.
+                let x = unsafe { self.localsplus.fastlocals().get_unchecked(idx) }
+                    .clone()
+                    .ok_or_else(|| {
+                        vm.new_unbound_local_error(format!(
+                            "local variable '{}' referenced before assignment",
+                            self.code.varnames[idx]
+                        ))
+                    })?;
                 self.push_value(x);
                 Ok(None)
             }
@@ -4383,16 +4391,17 @@ impl ExecutingFrame<'_> {
                 let oparg = var_nums.get(arg);
                 let (idx1, idx2) = oparg.indexes();
                 let fastlocals = self.localsplus.fastlocals();
-                let x1 = fastlocals[idx1].clone().ok_or_else(|| {
+                // SAFETY: compiler guarantees both VarNums < nlocals.
+                let x1 = unsafe { fastlocals.get_unchecked(idx1.as_usize()) }.clone().ok_or_else(|| {
                     vm.new_unbound_local_error(format!(
                         "local variable '{}' referenced before assignment",
-                        self.code.varnames[idx1]
+                        self.code.varnames[idx1.as_usize()]
                     ))
                 })?;
-                let x2 = fastlocals[idx2].clone().ok_or_else(|| {
+                let x2 = unsafe { fastlocals.get_unchecked(idx2.as_usize()) }.clone().ok_or_else(|| {
                     vm.new_unbound_local_error(format!(
                         "local variable '{}' referenced before assignment",
-                        self.code.varnames[idx2]
+                        self.code.varnames[idx2.as_usize()]
                     ))
                 })?;
                 self.push_value(x1);
