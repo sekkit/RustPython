@@ -805,6 +805,24 @@ impl<T: Clone> Dict<T> {
         key: &K,
         hint: usize,
     ) -> PyResult<Option<T>> {
+        // Single-threaded: lock-elided hint probe.
+        if vm.state.thread_count.load() == 0 {
+            // SAFETY: no other thread can touch this dict.
+            let inner: &DictInner<T> = unsafe { &*self.inner.data_ptr() };
+            let Some(Some(entry)) = inner.entries.get(hint) else {
+                return Ok(None);
+            };
+            if key.key_is(&entry.key) {
+                return Ok(Some(entry.value.clone()));
+            }
+            // Hint miss — fall back to full locked lookup for correctness
+            // (key_eq may run Python __eq__).
+            let hash = match key.key_hash(vm) {
+                Ok(h) => h,
+                Err(_) => return Ok(None),
+            };
+            return self._get_inner(vm, key, hash);
+        }
         let (entry_key, entry_value) = {
             let inner = self.read();
             let Some(Some(entry)) = inner.entries.get(hint) else {
