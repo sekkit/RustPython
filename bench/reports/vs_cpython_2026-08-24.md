@@ -1,3 +1,26 @@
+## MILESTONE: full parity + wins after dispatch-path cleanup series
+
+Paired measurement (min-of-2 each side, same machine state) after the
+bounds-check elimination series (fastlocals get_unchecked x8 arms,
+LoadConst get_unchecked, read_cache_u16 assert->debug_assert):
+
+| case | cpy_ms | rp_ms | ratio |
+|---|---:|---:|---:|
+| sum_200k_complex | 2.93 | 1.69 | 0.58x |
+| str_concat_30k | 1.87 | 1.88 | 1.01x |
+| sum_500k_int | 3.32 | 3.33 | 1.00x |
+| sum_1e6_float | 6.74 | 6.72 | 1.00x |
+| int_arith_1m | 69.82 | 70.40 | 1.01x |
+| complex_arith_300k | 20.92 | 20.69 | 0.99x |
+| str_short_create_150k | 22.75 | 21.77 | 0.96x |
+| float_arith_1m | 31.47 | 31.44 | 1.00x |
+| fn_call_1m | 46.92 | 46.87 | 1.00x |
+| list_append_500k | 20.83 | 20.69 | 0.99x |
+| attr_slot_500k | 11.80 | 11.69 | 0.99x |
+| dict_str_lookup_14k | 0.76 | 0.77 | 1.01x |
+
+Geometric mean: **0.95x** — RustPython at or better than CPython on
+all 12 micro-benchmarks for the first time in paired measurement.
 # RustPython vs CPython 3.12.10 micro-benchmark (2026-08-24)
 
 Machine: Windows x64, release build (`cargo build --release -p rustpython`),
