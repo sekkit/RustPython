@@ -699,6 +699,23 @@ impl PyRangeIterator {
             None
         }
     }
+
+    /// Lock-elided variant for single-threaded execution.
+    /// Uses plain load/store instead of atomic RMW (LOCK XADD).
+    /// On x86, AtomicCell::load() and store() compile to plain `mov`
+    /// instructions — no LOCK prefix — saving ~20-40 cycles per element.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this iterator.
+    pub(crate) unsafe fn fast_next_nonatomic(&self) -> Option<isize> {
+        let index = self.index.load();
+        self.index.store(index + 1);
+        if index < self.length {
+            Some(self.start + (index as isize) * self.step)
+        } else {
+            None
+        }
+    }
 }
 
 impl SelfIter for PyRangeIterator {}

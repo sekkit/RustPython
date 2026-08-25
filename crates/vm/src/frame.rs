@@ -7317,7 +7317,13 @@ impl ExecutingFrame<'_> {
                 let target = bytecode::Label::from_u32(self.lasti() + 1 + u32::from(arg));
                 let iter = self.top_value();
                 if let Some(range_iter) = iter.downcast_ref_if_exact::<PyRangeIterator>(vm) {
-                    if let Some(value) = range_iter.fast_next() {
+                    let value = if vm.state.thread_count.load() == 0 {
+                        // SAFETY: single-threaded execution.
+                        unsafe { range_iter.fast_next_nonatomic() }
+                    } else {
+                        range_iter.fast_next()
+                    };
+                    if let Some(value) = value {
                         self.push_value(vm.ctx.new_int(value).into());
                     } else {
                         self.for_iter_jump_on_exhausted(target);
