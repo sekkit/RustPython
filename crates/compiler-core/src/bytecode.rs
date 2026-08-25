@@ -753,10 +753,13 @@ impl CodeUnits {
     /// Uses Relaxed atomic load; ordering is provided by read_op (Acquire).
     ///
     /// # Panics
-    /// Panics if `index` is out of bounds.
+    /// Panics if `index` is out of bounds (debug builds only).
     pub fn read_cache_u16(&self, index: usize) -> u16 {
         let units = unsafe { &*self.units.get() };
-        assert!(index < units.len(), "read_cache_u16: index out of bounds");
+        // Hot path: specialized instructions read 1-3 caches per execution.
+        // The index is lasti-derived and points at CACHE units validated at
+        // specialization time, so the full assert is debug-only.
+        debug_assert!(index < units.len(), "read_cache_u16: index out of bounds");
         let ptr = units.as_ptr().wrapping_add(index) as *const AtomicU16;
         unsafe { &*ptr }.load(Ordering::Relaxed)
     }
