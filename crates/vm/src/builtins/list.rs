@@ -310,7 +310,12 @@ impl PyList {
     }
 
     pub fn __len__(&self) -> usize {
-        self.borrow_vec().len()
+        if MULTI_THREAD.load(Ordering::Relaxed) == 0 {
+            // SAFETY: no other thread can touch this list.
+            unsafe { (&*self.elements.data_ptr()).len() }
+        } else {
+            self.borrow_vec().len()
+        }
     }
 
     #[pymethod]
