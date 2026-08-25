@@ -5826,10 +5826,21 @@ impl ExecutingFrame<'_> {
                 if let (Some(tuple), Some(idx)) = (
                     a.downcast_ref_if_exact::<PyTuple>(vm),
                     b.downcast_ref_if_exact::<PyInt>(vm),
-                ) && let Some(i) = specialization_nonnegative_compact_index(idx, vm)
+                ) && let Some(si) = idx.try_to_primitive::<isize>(vm).ok()
                 {
+                    // Resolve Python indexing semantics (negative wraps from
+                    // the end). Tuples are immutable, so the slice is stable
+                    // without any locking.
                     let elements = tuple.as_slice();
-                    if i < elements.len() {
+                    let i = if si >= 0 {
+                        usize::try_from(si).ok()
+                    } else {
+                        si.checked_add(elements.len() as isize)
+                            .and_then(|v| usize::try_from(v).ok())
+                    };
+                    if let Some(i) = i
+                        && i < elements.len()
+                    {
                         let value = elements[i].clone();
                         self.pop_value();
                         self.pop_value();
