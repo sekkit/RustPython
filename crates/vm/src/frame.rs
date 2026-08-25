@@ -4247,7 +4247,14 @@ impl ExecutingFrame<'_> {
                 Ok(None)
             }
             Instruction::LoadConst { consti } => {
-                self.push_value(self.code.constants[consti.get(arg)].clone().into());
+                // SAFETY: bytecode compiler guarantees consti < constants.len().
+                let obj = unsafe {
+                    self.code
+                        .constants
+                        .get_unchecked(consti.get(arg).as_usize())
+                }
+                .clone();
+                self.push_value(obj.into());
                 // Mirror CPython's LOAD_CONST family transition. RustPython does
                 // not currently distinguish immortal constants at runtime.
                 let instr_idx = self.lasti() as usize - 1;
