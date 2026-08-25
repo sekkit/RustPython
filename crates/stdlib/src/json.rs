@@ -1196,4 +1196,18 @@ mod _json {
         let encoder = JsonEncoder { default_fn, encoder_fn: encoder_fn_arg, allow_nan, ascii_only, check_circular, sort_keys, skip_keys, indent, key_sep, item_sep };
         Ok(encoder.into_pyobject(vm))
     }
+
+    /// One-shot native encoding with default encoder settings — the fast
+    /// path behind `json.dumps()`'s cached-encoder branch. Equivalent to
+    /// `make_encoder(None, None, encode_basestring_ascii, None, ": ", ", ",
+    /// False, False, True)(obj, 0)` but skips object creation entirely.
+    #[pyfunction]
+    fn encode_fast(obj: PyObjectRef, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let mut seen = Vec::new();
+        let result = encode_json_value(
+            &obj, &mut seen, None, None, true, true, true,
+            &Wtf8Buf::from(": "), &Wtf8Buf::from(", "), &None, false, false, 0, vm,
+        )?;
+        Ok(vm.ctx.new_str(result).into())
+    }
 }

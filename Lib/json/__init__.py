@@ -107,6 +107,12 @@ from .decoder import JSONDecoder, JSONDecodeError
 from .encoder import JSONEncoder
 import codecs
 
+try:
+    # Native one-shot encoder (RustPython fast path for default dumps)
+    from _json import encode_fast as _encode_fast
+except ImportError:
+    _encode_fast = None
+
 _default_encoder = JSONEncoder(
     skipkeys=False,
     ensure_ascii=True,
@@ -227,11 +233,13 @@ def dumps(obj, *, skipkeys=False, ensure_ascii=True, check_circular=True,
     the ``cls`` kwarg; otherwise ``JSONEncoder`` is used.
 
     """
-    # cached encoder
+    # cached encoder / native one-shot fast path
     if (not skipkeys and ensure_ascii and
         check_circular and allow_nan and
         cls is None and indent is None and separators is None and
         default is None and not sort_keys and not kw):
+        if _encode_fast is not None:
+            return _encode_fast(obj)
         return _default_encoder.encode(obj)
     if cls is None:
         cls = JSONEncoder
