@@ -1119,6 +1119,34 @@ impl<T: Clone> Dict<T> {
         current != *old
     }
 
+    /// Lock-elided entry iteration for single-threaded execution.
+    /// Mutates `position` in place.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this dict.
+    pub(crate) unsafe fn next_entry_raw(
+        &self,
+        position: &mut EntryIndex,
+    ) -> Option<(PyObjectRef, T)> {
+        let inner = unsafe { &*self.inner.data_ptr() };
+        loop {
+            let entry = inner.entries.get(*position)?;
+            *position += 1;
+            if let Some(entry) = entry {
+                break Some((entry.key.clone(), entry.value.clone()));
+            }
+        }
+    }
+
+    /// Lock-elided size-change check for single-threaded execution.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this dict.
+    pub(crate) unsafe fn has_changed_size_raw(&self, old: &DictSize) -> bool {
+        let current = unsafe { (&*self.inner.data_ptr()).size() };
+        current != *old
+    }
+
     pub(crate) fn keys(&self) -> Vec<PyObjectRef> {
         self.read()
             .entries

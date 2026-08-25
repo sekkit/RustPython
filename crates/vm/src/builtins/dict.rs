@@ -1300,6 +1300,35 @@ macro_rules! dict_view {
 
         impl IterNext for $iter_name {
             fn next(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyIterReturn> {
+                // Single-threaded: lock-elided path via data_ptr.
+                if vm.state.thread_count.load() == 0 {
+                    // SAFETY: no other thread can touch this dict or iterator.
+                    let internal: &mut PositionIterInternal<PyDictRef> =
+                        unsafe { &mut *zelf.internal.data_ptr() };
+                    return match &mut internal.status {
+                        IterStatus::Active(dict) => {
+                            if unsafe { dict.entries.has_changed_size_raw(&zelf.size) } {
+                                internal.status = IterStatus::Exhausted;
+                                Err(vm.new_runtime_error(
+                                    "dictionary changed size during iteration",
+                                ))
+                            } else {
+                                match unsafe { dict.entries.next_entry_raw(&mut internal.position) }
+                                {
+                                    Some((key, value)) => {
+                                        Ok(PyIterReturn::Return(($result_fn)(vm, key, value)))
+                                    }
+                                    None => {
+                                        internal.status = IterStatus::Exhausted;
+                                        Ok(PyIterReturn::StopIteration(None))
+                                    }
+                                }
+                            }
+                        }
+                        IterStatus::Exhausted => Ok(PyIterReturn::StopIteration(None)),
+                    };
+                }
+                // Multi-threaded: standard locked path.
                 let mut internal = zelf.internal.lock();
                 let next = if let IterStatus::Active(dict) = &internal.status {
                     if dict.entries.has_changed_size(&zelf.size) {
