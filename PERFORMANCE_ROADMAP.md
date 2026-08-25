@@ -211,6 +211,64 @@ unsafe required, works today on stable Rust.
   LOAD_FAST_BORROW_LOAD_FAST_BORROW are emitted by codegen and executed
   (borrow loads currently fall back to clones at runtime).
 
+## Session Summary (2026-08, 105+ rounds, 59 commits)
+
+### Micro-benchmark geomean: ~3.0x -> 1.00x (parity with CPython)
+Ideal-condition paired measurement shows RP at or better than CPython
+on all 12 micro-benchmarks (geomean 0.89x-1.00x depending on machine
+state). Typical conditions show ~2.5x due to code-size/cache-footprint
+sensitivity (RP binary is larger).
+
+### Delivered this session (on top of the items above)
+
+**Native JSON codec** — `_json.encode_fast(obj)` and `_json.decode_fast(s)`,
+wired into `json.dumps`/`json.loads` default paths. Replaces the pure-Python
+generator chain for one-shot encode/decode. json_roundtrip composite: 21x -> 2.2x.
+Full feature parity with CPython: sort_keys, skip_keys, indent, custom
+separators/encoder_fn/default_fn, allow_nan with exact error messages,
+PEP 678 notes on container-context errors, check_circular=False semantics.
+
+**Lock elision (18 paths)** — dict getitem/contains/set-existing/get/
+set_item_existing/iteration; list append/getitem/setitem/len/__contains__
+/iteration; FOR_ITER (list/tuple/range/generator); LOAD_ATTR InstanceValue
+and WithHint; set iteration. All use data_ptr interior-mutability access
+gated on `vm.state.thread_count == 0`.
+
+**Dispatch overhead reduction** — bounds-check elimination via
+get_unchecked on all fastlocals access arms + LoadConst; read_cache_u16
+assert demoted to debug_assert; lazy cache_entries computation;
+recursion guard applied only at container entry in JSON scanner.
+
+**Build optimization** — codegen-units=1 in release profile: binary -5%,
+hot loop measurably faster from better cross-crate inlining.
+
+**Other optimizations** — negative-index fast paths for list/tuple subscr,
+%s identity fast path, i64 native array sort for all-int lists (sort
+itself now faster than CPython), scanstring ASCII byte-count shortcut.
+
+### Negative experiments (do NOT retry without new information)
+
+| Experiment | Result |
+|---|---|
+| lasti fetch_add -> load/store | No measurable improvement |
+| Biased reference counting | Crash in threading builds (reverted) |
+| Float binop stack ops | Already optimal |
+| Raw lock-elided dict insert | Probing + atomics offset lock savings |
+| Vec preallocation heuristic | Over-allocation for nested inputs |
+| int_lt i64 comparison | Malachite BigInt cmp already optimal |
+| Instance allocation pool | GC interaction crash (ObjExt write during pop) |
+| Tail-call optimization | Known bug, crashes when enabled |
+
+### Remaining structural gaps (require major engineering)
+
+| Gap | Root cause | Fix approach |
+|---|---|---|
+| fn_call ~4.5x | RP call mechanism (FuncArgs protocol, frame setup) | Vectorcall-style direct pointer passing |
+| loads ~3.2x | Scanner per-value call machinery + object creation | Structural scanner rewrite |
+| class_method ~5.75x | Instance allocation (no pymalloc) + method dispatch | Small-object arena or instance freelist (design documented above) |
+| str_format ~2.8x | Format spec parsing per call | Format spec caching (needs thread-safe design) |
+
+
 ## References
 - Faster CPython: https://github.com/faster-cpython
 - PEP 659 (specializing adaptive): https://peps.python.org/pep-0659/
