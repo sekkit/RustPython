@@ -5676,12 +5676,39 @@ impl ExecutingFrame<'_> {
                 let value = self.pop_value();
                 if let Some(list) = obj.downcast_ref_if_exact::<PyList>(vm)
                     && let Some(int_idx) = idx.downcast_ref_if_exact::<PyInt>(vm)
-                    && let Some(i) = specialization_nonnegative_compact_index(int_idx, vm)
+                    && let Some(si) = int_idx.try_to_primitive::<isize>(vm).ok()
                 {
-                    let mut vec = list.borrow_vec_mut();
-                    if i < vec.len() {
-                        vec[i] = value;
-                        return Ok(None);
+                    // Resolve Python indexing semantics (negative wraps from
+                    // the end), then store. Single-threaded execution uses a
+                    // lock-elided raw write.
+                    if vm.state.thread_count.load() == 0 {
+                        // SAFETY: no other thread can touch this list.
+                        let len = unsafe { list.len_raw() };
+                        let i = if si >= 0 {
+                            usize::try_from(si).ok()
+                        } else {
+                            si.checked_add(len as isize)
+                                .and_then(|v| usize::try_from(v).ok())
+                        };
+                        if let Some(i) = i
+                            && unsafe { list.set_raw(i, value.clone()) }
+                            {
+                                return Ok(None);
+                            }
+                    } else {
+                        let mut vec = list.borrow_vec_mut();
+                        let i = if si >= 0 {
+                            usize::try_from(si).ok()
+                        } else {
+                            si.checked_add(vec.len() as isize)
+                                .and_then(|v| usize::try_from(v).ok())
+                        };
+                        if let Some(i) = i
+                            && i < vec.len()
+                            {
+                                vec[i] = value.clone();
+                                return Ok(None);
+                            }
                     }
                 }
                 obj.set_item(&*idx, value, vm)?;

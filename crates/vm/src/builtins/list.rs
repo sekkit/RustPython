@@ -166,6 +166,25 @@ impl PyList {
         unsafe { (&*self.elements.data_ptr()).len() }
     }
 
+    /// Lock-elided element write for single-threaded execution.
+    /// Bumps `mutation_counter` on success so `sort()`'s modified-during-sort
+    /// detection keeps working (during sort the list is emptied, so this
+    /// fast path cannot fire and miss a size-change detection).
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this list
+    /// (`vm.state.thread_count == 0`).
+    pub(crate) unsafe fn set_raw(&self, i: usize, value: PyObjectRef) -> bool {
+        let vec: &mut Vec<PyObjectRef> = unsafe { &mut *self.elements.data_ptr() };
+        if i < vec.len() {
+            vec[i] = value;
+            self.mutation_counter.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn borrow_vec_mut(&self) -> PyRwLockWriteGuard<'_, Vec<PyObjectRef>> {
         let guard = self.elements.write();
         self.mutation_counter.fetch_add(1, Ordering::Relaxed);
