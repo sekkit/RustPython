@@ -4955,8 +4955,11 @@ impl ExecutingFrame<'_> {
                 let (store_idx, load_idx) = oparg.indexes();
                 let load_value = {
                     let locals = self.localsplus.fastlocals_mut();
-                    locals[store_idx] = value;
-                    locals[load_idx].clone()
+                    // SAFETY: compiler guarantees both VarNums < nlocals.
+                    unsafe {
+                        *locals.get_unchecked_mut(store_idx.as_usize()) = value;
+                        locals.get_unchecked(load_idx.as_usize()).clone()
+                    }
                 };
                 self.push_value_opt(load_value);
                 Ok(None)
@@ -4968,8 +4971,11 @@ impl ExecutingFrame<'_> {
                 let value1 = self.pop_value_opt();
                 let value2 = self.pop_value_opt();
                 let fastlocals = self.localsplus.fastlocals_mut();
-                fastlocals[idx1] = value1;
-                fastlocals[idx2] = value2;
+                // SAFETY: compiler guarantees both VarNums < nlocals.
+                unsafe {
+                    *fastlocals.get_unchecked_mut(idx1.as_usize()) = value1;
+                    *fastlocals.get_unchecked_mut(idx2.as_usize()) = value2;
+                }
                 Ok(None)
             }
             Instruction::StoreGlobal { namei: idx } => {
