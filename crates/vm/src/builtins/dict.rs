@@ -849,6 +849,16 @@ impl Py<PyDict> {
         unsafe { self.entries.update_existing_raw(vm, key, value) }
     }
 
+    /// Lock-elided emptiness check for single-threaded execution.
+    /// Returns `None` when the fast path does not apply.
+    pub fn is_empty_single_thread(&self, vm: &VirtualMachine) -> Option<bool> {
+        if vm.state.thread_count.load() != 0 || !self.exact_dict(vm) {
+            return None;
+        }
+        // SAFETY: no other thread can touch this dict right now.
+        unsafe { Some(self.entries.len_raw() == 0) }
+    }
+
     /// Lock-elided [`Self::contains_key`] for single-threaded execution.
     /// Returns `None` when the fast path does not apply (same conditions as
     /// [`Self::get_item_single_thread`]).

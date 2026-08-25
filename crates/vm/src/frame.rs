@@ -5041,6 +5041,15 @@ impl ExecutingFrame<'_> {
             Instruction::ToBool => {
                 self.adaptive(|s, ii, cb| s.specialize_to_bool(vm, ii, cb));
                 let obj = self.pop_value();
+                // Fast path: exact dict — len() via data_ptr (no lock).
+                if let Some(d) = obj.downcast_ref_if_exact::<PyDict>(vm) {
+                    let result = match d.is_empty_single_thread(vm) {
+                        Some(empty) => !empty,
+                        None => !d.is_empty(),
+                    };
+                    self.push_value(vm.ctx.new_bool(result).into());
+                    return Ok(None);
+                }
                 let bool_val = obj.try_to_bool(vm)?;
                 self.push_value(vm.ctx.new_bool(bool_val).into());
                 Ok(None)

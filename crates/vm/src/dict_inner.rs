@@ -1109,6 +1109,14 @@ impl<T: Clone> Dict<T> {
         self.read().used
     }
 
+    /// Lock-elided length for single-threaded execution.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this dict.
+    pub(crate) unsafe fn len_raw(&self) -> usize {
+        unsafe { (&*self.inner.data_ptr()).used }
+    }
+
     pub(crate) fn size(&self) -> DictSize {
         self.read().size()
     }
