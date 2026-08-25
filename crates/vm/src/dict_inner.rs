@@ -778,20 +778,30 @@ impl<T: Clone> Dict<T> {
         hint: usize,
         value: T,
     ) -> PyResult<Option<u16>> {
-        let value = {
+        // Single-threaded: lock-elided hint probe and raw write.
+        if vm.state.thread_count.load() == 0 {
+            // SAFETY: no other thread can touch this dict.
+            let inner: &mut DictInner<T> = unsafe { &mut *self.inner.data_ptr() };
+            if let Some(Some(entry)) = inner.entries.get_mut(hint) {
+                if key.key_is(&entry.key) {
+                    entry.value = value;
+                    return Ok(None);
+                }
+            }
+            // Hint miss — fall through to standard locked insert below
+            // (handles resize, new keys, etc.)
+        } else {
             let mut inner = self.write();
-            match inner.entries.get_mut(hint) {
-                Some(Some(entry)) if key.key_is(&entry.key) => {
+            if let Some(Some(entry)) = inner.entries.get_mut(hint) {
+                if key.key_is(&entry.key) {
                     let removed = core::mem::replace(&mut entry.value, value);
                     self.bump_version();
                     drop(inner);
-                    // defer dec RC until after the lock is released
                     drop(removed);
                     return Ok(None);
                 }
-                _ => value,
             }
-        };
+        }
         self.insert(vm, key, value)?;
         self.hint_for_key(vm, key)
     }
