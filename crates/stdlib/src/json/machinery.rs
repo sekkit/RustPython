@@ -183,7 +183,12 @@ pub(super) fn scanstring<'a>(
         if !has_control_char {
             flame_guard!("machinery::scanstring::fast_path");
             let result_slice = &s[..pos];
-            let char_count = result_slice.code_points().count();
+            // ASCII fast path: byte count == code point count.
+            let char_count = if result_slice.is_ascii() {
+                pos
+            } else {
+                result_slice.code_points().count()
+            };
             let mut out = Wtf8Buf::with_capacity(pos);
             out.push_wtf8(result_slice);
             // +1 for the closing quote
