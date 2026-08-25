@@ -436,6 +436,29 @@ impl<T: Clone> Dict<T> {
         }
     }
 
+    /// Single-threaded lock-free hinted lookup.
+    ///
+    /// Checks the entry at `hint` by identity (pointer comparison). Returns
+    /// `Some(value)` on hit, `None` on miss (wrong key or mismatched guard).
+    /// The caller then falls back to a full probe or the standard locked path.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this dict
+    /// (`vm.state.thread_count == 0`).
+    pub(crate) unsafe fn get_hint_raw<K: DictKey + ?Sized>(
+        &self,
+        key: &K,
+        hint: usize,
+    ) -> Option<T> {
+        let inner: &DictInner<T> = unsafe { &*self.inner.data_ptr() };
+        let entry = inner.entries.get(hint)?.as_ref()?;
+        if key.key_is(&entry.key) {
+            Some(entry.value.clone())
+        } else {
+            None
+        }
+    }
+
     /// Single-threaded lock-free value update for an existing key.
     ///
     /// Probes the table via interior mutability and overwrites the mapped

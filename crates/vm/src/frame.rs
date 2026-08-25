@@ -5379,14 +5379,47 @@ impl ExecutingFrame<'_> {
                     // Try the cached entry index first; a hit is an identity
                     // check on the entry key instead of a hash probe.
                     let hint = self.code.instructions.read_cache_u16(cache_base + 3);
-                    if let Some((value, refreshed)) =
+                    // Single-threaded: lock-elided hint check, then raw probe.
+                    if vm.state.thread_count.load() == 0 {
+                        // SAFETY: no other thread can touch this dict.
+                        if let Some(value) =
+                            dict.get_hint_single_thread(attr_name, hint, vm)
+                        {
+                            self.pop_value();
+                            if oparg.is_method() {
+                                self.push_value(value);
+                                self.push_value_opt(None);
+                            } else {
+                                self.push_value(value);
+                            }
+                            return Ok(None);
+                        }
+                        // Hint miss — full raw probe (no hint refresh; the
+                        // standard path will re-specialize with a fresh hint).
+                        if let Some(result) =
+                            dict.get_item_single_thread(attr_name, vm)
+                        {
+                            if let Some(value) = result? {
+                                self.pop_value();
+                                if oparg.is_method() {
+                                    self.push_value(value);
+                                    self.push_value_opt(None);
+                                } else {
+                                    self.push_value(value);
+                                }
+                                return Ok(None);
+                            }
+                            // Not in instance dict — fall through to class lookup
+                        }
+                    } else if let Some((value, refreshed)) =
                         dict.get_item_opt_refresh_hint(attr_name, hint, vm)?
                     {
                         if let Some(new_hint) = refreshed {
                             unsafe {
-                                self.code
-                                    .instructions
-                                    .write_cache_u16(cache_base + 3, new_hint);
+                                self.code.instructions.write_cache_u16(
+                                    cache_base + 3,
+                                    new_hint,
+                                );
                             }
                         }
                         self.pop_value();

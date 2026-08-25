@@ -870,6 +870,23 @@ impl Py<PyDict> {
         }
     }
 
+    /// Lock-elided hinted lookup for single-threaded execution.
+    ///
+    /// Checks the entry at `hint` by identity (pointer comparison). Returns
+    /// `Some(value)` on hit; `None` on miss (caller falls back to raw probe).
+    pub(crate) fn get_hint_single_thread<K: DictKey + ?Sized>(
+        &self,
+        key: &K,
+        hint: u16,
+        vm: &VirtualMachine,
+    ) -> Option<PyObjectRef> {
+        if vm.state.thread_count.load() != 0 || !self.exact_dict(vm) {
+            return None;
+        }
+        // SAFETY: no other thread can touch this dict right now.
+        unsafe { self.entries.get_hint_raw(key, usize::from(hint)) }
+    }
+
     /// Return a cached-entry hint for exact dict fast paths.
     pub(crate) fn hint_for_key<K: DictKey + ?Sized>(
         &self,
