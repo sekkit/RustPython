@@ -1,3 +1,27 @@
+## Instance allocation freelist (analysis complete, design pending)
+
+Feasible: PyInner allocation size is FIXED for all instances (ObjExt is
+constant-size; slots array lives in a Box on the heap), so a pool does
+not need size classes.
+
+Hard constraints discovered (round 101):
+1. Existing freelist push filter requires `typ == T::class()`; user-class
+   instances are heap types -> never eligible today. Must relax with
+   justification for heaptype instances (safe: __del__ ran inside clear,
+   published-object check excludes type-attribute leaks).
+2. ObjExt.slots Box length == member_count of the class AT PUSH TIME.
+   Pool reuse across classes with different member_count would mismatch
+   the Box length -> must pool per member_count (or only pool
+   member_count == 0 instances) AND validate on pop.
+3. pop must rewrite ObjExt.dict (InstanceDict) — the generic pop path
+   only rewrites ref_count/gc_bits/payload/typ. Needs a PyPayload
+   restore hook.
+4. GC: instances are tracked; dealloc untracks before push (existing
+   freelist path already requires immediate untracking, verified).
+
+Do this as its own focused engineering pass; class_method pure-create
+gap is 6.9x of which allocation is ~60-70%.
+
 # Performance Optimization Roadmap: Lessons from Mojo & CPython
 
 ## Executive Summary
