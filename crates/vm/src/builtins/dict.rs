@@ -814,9 +814,9 @@ impl Py<PyDict> {
     /// Returns `None` when the fast path does not apply (multi-threaded,
     /// subclassed dict, or a key kind needing the full comparison protocol);
     /// otherwise `Some(result)` with the same shape as `get_item_opt`.
-    pub(crate) fn get_item_single_thread(
+    pub(crate) fn get_item_single_thread<K: DictKey + ?Sized>(
         &self,
-        key: &PyObject,
+        key: &K,
         vm: &VirtualMachine,
     ) -> Option<PyResult<Option<PyObjectRef>>> {
         if vm.state.thread_count.load() != 0 || !self.exact_dict(vm) {

@@ -21,7 +21,7 @@ interpreters (`temp/vs_cpython.py` methodology).
 | fn_call_1m            |  52.02 | 255.67 | 4.91x | 4.57x* |
 | attr_slot_500k        |  12.79 |  62.85 | 4.91x | 5.24x |
 
-Geometric mean: **~2.65x** (session start ~3.0x). Run-to-run variance on
+Geometric mean: **~2.43x** (session start ~3.0x, latest paired measurement). Run-to-run variance on
 this machine is ±10–15% for dispatch-heavy cases (RP's longer runtimes are
 more thermally sensitive; CPython numbers are stable across runs).
 Best-observed same-code-state values were lower still (dict 2.51,

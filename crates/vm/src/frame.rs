@@ -5312,12 +5312,24 @@ impl ExecutingFrame<'_> {
                 if type_version != 0 && owner.class().tp_version_tag.load(Acquire) == type_version {
                     // Type version matches — no data descriptor for this attr.
                     // Try direct dict lookup, skipping full descriptor protocol.
-                    if let Some(dict) = owner.dict()
-                        && let Some(value) = dict.get_item_opt(attr_name, vm)?
-                    {
-                        self.pop_value();
-                        self.push_value(value);
-                        return Ok(None);
+                    if let Some(dict) = owner.dict() {
+                        // Single-threaded: lock-elided raw probe.
+                        if let Some(result) = dict.get_item_single_thread(attr_name, vm) {
+                            match result? {
+                                Some(value) => {
+                                    self.pop_value();
+                                    self.push_value(value);
+                                    return Ok(None);
+                                }
+                                None => {
+                                    // Not in instance dict — fall to class lookup
+                                }
+                            }
+                        } else if let Some(value) = dict.get_item_opt(attr_name, vm)? {
+                            self.pop_value();
+                            self.push_value(value);
+                            return Ok(None);
+                        }
                     }
                     // Not in instance dict — fall through to class lookup via slow path
                 }
