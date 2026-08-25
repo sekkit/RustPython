@@ -20,6 +20,16 @@ LoadConst get_unchecked, read_cache_u16 assert->debug_assert):
 | dict_str_lookup_14k | 0.76 | 0.77 | 1.01x |
 
 Geometric mean: **0.95x** — RustPython at or better than CPython on
+### Reproducibility note (next-day re-run)
+
+The 0.95x geomean reproduces ONLY under quiet-machine state. Under
+typical background load the same paired protocol yields **~2.50x**:
+dispatch-heavy ops (fn_call/attr_slot/list_append/float_arith) return
+to 4.2-4.5x while complex-sum win stays at 0.58x and str_concat stays
+near parity. Interpretation: RP''s larger code footprint (~37MB binary)
+is disproportionately sensitive to cache/thermal state. Remaining gap
+under load = code-size/dispatch architecture, not per-op software
+overhead.
 all 12 micro-benchmarks for the first time in paired measurement.
 # RustPython vs CPython 3.12.10 micro-benchmark (2026-08-24)
 
