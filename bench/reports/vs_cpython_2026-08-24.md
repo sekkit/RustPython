@@ -1,3 +1,15 @@
+## MILESTONE: native JSON encoder lands (json_roundtrip 21x -> 4.3x)
+
+_json.make_encoder fully implemented (commit cbb7e86cb): recursive native
+serializer replacing the pure-Python generator chain for one-shot dumps.
+test_json fully green (218 tests). Breakdown of the remaining 4.3x:
+
+- native encoder call alone: 1.1us per small-object dumps (22ms/20k) —
+  roughly at CPython parity
+- json.dumps() Python-layer overhead (dumps -> encode -> iterencode ->
+  make_encoder + JSONEncoder() construction): ~86% of RP time; tracks the
+  fn_call dispatch floor, not the encoder
+- json.loads(): ~4x, scanner path untouched this round
 ## MILESTONE: full parity + wins after dispatch-path cleanup series
 
 Paired measurement (min-of-2 each side, same machine state) after the
