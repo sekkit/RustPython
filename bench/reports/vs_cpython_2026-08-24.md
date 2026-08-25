@@ -1,3 +1,24 @@
+## class_method decomposition (round 100)
+
+Instance creation breakdown (100k one-shot, min-of-5):
+
+| case | RP ms | CPY ms | ratio |
+|---|---:|---:|---:|
+| empty class create | 101.0 | 14.7 | 6.9x |
+| empty __init__(x,y) | 116.2 | ~15 | ~7.7x |
+| init + 2 STORE_ATTR | 156.9 | 24.8 | 6.3x |
+| slots class create | 85.3 | 23.0 | 3.7x |
+
+Per-instance ~1.0us: allocation dominates (~60-70%: system malloc +
+GcPrefix/ObjExt/PyInner header writes; RP has no pymalloc-style small
+object arena), then __init__ invocation machinery, then per-instance
+dict creation (generic_alloc makes it eagerly; CPython is lazy), then
+STORE_ATTR. CallAllocAndEnterInit specialization is already active for
+user classes with Python __init__.
+
+Structural fix candidates (roadmap): general small-object allocation
+pool (pymalloc equivalent), lazy instance dict. Both deep object-model
+changes; freelists already cover int/float/list/dict/tuple/str paths.
 ## Negative experiments (loads optimization attempts, round 98-99)
 
 Measured and reverted, all on the big-object loads path (3.2x gap,
