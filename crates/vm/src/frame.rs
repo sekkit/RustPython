@@ -5720,6 +5720,12 @@ impl ExecutingFrame<'_> {
                 let obj = self.pop_value();
                 let value = self.pop_value();
                 if let Some(dict) = obj.downcast_ref_if_exact::<PyDict>(vm) {
+                    // Single-threaded: lock-elided in-place update for keys
+                    // already present. Absent/new keys fall through to the
+                    // standard locked insert.
+                    if dict.set_item_existing_single_thread(&*idx, value.clone(), vm) {
+                        return Ok(None);
+                    }
                     dict.set_item(&*idx, value, vm)?;
                     Ok(None)
                 } else {

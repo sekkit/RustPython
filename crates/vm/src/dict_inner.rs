@@ -436,6 +436,68 @@ impl<T: Clone> Dict<T> {
         }
     }
 
+    /// Single-threaded lock-free value update for an existing key.
+    ///
+    /// Probes the table via interior mutability and overwrites the mapped
+    /// value when the key is present. Returns `false` (without side effects)
+    /// when the key is absent, the hash needs Python `__hash__`, or equality
+    /// needs the full protocol — the caller then falls back to the standard
+    /// locked insert/update. Value updates never change the key set, so the
+    /// keys-version stamp stays valid and is not bumped.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this dict
+    /// (`vm.state.thread_count == 0`).
+    pub(crate) unsafe fn update_existing_raw<K: DictKey + ?Sized>(
+        &self,
+        vm: &VirtualMachine,
+        key: &K,
+        value: T,
+    ) -> bool {
+        let hash = match key.key_hash(vm) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        let inner: &mut DictInner<T> = unsafe { &mut *self.inner.data_ptr() };
+        if inner.indices.is_empty() {
+            return false;
+        }
+        let mask = (inner.indices.len() - 1) as HashIndex;
+        let mut idxs = GenIndexes::new(hash, mask);
+        loop {
+            // SAFETY: idxs.next() is masked against the table size.
+            let index_entry = unsafe { *inner.indices.get_unchecked(idxs.next()) };
+            match index_entry {
+                IndexEntry::FREE => return false,
+                IndexEntry::DUMMY => {}
+                idx => {
+                    let i = match idx.index() {
+                        Some(i) => i,
+                        None => return false,
+                    };
+                    let Some(Some(entry)) = inner.entries.get_mut(i) else {
+                        continue;
+                    };
+                    if key.key_is(&entry.key) {
+                        entry.value = value;
+                        return true;
+                    }
+                    if entry.hash != hash {
+                        continue;
+                    }
+                    match key.key_eq_in_place(&entry.key) {
+                        Some(true) => {
+                            entry.value = value;
+                            return true;
+                        }
+                        Some(false) => continue,
+                        None => return false,
+                    }
+                }
+            }
+        }
+    }
+
     /// Bump the version counter after any mutation.
     fn bump_version(&self) {
         self.version.fetch_add(1, Release);

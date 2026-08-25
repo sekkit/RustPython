@@ -831,6 +831,24 @@ impl Py<PyDict> {
         }
     }
 
+    /// Lock-elided in-place value update for single-threaded execution.
+    ///
+    /// Returns `false` when the fast path does not apply (multi-threaded,
+    /// subclassed dict, key needing `__hash__`/full equality, or key absent
+    /// — the caller then uses the standard locked insert/update).
+    pub(crate) fn set_item_existing_single_thread(
+        &self,
+        key: &PyObject,
+        value: PyObjectRef,
+        vm: &VirtualMachine,
+    ) -> bool {
+        if vm.state.thread_count.load() != 0 || !self.exact_dict(vm) {
+            return false;
+        }
+        // SAFETY: no other thread can touch this dict right now.
+        unsafe { self.entries.update_existing_raw(vm, key, value) }
+    }
+
     /// Lock-elided [`Self::contains_key`] for single-threaded execution.
     /// Returns `None` when the fast path does not apply (same conditions as
     /// [`Self::get_item_single_thread`]).
