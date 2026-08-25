@@ -538,119 +538,99 @@ mod _json {
             memo: &mut HashMap<Wtf8Buf, PyStrRef>,
             vm: &VirtualMachine,
         ) -> PyResult<(PyObjectRef, usize, usize)> {
-            // Recursion guard: parse_object/parse_array recurse into call_scan_once
-            // for each child value. Without this, a deeply-nested input like
-            // `'[' * 50000 + ']' * 50000` overflows the native Rust stack and
-            // crashes the process with SIGSEGV. Matches CPython's
-            // _Py_EnterRecursiveCall in Modules/_json.c.
-            vm.with_recursion("while decoding a JSON object from a string", || {
-                let bytes = pystr.as_bytes();
-                let wtf8 = pystr.as_wtf8();
+            // Recursion guard: only entering a nested container recurses on the
+            // native stack, so the guard is applied there; scalar values scan
+            // flat without per-value recursion checks.
+            let bytes = pystr.as_bytes();
+            let wtf8 = pystr.as_wtf8();
 
-                let first_byte = match bytes.get(byte_idx) {
-                    Some(&b) => b,
-                    None => {
-                        return Err(self.make_decode_error("Expecting value", pystr, char_idx, vm));
-                    }
-                };
+            let first_byte = match bytes.get(byte_idx) {
+                Some(&b) => b,
+                None => {
+                    return Err(self.make_decode_error("Expecting value", pystr, char_idx, vm));
+                }
+            };
 
-                match first_byte {
-                    b'"' => {
-                        // String - pass slice starting after the quote.
-                        // Feed the Wtf8Buf directly to new_str; routing through
-                        // .to_string() here would lossy-collapse surrogates to U+FFFD.
-                        let (wtf8_result, chars_consumed, bytes_consumed) =
-                            machinery::scanstring(&wtf8[byte_idx + 1..], char_idx + 1, self.strict)
-                                .map_err(|e| py_decode_error(e, pystr.clone(), vm))?;
-                        let py_str = vm.ctx.new_str(wtf8_result);
-                        Ok((
-                            py_str.into(),
-                            char_idx + 1 + chars_consumed,
-                            byte_idx + 1 + bytes_consumed,
-                        ))
-                    }
-                    b'{' => {
-                        // Object
+            match first_byte {
+                b'"' => {
+                    let (wtf8_result, chars_consumed, bytes_consumed) =
+                        machinery::scanstring(&wtf8[byte_idx + 1..], char_idx + 1, self.strict)
+                            .map_err(|e| py_decode_error(e, pystr.clone(), vm))?;
+                    let py_str = vm.ctx.new_str(wtf8_result);
+                    Ok((
+                        py_str.into(),
+                        char_idx + 1 + chars_consumed,
+                        byte_idx + 1 + bytes_consumed,
+                    ))
+                }
+                b'{' => {
+                    vm.with_recursion("while decoding a JSON object from a string", || {
                         self.parse_object(pystr, char_idx + 1, byte_idx + 1, scan_once, memo, vm)
-                    }
-                    b'[' => {
-                        // Array
+                    })
+                }
+                b'[' => {
+                    vm.with_recursion("while decoding a JSON object from a string", || {
                         self.parse_array(pystr, char_idx + 1, byte_idx + 1, scan_once, memo, vm)
+                    })
+                }
+                b'n' if starts_with_bytes(&bytes[byte_idx..], b"null") => {
+                    Ok((vm.ctx.none(), char_idx + 4, byte_idx + 4))
+                }
+                b't' if starts_with_bytes(&bytes[byte_idx..], b"true") => {
+                    Ok((vm.ctx.new_bool(true).into(), char_idx + 4, byte_idx + 4))
+                }
+                b'f' if starts_with_bytes(&bytes[byte_idx..], b"false") => {
+                    Ok((vm.ctx.new_bool(false).into(), char_idx + 5, byte_idx + 5))
+                }
+                b'N' if starts_with_bytes(&bytes[byte_idx..], b"NaN") => {
+                    let result = self.parse_constant.call(("NaN",), vm)?;
+                    Ok((result, char_idx + 3, byte_idx + 3))
+                }
+                b'I' if starts_with_bytes(&bytes[byte_idx..], b"Infinity") => {
+                    let result = self.parse_constant.call(("Infinity",), vm)?;
+                    Ok((result, char_idx + 8, byte_idx + 8))
+                }
+                b'-' => {
+                    if starts_with_bytes(&bytes[byte_idx..], b"-Infinity") {
+                        let result = self.parse_constant.call(("-Infinity",), vm)?;
+                        return Ok((result, char_idx + 9, byte_idx + 9));
                     }
-                    b'n' if starts_with_bytes(&bytes[byte_idx..], b"null") => {
-                        // null
-                        Ok((vm.ctx.none(), char_idx + 4, byte_idx + 4))
+                    if let Some((result, len)) = self.parse_number(&bytes[byte_idx..], vm) {
+                        return Ok((result?, char_idx + len, byte_idx + len));
                     }
-                    b't' if starts_with_bytes(&bytes[byte_idx..], b"true") => {
-                        // true
-                        Ok((vm.ctx.new_bool(true).into(), char_idx + 4, byte_idx + 4))
+                    Err(self.make_decode_error("Expecting value", pystr, char_idx, vm))
+                }
+                b'0'..=b'9' => {
+                    if let Some((result, len)) = self.parse_number(&bytes[byte_idx..], vm) {
+                        return Ok((result?, char_idx + len, byte_idx + len));
                     }
-                    b'f' if starts_with_bytes(&bytes[byte_idx..], b"false") => {
-                        // false
-                        Ok((vm.ctx.new_bool(false).into(), char_idx + 5, byte_idx + 5))
-                    }
-                    b'N' if starts_with_bytes(&bytes[byte_idx..], b"NaN") => {
-                        // NaN
-                        let result = self.parse_constant.call(("NaN",), vm)?;
-                        Ok((result, char_idx + 3, byte_idx + 3))
-                    }
-                    b'I' if starts_with_bytes(&bytes[byte_idx..], b"Infinity") => {
-                        // Infinity
-                        let result = self.parse_constant.call(("Infinity",), vm)?;
-                        Ok((result, char_idx + 8, byte_idx + 8))
-                    }
-                    b'-' => {
-                        // -Infinity or negative number
-                        if starts_with_bytes(&bytes[byte_idx..], b"-Infinity") {
-                            let result = self.parse_constant.call(("-Infinity",), vm)?;
-                            return Ok((result, char_idx + 9, byte_idx + 9));
-                        }
-                        // Negative number - numbers are ASCII so len == bytes
-                        if let Some((result, len)) = self.parse_number(&bytes[byte_idx..], vm) {
-                            return Ok((result?, char_idx + len, byte_idx + len));
-                        }
-                        Err(self.make_decode_error("Expecting value", pystr, char_idx, vm))
-                    }
-                    b'0'..=b'9' => {
-                        // Positive number - numbers are ASCII so len == bytes
-                        if let Some((result, len)) = self.parse_number(&bytes[byte_idx..], vm) {
-                            return Ok((result?, char_idx + len, byte_idx + len));
-                        }
-                        Err(self.make_decode_error("Expecting value", pystr, char_idx, vm))
-                    }
-                    _ => {
-                        // Fall back to scan_once for unrecognized input
-                        // Note: This path requires char_idx for Python compatibility
-                        let result = scan_once.call((pystr.clone(), char_idx as isize), vm);
-
-                        match result {
-                            Ok(tuple) => {
-                                use crate::vm::builtins::PyTupleRef;
-                                let tuple: PyTupleRef = tuple.try_into_value(vm)?;
-                                if tuple.len() != 2 {
-                                    return Err(vm.new_value_error("scan_once must return 2-tuple"));
-                                }
-                                let value = tuple.as_slice()[0].clone();
-                                let end_char_idx: isize = tuple.as_slice()[1].try_to_value(vm)?;
-                                // For fallback, we need to calculate byte_idx from char_idx
-                                // This is expensive but fallback should be rare
-                                let end_byte_idx = wtf8
-                                    .code_point_indices()
-                                    .nth(end_char_idx as usize)
-                                    .map_or(wtf8.len(), |(i, _)| i);
-                                Ok((value, end_char_idx as usize, end_byte_idx))
+                    Err(self.make_decode_error("Expecting value", pystr, char_idx, vm))
+                }
+                _ => {
+                    let result = scan_once.call((pystr.clone(), char_idx as isize), vm);
+                    match result {
+                        Ok(tuple) => {
+                            use crate::vm::builtins::PyTupleRef;
+                            let tuple: PyTupleRef = tuple.try_into_value(vm)?;
+                            if tuple.len() != 2 {
+                                return Err(vm.new_value_error("scan_once must return 2-tuple"));
                             }
-                            Err(err) if err.fast_isinstance(vm.ctx.exceptions.stop_iteration) => {
-                                Err(self.make_decode_error("Expecting value", pystr, char_idx, vm))
-                            }
-                            Err(err) => Err(err),
+                            let value = tuple.as_slice()[0].clone();
+                            let end_char_idx: isize = tuple.as_slice()[1].try_to_value(vm)?;
+                            let end_byte_idx = wtf8
+                                .code_point_indices()
+                                .nth(end_char_idx as usize)
+                                .map_or(wtf8.len(), |(i, _)| i);
+                            Ok((value, end_char_idx as usize, end_byte_idx))
                         }
+                        Err(err) if err.fast_isinstance(vm.ctx.exceptions.stop_iteration) => {
+                            Err(self.make_decode_error("Expecting value", pystr, char_idx, vm))
+                        }
+                        Err(err) => Err(err),
                     }
                 }
-            })
-        }
-
-        /// Create a decode error.
+            }
+    }
         fn make_decode_error(
             &self,
             msg: &str,
