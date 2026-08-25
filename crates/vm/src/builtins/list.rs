@@ -406,21 +406,36 @@ impl PyList {
         // compared generically afterwards, preserving subclass __eq__.
         if let Some(needle_int) = needle.downcast_ref_if_exact::<PyInt>(vm) {
             let needle_big = needle_int.as_bigint();
-            let guard = self.borrow_vec();
             let mut leftovers: Vec<usize> = Vec::new();
             let mut found = false;
-            for (i, item) in guard.iter().enumerate() {
-                match item.downcast_ref_if_exact::<PyInt>(vm) {
-                    Some(item_int) => {
-                        if item_int.as_bigint() == needle_big {
-                            found = true;
-                            break;
+            if MULTI_THREAD.load(Ordering::Relaxed) == 0 {
+                // SAFETY: no other thread can touch this list.
+                let items: &[PyObjectRef] = unsafe { &*self.elements.data_ptr() };
+                for (i, item) in items.iter().enumerate() {
+                    match item.downcast_ref_if_exact::<PyInt>(vm) {
+                        Some(item_int) => {
+                            if item_int.as_bigint() == needle_big {
+                                found = true;
+                                break;
+                            }
                         }
+                        None => leftovers.push(i),
                     }
-                    None => leftovers.push(i),
+                }
+            } else {
+                let guard = self.borrow_vec();
+                for (i, item) in guard.iter().enumerate() {
+                    match item.downcast_ref_if_exact::<PyInt>(vm) {
+                        Some(item_int) => {
+                            if item_int.as_bigint() == needle_big {
+                                found = true;
+                                break;
+                            }
+                        }
+                        None => leftovers.push(i),
+                    }
                 }
             }
-            drop(guard);
             if found {
                 return Ok(true);
             }
