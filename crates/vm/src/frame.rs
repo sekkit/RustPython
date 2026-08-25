@@ -5964,15 +5964,27 @@ impl ExecutingFrame<'_> {
                 if let (Some(a_str), Some(b_int)) = (
                     a.downcast_ref_if_exact::<PyStr>(vm),
                     b.downcast_ref_if_exact::<PyInt>(vm),
-                ) && let Some(i) = specialization_nonnegative_compact_index(b_int, vm)
-                    && let Ok(ch) = a_str.getitem_by_index(vm, i as isize)
-                    && ch.is_ascii()
+                ) && let Some(si) = b_int.try_to_primitive::<isize>(vm).ok()
                 {
-                    let ascii_idx = ch.to_u32() as usize;
-                    self.pop_value();
-                    self.pop_value();
-                    self.push_value(vm.ctx.ascii_char_cache[ascii_idx].clone().into());
-                    return Ok(None);
+                    // Resolve Python indexing semantics (negative wraps from end)
+                    let char_len = a_str.len();
+                    let i = if si >= 0 {
+                        usize::try_from(si).ok()
+                    } else {
+                        si.checked_add(char_len as isize)
+                            .and_then(|v| usize::try_from(v).ok())
+                    };
+                    if let Some(i) = i
+                        && i < char_len
+                        && let Ok(ch) = a_str.getitem_by_index(vm, i as isize)
+                        && ch.is_ascii()
+                    {
+                        let ascii_idx = ch.to_u32() as usize;
+                        self.pop_value();
+                        self.pop_value();
+                        self.push_value(vm.ctx.ascii_char_cache[ascii_idx].clone().into());
+                        return Ok(None);
+                    }
                 }
                 self.execute_bin_op(vm, bytecode::BinaryOperator::Subscr)
             }
