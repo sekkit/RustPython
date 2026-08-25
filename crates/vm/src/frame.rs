@@ -5753,14 +5753,25 @@ impl ExecutingFrame<'_> {
                     b.downcast_ref_if_exact::<PyInt>(vm),
                 ) && let Some(i) = specialization_nonnegative_compact_index(idx, vm)
                 {
-                    let vec = list.borrow_vec();
-                    if i < vec.len() {
-                        let value = vec.do_get(i);
-                        drop(vec);
-                        self.pop_value();
-                        self.pop_value();
-                        self.push_value(value);
-                        return Ok(None);
+                    // Single-threaded: lock-elided raw read.
+                    if vm.state.thread_count.load() == 0 {
+                        // SAFETY: no other thread can touch this list.
+                        if let Some(value) = unsafe { list.get_raw(i) } {
+                            self.pop_value();
+                            self.pop_value();
+                            self.push_value(value);
+                            return Ok(None);
+                        }
+                    } else {
+                        let vec = list.borrow_vec();
+                        if i < vec.len() {
+                            let value = vec.do_get(i);
+                            drop(vec);
+                            self.pop_value();
+                            self.pop_value();
+                            self.push_value(value);
+                            return Ok(None);
+                        }
                     }
                 }
                 self.execute_bin_op(vm, bytecode::BinaryOperator::Subscr)

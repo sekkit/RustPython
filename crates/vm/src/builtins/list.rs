@@ -147,6 +147,25 @@ impl PyList {
         PyRwLockReadGuard::map(self.elements.read(), |v| &**v)
     }
 
+    /// Lock-elided element access for single-threaded execution.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this list
+    /// (`vm.state.thread_count == 0`).
+    pub(crate) unsafe fn get_raw(&self, i: usize) -> Option<PyObjectRef> {
+        let vec: &Vec<PyObjectRef> = unsafe { &*self.elements.data_ptr() };
+        vec.get(i).cloned()
+    }
+
+    /// Lock-elided length for single-threaded execution.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this list
+    /// (`vm.state.thread_count == 0`).
+    pub(crate) unsafe fn len_raw(&self) -> usize {
+        unsafe { (&*self.elements.data_ptr()).len() }
+    }
+
     pub fn borrow_vec_mut(&self) -> PyRwLockWriteGuard<'_, Vec<PyObjectRef>> {
         let guard = self.elements.write();
         self.mutation_counter.fetch_add(1, Ordering::Relaxed);
