@@ -41,7 +41,6 @@ class TestEncode(CTest):
             b"\xCD\x7D\x3D\x4E\x12\x4C\xF9\x79\xD7\x52\xBA\x82\xF2\x27\x4A\x7D\xA0\xCA\x75",
             None)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; TypeError: 'NoneType' object is not callable
     def test_bad_str_encoder(self):
         # Issue #31505: There shouldn't be an assertion failure in case
         # c_make_encoder() receives a bad encoder() argument.
@@ -119,7 +118,6 @@ class TestEncode(CTest):
         self.assertRaises(TypeError, enc, ['spam', {'ham': 'eggs'}], 3.0)
         self.assertRaises(TypeError, enc, ['spam', {'ham': 'eggs'}])
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; TypeError: 'NoneType' object is not callable
     def test_mutate_dict_items_during_encode(self):
         # gh-142831: Clearing the items list via a re-entrant key encoder
         # must not cause a use-after-free.  BadDict.items() returns a
@@ -153,7 +151,6 @@ class TestEncode(CTest):
         encoder(BadDict(real=1), 0)
         self.assertTrue(cleared)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; TypeError: 'NoneType' object is not callable
     def test_mutate_list_during_encode(self):
         # gh-142831: Clearing a list mid-iteration via the default
         # callback must not cause a use-after-free.

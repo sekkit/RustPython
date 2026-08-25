@@ -6,15 +6,15 @@ mod _json {
     use super::machinery;
     use crate::vm::{
         AsObject, Py, PyObjectRef, PyPayload, PyResult, VirtualMachine,
-        builtins::{PyBaseExceptionRef, PyStrRef, PyType},
+        builtins::{PyBaseExceptionRef, PyDict, PyFloat, PyInt, PyList, PyStr, PyStrRef, PyTuple, PyType},
         convert::ToPyResult,
-        function::{IntoFuncArgs, OptionalArg},
+        function::{FuncArgs, IntoFuncArgs, OptionalArg},
         protocol::PyIterReturn,
         types::{Callable, Constructor},
     };
     use core::str::FromStr;
     use malachite_bigint::BigInt;
-    use rustpython_common::wtf8::Wtf8Buf;
+    use rustpython_common::wtf8::{Wtf8, Wtf8Buf};
     use std::collections::HashMap;
 
     /// Skip JSON whitespace characters (space, tab, newline, carriage return).
@@ -763,5 +763,457 @@ mod _json {
                 .map_err(|e| py_decode_error(e, s, vm))?;
 
         Ok((result, end + chars_consumed))
+    }
+
+    // ---- Native JSON encoder (_json.make_encoder) ----
+
+    /// Recursively serialize a Python object tree to JSON WTF-8 bytes.
+    fn encode_json_value(
+        obj: &PyObjectRef,
+        seen: &mut Vec<usize>,
+        default_fn: Option<&PyObjectRef>,
+        encoder_fn: Option<&PyObjectRef>,
+        allow_nan: bool,
+        ascii_only: bool,
+        check_circular: bool,
+        key_sep: &Wtf8,
+        item_sep: &Wtf8,
+        indent: &Option<Wtf8Buf>,
+        sort_keys: bool,
+        skip_keys: bool,
+        level: usize,
+        vm: &VirtualMachine,
+    ) -> PyResult<Wtf8Buf> {
+        if vm.is_none(obj) {
+            return Ok(Wtf8Buf::from("null"));
+        }
+        if obj.is(&vm.ctx.true_value) {
+            return Ok(Wtf8Buf::from("true"));
+        }
+        if obj.is(&vm.ctx.false_value) {
+            return Ok(Wtf8Buf::from("false"));
+        }
+        if let Some(s) = obj.downcast_ref_if_exact::<PyStr>(vm) {
+            if let Some(enc) = encoder_fn {
+                let encoded = enc.as_object().call((obj.to_owned(),), vm)?;
+                let estr = encoded.downcast_ref::<PyStr>().ok_or_else(|| {
+                    vm.new_type_error("encoder must return a str")
+                })?;
+                return Ok(encode_string(estr.as_wtf8(), false));
+            }
+            return Ok(encode_string(s.as_wtf8(), ascii_only));
+        }
+        if let Some(i) = obj.downcast_ref::<PyInt>() {
+            return Ok(Wtf8Buf::from(format!("{}", i.as_bigint())));
+        }
+        if let Some(fl) = obj.downcast_ref::<PyFloat>() {
+            let v = fl.to_f64();
+            if v.is_nan() {
+                if !allow_nan {
+                    return Err(vm.new_value_error(
+                        "Out of range float values are not JSON compliant: nan",
+                    ));
+                }
+                return Ok(Wtf8Buf::from("NaN"));
+            }
+            if v.is_infinite() {
+                if !allow_nan {
+                    return Err(vm.new_value_error(
+                        format!("Out of range float values are not JSON compliant: {v}"),
+                    ));
+                }
+                return Ok(Wtf8Buf::from(if v > 0.0 { "Infinity" } else { "-Infinity" }));
+            }
+            return Ok(Wtf8Buf::from(rustpython_vm::literal::float::to_string(v)));
+        }
+        // Non-scalar: circular reference detection covers every object that
+        // is not an immutable JSON scalar (matches CPython's marker set).
+        // When check_circular is disabled the recursion depth is bounded by
+        // the interpreter's own stack (RecursionError), like CPython.
+        if check_circular {
+            let ptr_id = (obj.as_object().as_raw() as *const u8) as usize;
+            if seen.contains(&ptr_id) {
+                return Err(vm.new_value_error("Circular reference detected"));
+            }
+            seen.push(ptr_id);
+            let result = encode_json_container(
+                obj, ptr_id, seen, default_fn, encoder_fn, allow_nan, ascii_only, check_circular, key_sep, item_sep,
+                indent, sort_keys, skip_keys, level, vm,
+            );
+            seen.pop();
+            result
+        } else {
+            let ptr_id = (obj.as_object().as_raw() as *const u8) as usize;
+            encode_json_container(
+                obj, ptr_id, seen, default_fn, encoder_fn, allow_nan, ascii_only, check_circular, key_sep, item_sep,
+                indent, sort_keys, skip_keys, level, vm,
+            )
+        }
+    }
+
+    /// Encode a non-scalar object (list / tuple / dict / default-converted).
+    /// Runs with the object already registered in `seen`.
+    fn encode_json_container(
+        obj: &PyObjectRef,
+        ptr_id: usize,
+        seen: &mut Vec<usize>,
+        default_fn: Option<&PyObjectRef>,
+        encoder_fn: Option<&PyObjectRef>,
+        allow_nan: bool,
+        ascii_only: bool,
+        check_circular: bool,
+        key_sep: &Wtf8,
+        item_sep: &Wtf8,
+        indent: &Option<Wtf8Buf>,
+        sort_keys: bool,
+        skip_keys: bool,
+        level: usize,
+        vm: &VirtualMachine,
+    ) -> PyResult<Wtf8Buf> {
+        // list — iterate the LIVE list by index so default() callbacks that
+        // mutate the list during encoding produce CPython's observed output.
+        if let Some(list) = obj.downcast_ref_if_exact::<PyList>(vm) {
+            let mut buf = Wtf8Buf::from("[");
+            let mut i = 0usize;
+            let mut n = 0usize;
+            loop {
+                let item = {
+                    let guard = list.borrow_vec();
+                    if i >= guard.len() {
+                        break;
+                    }
+                    guard[i].clone()
+                };
+                if n > 0 {
+                    buf.push_wtf8(item_sep);
+                }
+                buf.push_wtf8(&indent_prefix(indent, level + 1));
+                let sub = encode_json_value(&item, seen, default_fn, encoder_fn, allow_nan, ascii_only, check_circular, key_sep, item_sep, indent, sort_keys, skip_keys, level + 1, vm);
+                match sub {
+                    Ok(text) => buf.push_wtf8(&text),
+                    Err(e) => {
+                        note_on_circular(&e, vm, format!("when serializing list item {n}"));
+                        return Err(e);
+                    }
+                }
+                i += 1;
+                n += 1;
+            }
+            buf.push_wtf8(&indent_suffix(indent, n, level));
+            buf.push_wtf8(Wtf8Buf::from("]").as_slice());
+            return Ok(buf);
+        }
+        // tuple (serialized as array)
+        if let Some(tuple) = obj.downcast_ref_if_exact::<PyTuple>(vm) {
+            let elements = tuple.as_slice();
+            let mut buf = Wtf8Buf::from("[");
+            for (n, item) in elements.iter().enumerate() {
+                if n > 0 {
+                    buf.push_wtf8(item_sep);
+                }
+                buf.push_wtf8(&indent_prefix(indent, level + 1));
+                let sub = encode_json_value(item, seen, default_fn, encoder_fn, allow_nan, ascii_only, check_circular, key_sep, item_sep, indent, sort_keys, skip_keys, level + 1, vm);
+                match sub {
+                    Ok(text) => buf.push_wtf8(&text),
+                    Err(e) => {
+                        note_on_circular(&e, vm, format!("when serializing tuple item {n}"));
+                        return Err(e);
+                    }
+                }
+            }
+            buf.push_wtf8(&indent_suffix(indent, elements.len(), level));
+            buf.push_wtf8(Wtf8Buf::from("]").as_slice());
+            return Ok(buf);
+        }
+        // dict — exact dicts iterate the C-level entries (insertion order);
+        // subclasses (OrderedDict etc.) iterate via the Python-level items()
+        // protocol so custom ordering is respected.
+        if let Some(dict) = obj.downcast_ref::<PyDict>() {
+            let mut items = if obj.class().is(vm.ctx.types.dict_type) {
+                dict.items_vec()
+            } else {
+                let items_obj = obj.as_object().get_attr("items", vm)?.call((), vm)?;
+                let mut out = Vec::new();
+                let mut iter = items_obj.as_object().get_iter(vm)?;
+                loop {
+                    match iter.next(vm)? {
+                        crate::vm::protocol::PyIterReturn::Return(item) => {
+                            let tup = item.downcast_ref::<crate::vm::builtins::PyTuple>().ok_or_else(|| {
+                                vm.new_type_error("dict items() must yield 2-tuples")
+                            })?;
+                            let sl = tup.as_slice();
+                            if sl.len() != 2 {
+                                return Err(vm.new_type_error("dict items() must yield 2-tuples"));
+                            }
+                            out.push((sl[0].clone(), sl[1].clone()));
+                        }
+                        crate::vm::protocol::PyIterReturn::StopIteration(_) => break,
+                    }
+                }
+                out
+            };
+            if sort_keys {
+                let mut sort_err: Option<PyBaseExceptionRef> = None;
+                items.sort_by(|a, b| {
+                    let less = rustpython_vm::types::PyComparisonOp::Lt;
+                    let a_lt = a.0.as_object().rich_compare_bool(&b.0, less, vm);
+                    let b_lt = b.0.as_object().rich_compare_bool(&a.0, less, vm);
+                    match (a_lt, b_lt) {
+                        (Ok(true), _) => core::cmp::Ordering::Less,
+                        (_, Ok(true)) => core::cmp::Ordering::Greater,
+                        (Err(e), _) => {
+                            if sort_err.is_none() {
+                                sort_err = Some(e);
+                            }
+                            core::cmp::Ordering::Equal
+                        }
+                        _ => core::cmp::Ordering::Equal,
+                    }
+                });
+                if let Some(e) = sort_err {
+                    return Err(e);
+                }
+            }
+            let mut buf = Wtf8Buf::from("{");
+            let mut done = 0usize; // emitted pairs (skipped keys don't count)
+            for (k, v) in items.iter() {
+                let key_text: Wtf8Buf = match k.downcast_ref::<PyStr>() {
+                    Some(s) => {
+                        if let Some(enc) = encoder_fn {
+                            let encoded = enc.as_object().call((k.to_owned(),), vm)?;
+                            let estr = encoded.downcast_ref::<PyStr>().ok_or_else(|| {
+                                vm.new_type_error("encoder must return a str")
+                            })?;
+                            encode_string(estr.as_wtf8(), false)
+                        } else {
+                            encode_string(s.as_wtf8(), ascii_only)
+                        }
+                    }
+                    None if skip_keys => continue,
+                    None => match encode_key_scalar(k, vm) {
+                        Some(text) => {
+                            let mut quoted = Wtf8Buf::from("\"");
+                            quoted.push_wtf8(&text);
+                            quoted.push_wtf8(Wtf8Buf::from("\"").as_slice());
+                            quoted
+                        }
+                        None => {
+                            return Err(vm.new_type_error(
+                                format!("keys must be str, int, float, bool or None, not {}", k.class().name())
+                            ));
+                        }
+                    },
+                };
+                if done > 0 {
+                    buf.push_wtf8(item_sep);
+                }
+                buf.push_wtf8(&indent_prefix(indent, level + 1));
+                buf.push_wtf8(&key_text);
+                buf.push_wtf8(key_sep);
+                let sub = encode_json_value(v, seen, default_fn, encoder_fn, allow_nan, ascii_only, check_circular, key_sep, item_sep, indent, sort_keys, skip_keys, level + 1, vm);
+                match sub {
+                    Ok(text) => buf.push_wtf8(&text),
+                    Err(e) => {
+                        note_on_circular(&e, vm, format!("when serializing dict item '{}'", key_note_text(k, vm)));
+                        return Err(e);
+                    }
+                }
+                done += 1;
+            }
+            buf.push_wtf8(&indent_suffix(indent, done, level));
+            buf.push_wtf8(Wtf8Buf::from("}").as_slice());
+            return Ok(buf);
+        }
+        // Unknown type: call default handler
+        if let Some(default_fn) = default_fn {
+            let _ = ptr_id;
+            let replacement = default_fn.as_object().call((obj.to_owned(),), vm)?;
+            if check_circular && replacement.is(obj) {
+                return Err(vm.new_value_error("Circular reference detected"));
+            }
+            let sub = encode_json_value(&replacement, seen, Some(default_fn), encoder_fn, allow_nan, ascii_only, check_circular, key_sep, item_sep, indent, sort_keys, skip_keys, level, vm);
+            match sub {
+                Ok(text) => return Ok(text),
+                Err(e) => {
+                    note_on_circular(&e, vm, "when serializing type object".to_string());
+                    return Err(e);
+                }
+            }
+        }
+        Err(vm.new_type_error(format!(
+            "Object of type {} is not JSON serializable",
+            obj.class().name()
+        )))
+    }
+
+    /// Attach a PEP 678 note describing the container context to an error
+    /// raised while serializing a child element (matches CPython's encoder).
+    fn note_on_circular(e: &PyBaseExceptionRef, vm: &VirtualMachine, note: String) {
+        let _ = vm.call_method(
+            e.as_object(),
+            "add_note",
+            (vm.ctx.new_str(note),),
+        );
+    }
+
+    /// JSON-quoted display of a dict key for recursion notes.
+    fn key_note_text(k: &PyObjectRef, vm: &VirtualMachine) -> String {
+        if let Some(s) = k.downcast_ref::<PyStr>() {
+            s.as_wtf8().to_string()
+        } else {
+            format!("{}", k.repr(vm).as_ref().map(|r| r.as_wtf8().to_string()).unwrap_or_default())
+        }
+    }
+
+    /// Encode non-str dict keys that are JSON scalars (bool/int/float/None)
+    /// to their JSON text form ("true", "2", "4.0", "null"). Returns None
+    /// for unsupported key types.
+    fn encode_key_scalar(key: &PyObjectRef, vm: &VirtualMachine) -> Option<Wtf8Buf> {
+        if key.is(&vm.ctx.true_value) {
+            return Some(Wtf8Buf::from("true"));
+        }
+        if key.is(&vm.ctx.false_value) {
+            return Some(Wtf8Buf::from("false"));
+        }
+        if vm.is_none(key) {
+            return Some(Wtf8Buf::from("null"));
+        }
+        if let Some(i) = key.downcast_ref::<PyInt>() {
+            return Some(Wtf8Buf::from(format!("{}", i.as_bigint())));
+        }
+        if let Some(f) = key.downcast_ref::<PyFloat>() {
+            let v = f.to_f64();
+            return Some(if v.is_nan() {
+                Wtf8Buf::from("NaN")
+            } else if v.is_infinite() {
+                Wtf8Buf::from(if v > 0.0 { "Infinity" } else { "-Infinity" })
+            } else {
+                Wtf8Buf::from(rustpython_vm::literal::float::to_string(v))
+            });
+        }
+        None
+    }
+
+    /// Indent prefix placed before each container item when `indent` is set.
+    /// Returns "" for compact mode.
+    fn indent_prefix(indent: &Option<Wtf8Buf>, level: usize) -> Wtf8Buf {
+        match indent {
+            Some(ind) => {
+                let mut buf = Wtf8Buf::from("\n");
+                for _ in 0..level {
+                    buf.push_wtf8(ind.as_slice());
+                }
+                buf
+            }
+            None => Wtf8Buf::new(),
+        }
+    }
+
+    /// Closing-brace indentation when `indent` is set (newline + level indents
+    /// if the container has items; "" otherwise). Compact mode returns "".
+    fn indent_suffix(indent: &Option<Wtf8Buf>, nitems: usize, level: usize) -> Wtf8Buf {
+        match indent {
+            Some(_) if nitems > 0 => {
+                let mut buf = Wtf8Buf::from("\n");
+                for _ in 0..level {
+                    buf.push_wtf8(indent.as_ref().unwrap().as_slice());
+                }
+                buf
+            }
+            _ => Wtf8Buf::new(),
+        }
+    }
+
+    #[pyclass(name = "_jsonEncoder", module = "_json", no_attr)]
+    #[derive(Debug, PyPayload)]
+    struct JsonEncoder {
+        default_fn: Option<PyObjectRef>,
+        encoder_fn: Option<PyObjectRef>,
+        allow_nan: bool,
+        ascii_only: bool,
+        check_circular: bool,
+        sort_keys: bool,
+        skip_keys: bool,
+        indent: Option<Wtf8Buf>,
+        key_sep: Wtf8Buf,
+        item_sep: Wtf8Buf,
+    }
+
+    #[pyclass(with(Callable))]
+    impl JsonEncoder {}
+
+    impl Callable for JsonEncoder {
+        type Args = FuncArgs;
+
+        fn call(zelf: &Py<Self>, mut args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let obj = args.args.remove(0);
+            let _level: usize = args.args.get(1).and_then(|x| x.try_to_value(vm).ok()).unwrap_or(0);
+            let mut seen = Vec::new();
+            let result = encode_json_value(
+                &obj, &mut seen, zelf.default_fn.as_ref(), zelf.encoder_fn.as_ref(), zelf.allow_nan, zelf.ascii_only, zelf.check_circular,
+                &zelf.key_sep, &zelf.item_sep, &zelf.indent, zelf.sort_keys, zelf.skip_keys, 0, vm,
+            )?;
+            Ok(vm.ctx.new_str(result).into())
+        }
+    }
+
+    #[pyfunction]
+    fn make_encoder(args: FuncArgs, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        // markers must be a dict or None; None == check_circular disabled.
+        let check_circular = match args.args.get(0) {
+            Some(m) if vm.is_none(&m) => false,
+            Some(m) if m.downcast_ref::<PyDict>().is_some() => true,
+            _ => {
+                return Err(vm.new_type_error("markers must be a dict or None"));
+            }
+        };
+        let default_fn = args.args.get(1).cloned().filter(|x| !vm.is_none(x));
+        // encoder_fn is encode_basestring_ascii (ensure_ascii=True, the
+        // default) or encode_basestring; compare by __name__. The built-in
+        // encoders are handled internally with `ascii_only`; any other
+        // callable is stored and invoked for every string (keys and values).
+        let (encoder_fn_arg, ascii_only) = match args.args.get(2).cloned().filter(|x| !vm.is_none(x)) {
+            Some(f) => {
+                let name = f.get_attr("__name__", vm).ok()
+                    .and_then(|n| n.downcast_ref::<PyStr>().map(|s| s.as_wtf8().to_string()))
+                    .unwrap_or_default();
+                match name.as_str() {
+                    "encode_basestring_ascii" => (None, true),
+                    "encode_basestring" => (None, false),
+                    _ => (Some(f), false), // custom encoder: call it for strings
+                }
+            }
+            None => (None, true),
+        };
+        let indent = args.args.get(3).and_then(|x| {
+            if vm.is_none(&x) { None }
+            else { x.str(vm).ok().map(|s| s.as_wtf8().to_owned()) }
+        });
+        let key_sep = match args.args.get(4) {
+            Some(x) if vm.is_none(&x) => Wtf8Buf::from(": "),
+            Some(x) => match x.downcast_ref::<PyStr>() {
+                Some(s) => s.as_wtf8().to_owned(),
+                None => return Err(vm.new_type_error("key separator must be a string")),
+            },
+            None => Wtf8Buf::from(": "),
+        };
+        let item_sep = match args.args.get(5) {
+            Some(x) if vm.is_none(&x) => Wtf8Buf::from(", "),
+            Some(x) => match x.downcast_ref::<PyStr>() {
+                Some(s) => s.as_wtf8().to_owned(),
+                None => return Err(vm.new_type_error("item separator must be a string")),
+            },
+            None => Wtf8Buf::from(", "),
+        };
+        let sort_keys = args.args.get(6).map(|x| x.is(&vm.ctx.true_value)).unwrap_or(false);
+        let skip_keys = args.args.get(7).map(|x| x.is(&vm.ctx.true_value)).unwrap_or(false);
+        let allow_nan = args.args.get(8).map(|x| {
+            if x.is(&vm.ctx.true_value) { true }
+            else if x.is(&vm.ctx.false_value) { false }
+            else { true }
+        }).unwrap_or(true);
+        let _ = ();
+        let encoder = JsonEncoder { default_fn, encoder_fn: encoder_fn_arg, allow_nan, ascii_only, check_circular, sort_keys, skip_keys, indent, key_sep, item_sep };
+        Ok(encoder.into_pyobject(vm))
     }
 }
