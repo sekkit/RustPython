@@ -706,6 +706,19 @@ impl<T: Clone> Dict<T> {
         vm: &VirtualMachine,
         key: &K,
     ) -> PyResult<Option<T>> {
+        // Single-threaded: lock-elided raw probe.
+        if vm.state.thread_count.load() == 0 {
+            // SAFETY: no other thread can touch this dict.
+            return match unsafe { self.get_item_raw(vm, key) } {
+                RawLookup::Found(v) => Ok(Some(v)),
+                RawLookup::Absent => Ok(None),
+                RawLookup::Unsupported => {
+                    // Fall through to standard locked path.
+                    let hash = key.key_hash(vm)?;
+                    self._get_inner(vm, key, hash)
+                }
+            };
+        }
         let hash = key.key_hash(vm)?;
         self._get_inner(vm, key, hash)
     }
