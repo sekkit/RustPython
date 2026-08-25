@@ -4313,8 +4313,9 @@ impl ExecutingFrame<'_> {
                         "local variable '{varname}' referenced before assignment"
                     ))
                 }
-                let idx = var_num.get(arg);
-                let x = self.localsplus.fastlocals()[idx]
+                let idx = var_num.get(arg).as_usize();
+                // SAFETY: bytecode compiler guarantees var_num < nlocals.
+                let x = unsafe { self.localsplus.fastlocals().get_unchecked(idx) }
                     .clone()
                     .ok_or_else(|| reference_error(self.code.varnames[idx], vm))?;
                 self.push_value(x);
@@ -4932,8 +4933,10 @@ impl ExecutingFrame<'_> {
             Instruction::StoreFast { var_num } => {
                 // pop_value_opt: allows NULL from LoadFastAndClear restore path
                 let value = self.pop_value_opt();
+                let idx = var_num.get(arg).as_usize();
+                // SAFETY: bytecode compiler guarantees var_num < nlocals.
                 let fastlocals = self.localsplus.fastlocals_mut();
-                fastlocals[var_num.get(arg)] = value;
+                unsafe { *fastlocals.get_unchecked_mut(idx) = value };
                 Ok(None)
             }
             Instruction::StoreFastLoadFast { var_nums } => {
