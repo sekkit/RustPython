@@ -1,3 +1,24 @@
+## Negative experiments (loads optimization attempts, round 98-99)
+
+Measured and reverted, all on the big-object loads path (3.2x gap,
+machinery-level cost):
+
+1. Raw lock-elided dict insert (insert_raw + PyDict wrapper +
+   finalize_object integration): loads 2.90 -> 3.09ms. Probing +
+   per-key invalidate_keys_version/bump_version atomics offset the
+   saved lock time; uncontended rwlock writes were cheaper than the
+   raw ceremony.
+
+2. Vec capacity heuristic in parse_array/parse_object (remaining
+   bytes / N): loads 3.24 -> 3.59ms. Over-allocation for nested
+   container inputs; progressive Vec growth is already amortized O(1).
+
+3. scanstring ASCII byte-count shortcut: kept (theory-only, neutral).
+
+Conclusion: the loads gap is the sum of per-value call machinery
+(call_scan_once dispatch) + PyObject creation (new_str/new_int/
+new_dict/new_list), each individually below the noise floor.
+Structural rewrite of the scanner would be required for further gains.
 ## MILESTONE: native JSON encoder lands (json_roundtrip 21x -> 4.3x)
 
 _json.make_encoder fully implemented (commit cbb7e86cb): recursive native
