@@ -7165,7 +7165,12 @@ impl ExecutingFrame<'_> {
             Instruction::ToBoolList => {
                 let obj = self.top_value();
                 if let Some(list) = obj.downcast_ref_if_exact::<PyList>(vm) {
-                    let result = !list.borrow_vec().is_empty();
+                    let result = if vm.state.thread_count.load() == 0 {
+                        // SAFETY: single-threaded execution.
+                        unsafe { list.len_raw() > 0 }
+                    } else {
+                        !list.borrow_vec().is_empty()
+                    };
                     self.pop_value();
                     self.push_value(vm.ctx.new_bool(result).into());
                     Ok(None)
