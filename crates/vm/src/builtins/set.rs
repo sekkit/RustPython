@@ -1531,6 +1531,29 @@ impl PySetIterator {
 impl SelfIter for PySetIterator {}
 impl IterNext for PySetIterator {
     fn next(zelf: &crate::Py<Self>, vm: &VirtualMachine) -> PyResult<PyIterReturn> {
+        // Single-threaded: lock-elided path via data_ptr.
+        if vm.state.thread_count.load() == 0 {
+            // SAFETY: no other thread can touch this set or iterator.
+            let internal = unsafe { &mut *zelf.internal.data_ptr() };
+            return match &mut internal.status {
+                IterStatus::Active(dict) => {
+                    if unsafe { dict.has_changed_size_raw(&zelf.size) } {
+                        internal.status = IterStatus::Exhausted;
+                        Err(vm.new_runtime_error("set changed size during iteration"))
+                    } else {
+                        match unsafe { dict.next_entry_raw(&mut internal.position) } {
+                            Some((key, _)) => Ok(PyIterReturn::Return(key)),
+                            None => {
+                                internal.status = IterStatus::Exhausted;
+                                Ok(PyIterReturn::StopIteration(None))
+                            }
+                        }
+                    }
+                }
+                IterStatus::Exhausted => Ok(PyIterReturn::StopIteration(None)),
+            };
+        }
+        // Multi-threaded: standard locked path.
         let mut internal = zelf.internal.lock();
         let next = if let IterStatus::Active(dict) = &internal.status {
             if dict.has_changed_size(&zelf.size) {
