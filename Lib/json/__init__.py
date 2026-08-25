@@ -112,6 +112,11 @@ try:
     from _json import encode_fast as _encode_fast
 except ImportError:
     _encode_fast = None
+try:
+    # Native one-shot decoder (RustPython fast path for default loads)
+    from _json import decode_fast as _decode_fast
+except ImportError:
+    _decode_fast = None
 
 _default_encoder = JSONEncoder(
     skipkeys=False,
@@ -357,6 +362,8 @@ def loads(s, *, cls=None, object_hook=None, parse_float=None,
     if (cls is None and object_hook is None and
             parse_int is None and parse_float is None and
             parse_constant is None and object_pairs_hook is None and not kw):
+        if _decode_fast is not None:
+            return _decode_fast(s)
         return _default_decoder.decode(s)
     if cls is None:
         cls = JSONDecoder

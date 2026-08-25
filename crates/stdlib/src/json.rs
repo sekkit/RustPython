@@ -50,6 +50,8 @@ mod _json {
         parse_float: Option<PyObjectRef>,
         parse_int: Option<PyObjectRef>,
         parse_constant: PyObjectRef,
+        #[pytraverse(skip)]
+        parse_constants_native: bool,
         ctx: PyObjectRef,
     }
 
@@ -82,6 +84,7 @@ mod _json {
                 parse_float,
                 parse_int,
                 parse_constant,
+                parse_constants_native: false,
                 ctx,
             })
         }
@@ -165,22 +168,23 @@ mod _json {
             }
 
             macro_rules! parse_constant {
-                ($s:literal) => {
+                ($s:literal, $val:expr) => {
                     if rest.starts_with($s.as_bytes()) {
+                        let value = if self.parse_constants_native {
+                            vm.ctx.new_float($val).into()
+                        } else {
+                            self.parse_constant.call(($s,), vm)?
+                        };
                         return Ok(PyIterReturn::Return(
-                            vm.new_tuple((
-                                self.parse_constant.call(($s,), vm)?,
-                                char_idx + $s.len(),
-                            ))
-                            .into(),
+                            vm.new_tuple((value, char_idx + $s.len())).into(),
                         ));
                     }
                 };
             }
 
-            parse_constant!("NaN");
-            parse_constant!("Infinity");
-            parse_constant!("-Infinity");
+            parse_constant!("NaN", f64::NAN);
+            parse_constant!("Infinity", f64::INFINITY);
+            parse_constant!("-Infinity", f64::NEG_INFINITY);
 
             Ok(PyIterReturn::StopIteration(Some(
                 vm.ctx.new_int(char_idx).into(),
@@ -583,15 +587,26 @@ mod _json {
                     Ok((vm.ctx.new_bool(false).into(), char_idx + 5, byte_idx + 5))
                 }
                 b'N' if starts_with_bytes(&bytes[byte_idx..], b"NaN") => {
-                    let result = self.parse_constant.call(("NaN",), vm)?;
-                    Ok((result, char_idx + 3, byte_idx + 3))
+                    if self.parse_constants_native {
+                        Ok((vm.ctx.new_float(f64::NAN).into(), char_idx + 3, byte_idx + 3))
+                    } else {
+                        let result = self.parse_constant.call(("NaN",), vm)?;
+                        Ok((result, char_idx + 3, byte_idx + 3))
+                    }
                 }
                 b'I' if starts_with_bytes(&bytes[byte_idx..], b"Infinity") => {
-                    let result = self.parse_constant.call(("Infinity",), vm)?;
-                    Ok((result, char_idx + 8, byte_idx + 8))
+                    if self.parse_constants_native {
+                        Ok((vm.ctx.new_float(f64::INFINITY).into(), char_idx + 8, byte_idx + 8))
+                    } else {
+                        let result = self.parse_constant.call(("Infinity",), vm)?;
+                        Ok((result, char_idx + 8, byte_idx + 8))
+                    }
                 }
                 b'-' => {
                     if starts_with_bytes(&bytes[byte_idx..], b"-Infinity") {
+                        if self.parse_constants_native {
+                            return Ok((vm.ctx.new_float(f64::NEG_INFINITY).into(), char_idx + 9, byte_idx + 9));
+                        }
                         let result = self.parse_constant.call(("-Infinity",), vm)?;
                         return Ok((result, char_idx + 9, byte_idx + 9));
                     }
@@ -607,6 +622,9 @@ mod _json {
                     Err(self.make_decode_error("Expecting value", pystr, char_idx, vm))
                 }
                 _ => {
+                    if vm.is_none(scan_once) {
+                        return Err(self.make_decode_error("Expecting value", pystr, char_idx, vm));
+                    }
                     let result = scan_once.call((pystr.clone(), char_idx as isize), vm);
                     match result {
                         Ok(tuple) => {
@@ -1209,5 +1227,66 @@ mod _json {
             &Wtf8Buf::from(": "), &Wtf8Buf::from(", "), &None, false, false, 0, vm,
         )?;
         Ok(vm.ctx.new_str(result).into())
+    }
+
+    /// One-shot native decoding with default decoder settings — the fast
+    /// path behind `json.loads()`. Equivalent to
+    /// `JSONDecoder().decode(s)` but skips the Python-layer chain
+    /// (loads -> decode -> raw_decode -> scan_once).
+    #[pyfunction]
+    fn decode_fast(s: PyStrRef, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let scanner = JsonScanner {
+            strict: true,
+            object_hook: None,
+            object_pairs_hook: None,
+            parse_float: None,
+            parse_int: None,
+            parse_constant: vm.ctx.none(),
+            parse_constants_native: true,
+            ctx: vm.ctx.none(),
+        };
+        let bytes = s.as_bytes();
+        let len_bytes = bytes.len();
+        // JSON whitespace: space, tab, newline, CR (+ \f \v in Python re \s)
+        let is_ws = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x0b);
+        let mut byte_idx = 0usize;
+        while byte_idx < len_bytes && is_ws(bytes[byte_idx]) {
+            byte_idx += 1;
+        }
+        // All JSON whitespace is ASCII: char_idx == byte_idx.
+        let char_idx = byte_idx;
+        let result = scanner
+            .parse(s.clone(), char_idx, byte_idx, vm.ctx.none(), vm)?;
+        // parse returns PyIterReturn; the value + end index are in the 2-tuple.
+        use crate::vm::builtins::PyTupleRef;
+        let tuple: PyTupleRef = match result {
+            crate::vm::protocol::PyIterReturn::Return(obj) => obj.try_into_value(vm)?,
+            crate::vm::protocol::PyIterReturn::StopIteration(_) => {
+                return Err(scanner
+                    .make_decode_error("Expecting value", s, char_idx, vm)
+                    .into());
+            }
+        };
+        let value = tuple.as_slice()[0].clone();
+        let end_char_idx: usize = tuple.as_slice()[1].try_to_value(vm)?;
+        // Verify nothing but whitespace follows (Extra data check).
+        let end_byte_idx = if end_char_idx == 0 {
+            0
+        } else {
+            match s.as_wtf8().code_point_indices().nth(end_char_idx) {
+                Some((b, _)) => b,
+                None => len_bytes,
+            }
+        };
+        let mut tail = end_byte_idx;
+        while tail < len_bytes && is_ws(bytes[tail]) {
+            tail += 1;
+        }
+        if tail != len_bytes {
+            return Err(scanner
+                .make_decode_error("Extra data", s, end_char_idx, vm)
+                .into());
+        }
+        Ok(value)
     }
 }
