@@ -5613,7 +5613,13 @@ impl ExecutingFrame<'_> {
                 if type_version != 0 && owner.class().tp_version_tag.load(Acquire) == type_version {
                     let slot_offset =
                         self.code.instructions.read_cache_u32(cache_base + 3) as usize;
-                    if let Some(value) = owner.get_slot(slot_offset) {
+                    let value = if vm.state.thread_count.load() == 0 {
+                        // SAFETY: single-threaded execution.
+                        unsafe { owner.get_slot_raw(slot_offset) }
+                    } else {
+                        owner.get_slot(slot_offset)
+                    };
+                    if let Some(value) = value {
                         self.pop_value();
                         if oparg.is_method() {
                             self.push_value(value);
@@ -5705,7 +5711,12 @@ impl ExecutingFrame<'_> {
                         self.code.instructions.read_cache_u16(cache_base + 3) as usize;
                     let owner = self.pop_value();
                     let value = self.pop_value();
-                    owner.set_slot(slot_offset, Some(value));
+                    if vm.state.thread_count.load() == 0 {
+                        // SAFETY: single-threaded execution.
+                        unsafe { owner.set_slot_raw(slot_offset, Some(value)) };
+                    } else {
+                        owner.set_slot(slot_offset, Some(value));
+                    }
                     return Ok(None);
                 }
                 let attr_idx = u32::from(arg);

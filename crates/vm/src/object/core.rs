@@ -2018,6 +2018,26 @@ impl PyObject {
         self.0.ext_ref().unwrap().slots[offset].read().clone()
     }
 
+    /// Lock-elided slot read for single-threaded execution.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this object.
+    pub(crate) unsafe fn get_slot_raw(&self, offset: usize) -> Option<PyObjectRef> {
+        let ext = self.0.ext_ref().unwrap();
+        unsafe { (*ext.slots[offset].data_ptr()).clone() }
+    }
+
+    /// Lock-elided slot write for single-threaded execution.
+    ///
+    /// # Safety
+    /// Caller must guarantee no other thread can touch this object.
+    pub(crate) unsafe fn set_slot_raw(&self, offset: usize, value: Option<PyObjectRef>) {
+        let ext = self.0.ext_ref().unwrap();
+        let slot_lock: &PyRwLock<Option<PyObjectRef>> = &ext.slots[offset];
+        let ptr = slot_lock.data_ptr();
+        unsafe { *ptr = value }
+    }
+
     pub(crate) fn set_slot(&self, offset: usize, value: Option<PyObjectRef>) {
         *self.0.ext_ref().unwrap().slots[offset].write() = value;
     }
