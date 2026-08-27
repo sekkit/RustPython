@@ -1,4 +1,4 @@
-#[path = "_decimal_core.rs"]
+﻿#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -102,6 +102,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float/str) to Dec.
+    /// Used by Decimal constructor â€” accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -118,6 +119,21 @@ mod _decimal {
                 .map_err(|e| new_decimal_error(vm, "InvalidOperation", &e));
         }
         Err(vm.new_type_error(format!("cannot convert {} to Decimal", obj.class().name())))
+    }
+
+    /// Convert a Python object (Decimal/int/float) to Dec.
+    /// Used by Context methods â€” rejects str (CPython behavior).
+    fn to_dec_ctx(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
+        if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
+            return Ok(pd.d.clone());
+        }
+        if let Some(i) = obj.downcast_ref::<PyInt>() {
+            return Ok(_decimal_core::dec_from_int(vm, i));
+        }
+        if let Some(f) = obj.downcast_ref::<PyFloat>() {
+            return Ok(_decimal_core::dec_from_float(f.to_f64()));
+        }
+        Err(vm.new_type_error(format!("conversion from {} to Decimal is not supported", obj.class().name())))
     }
 
     #[pyattr(name = "Decimal")]
@@ -783,8 +799,8 @@ mod _decimal {
 
         #[pymethod]
         fn quantize(&self, x: PyObjectRef, y: PyObjectRef, rounding: OptionalArg<PyStrRef>, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let mut ctx = self.ctx();
             if let Some(r) = rounding.into_option() {
                 ctx.rounding = Rounding::from_str(&r.as_wtf8().to_string())
@@ -796,8 +812,8 @@ mod _decimal {
 
         #[pymethod]
         fn add(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::dec_add(&ctx, vm, &xd, &yd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -805,8 +821,8 @@ mod _decimal {
 
         #[pymethod]
         fn subtract(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::dec_sub(&ctx, vm, &xd, &yd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -814,8 +830,8 @@ mod _decimal {
 
         #[pymethod]
         fn multiply(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::dec_mul(&ctx, vm, &xd, &yd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -823,8 +839,8 @@ mod _decimal {
 
         #[pymethod]
         fn divide(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::dec_div(&ctx, vm, &xd, &yd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -832,8 +848,8 @@ mod _decimal {
 
         #[pymethod]
         fn compare(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             // sNaN should signal InvalidOperation
             if xd.special == Special::SignalingNaN || yd.special == Special::SignalingNaN {
@@ -848,8 +864,8 @@ mod _decimal {
 
         #[pymethod]
         fn floor_div(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::dec_floordiv(&ctx, vm, &xd, &yd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -857,8 +873,8 @@ mod _decimal {
 
         #[pymethod]
         fn remainder(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::dec_mod(&ctx, vm, &xd, &yd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -866,8 +882,8 @@ mod _decimal {
 
         #[pymethod]
         fn power(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::dec_pow_int(&ctx, vm, &xd, &yd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -876,7 +892,7 @@ mod _decimal {
         #[pymethod]
         fn sqrt(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             // Newton's method for sqrt, context-applied
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             if xd.is_special() || xd.is_zero() {
                 return Ok(PyDecimal::to_py(vm, xd));
             }
@@ -948,7 +964,7 @@ mod _decimal {
         // --- Missing Context methods (delegating wrappers) ---
         #[pymethod]
         fn abs(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let mut d = xd.clone();
             d.sign = false;
             let ctx = self.ctx();
@@ -958,7 +974,7 @@ mod _decimal {
 
         #[pymethod]
         fn minus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::apply_context(vm, &ctx, xd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -966,7 +982,7 @@ mod _decimal {
 
         #[pymethod]
         fn plus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::apply_context(vm, &ctx, xd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -974,22 +990,22 @@ mod _decimal {
 
         #[pymethod]
         fn copy_abs(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let mut d = to_dec(&x, vm)?;
+            let mut d = to_dec_ctx(&x, vm)?;
             d.sign = false;
             Ok(PyDecimal::to_py(vm, d))
         }
 
         #[pymethod]
         fn copy_negate(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let mut d = to_dec(&x, vm)?;
+            let mut d = to_dec_ctx(&x, vm)?;
             d.sign = !d.sign;
             Ok(PyDecimal::to_py(vm, d))
         }
 
         #[pymethod]
         fn copy_sign(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let mut d = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let mut d = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             d.sign = yd.sign;
             Ok(PyDecimal::to_py(vm, d))
         }
@@ -1002,8 +1018,8 @@ mod _decimal {
 
         #[pymethod]
         fn compare_signal(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             if xd.special == Special::NaN || xd.special == Special::SignalingNaN
                 || yd.special == Special::NaN || yd.special == Special::SignalingNaN
@@ -1019,8 +1035,8 @@ mod _decimal {
 
         #[pymethod]
         fn compare_total(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let order = |d: &Dec| -> i64 {
                 match d.special {
                     Special::SignalingNaN => if d.sign { 0 } else { 9 },
@@ -1048,8 +1064,8 @@ mod _decimal {
 
         #[pymethod]
         fn compare_total_mag(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let mut xd = to_dec(&x, vm)?;
-            let mut yd = to_dec(&y, vm)?;
+            let mut xd = to_dec_ctx(&x, vm)?;
+            let mut yd = to_dec_ctx(&y, vm)?;
             xd.sign = false;
             yd.sign = false;
             let order = |d: &Dec| -> i64 {
@@ -1079,8 +1095,8 @@ mod _decimal {
 
         #[pymethod]
         fn divide_int(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let div = _decimal_core::dec_div(&ctx, vm, &xd, &yd)?;
             let mut coeff = div.coeff.clone();
@@ -1098,8 +1114,8 @@ mod _decimal {
 
         #[pymethod]
         fn divmod(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let (floor, m) = _decimal_core::floor_div_mod(&xd, &yd);
             let f = _decimal_core::apply_context(vm, &ctx, floor)?;
@@ -1109,7 +1125,7 @@ mod _decimal {
 
         #[pymethod]
         fn logb(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
             if xd.is_special() {
                 if xd.special == Special::Infinity {
@@ -1139,8 +1155,8 @@ mod _decimal {
 
         #[pymethod]
         fn max(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = if dec_cmp(&xd, &yd) >= 0 { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
@@ -1149,8 +1165,8 @@ mod _decimal {
 
         #[pymethod]
         fn max_mag(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let xa = _decimal_core::Dec { sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special };
             let ya = _decimal_core::Dec { sign: false, coeff: yd.coeff.clone(), exp: yd.exp, special: yd.special };
@@ -1161,8 +1177,8 @@ mod _decimal {
 
         #[pymethod]
         fn min(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = if dec_cmp(&xd, &yd) <= 0 { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
@@ -1171,8 +1187,8 @@ mod _decimal {
 
         #[pymethod]
         fn min_mag(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let xa = _decimal_core::Dec { sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special };
             let ya = _decimal_core::Dec { sign: false, coeff: yd.coeff.clone(), exp: yd.exp, special: yd.special };
@@ -1183,8 +1199,8 @@ mod _decimal {
 
         #[pymethod]
         fn remainder_near(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let div = _decimal_core::dec_div(&ctx, vm, &xd, &yd)?;
             let mut coeff = div.coeff.clone();
@@ -1207,8 +1223,8 @@ mod _decimal {
 
         #[pymethod]
         fn scaleb(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let n: isize = yd.coeff.to_string().parse().unwrap_or(0);
             let n = if yd.sign { -n } else { n };
@@ -1222,8 +1238,8 @@ mod _decimal {
 
         #[pymethod]
         fn shift(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let n: isize = yd.coeff.to_string().parse().unwrap_or(0);
             let coeff = if n >= 0 {
@@ -1241,8 +1257,8 @@ mod _decimal {
 
         #[pymethod]
         fn logical_and(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             if xd.exp != 0 || yd.exp != 0 || xd.sign || yd.sign {
                 return Err(new_decimal_error(vm, "InvalidOperation", "logical_and requires non-negative integers"));
             }
@@ -1253,8 +1269,8 @@ mod _decimal {
 
         #[pymethod]
         fn logical_or(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             if xd.exp != 0 || yd.exp != 0 || xd.sign || yd.sign {
                 return Err(new_decimal_error(vm, "InvalidOperation", "logical_or requires non-negative integers"));
             }
@@ -1265,8 +1281,8 @@ mod _decimal {
 
         #[pymethod]
         fn logical_xor(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             if xd.exp != 0 || yd.exp != 0 || xd.sign || yd.sign {
                 return Err(new_decimal_error(vm, "InvalidOperation", "logical_xor requires non-negative integers"));
             }
@@ -1277,7 +1293,7 @@ mod _decimal {
 
         #[pymethod]
         fn logical_invert(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             if xd.exp != 0 || xd.sign {
                 return Err(new_decimal_error(vm, "InvalidOperation", "logical_invert requires non-negative integer"));
             }
@@ -1291,7 +1307,7 @@ mod _decimal {
 
         #[pymethod]
         fn next_minus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
             // next value toward -Inf: subtract 1 ulp
             let ulp = BigInt::from(10).pow(xd.exp.max(0) as u32);
@@ -1305,7 +1321,7 @@ mod _decimal {
 
         #[pymethod]
         fn next_plus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
                 sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: Special::Finite,
@@ -1315,8 +1331,8 @@ mod _decimal {
 
         #[pymethod]
         fn next_toward(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
                 sign: yd.sign, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special,
@@ -1326,7 +1342,7 @@ mod _decimal {
 
         #[pymethod]
         fn normalize(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let mut d = xd.clone();
             if d.is_zero() {
                 d.exp = 0;
@@ -1343,7 +1359,7 @@ mod _decimal {
 
         #[pymethod]
         fn number_class(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult<String> {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let sign = if xd.sign { "-" } else { "+" };
             match xd.special {
                 Special::NaN => return Ok(format!("{sign}NaN")),
@@ -1377,7 +1393,7 @@ mod _decimal {
 
         #[pymethod]
         fn to_integral_value(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
             let mut coeff = xd.coeff.clone();
             if xd.exp < 0 {
@@ -1400,8 +1416,8 @@ mod _decimal {
 
         #[pymethod]
         fn same_quantum(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
-            let yd = to_dec(&y, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
             Ok(vm.ctx.new_bool(xd.exp == yd.exp).into())
         }
 
@@ -1440,7 +1456,7 @@ mod _decimal {
 
         #[pymethod]
         fn _apply(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec(&x, vm)?;
+            let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::apply_context(vm, &ctx, xd)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -1614,3 +1630,4 @@ mod _decimal {
         Ok(())
     }
 }
+
