@@ -649,3 +649,142 @@ pub mod ascii {
         )
     }
 }
+
+/// General single-byte charmap codec (cp1252, iso8859-x, koi8, ...).
+///
+/// The standard charmap tables are 256-entry mappings from a byte to a code
+/// point. Decoding is a pure table lookup; only unmapped bytes (table value
+/// `< 0`) go through the error handler.
+pub mod charmap {
+    use super::*;
+
+    pub const ERR_REASON: &str = "character maps to <undefined>";
+
+    #[inline]
+    fn table_lookup(cp: u32, fast: &[i64; 256], extras: &[(u32, u8)]) -> Option<u8> {
+        if cp < 256 {
+            let v = fast[cp as usize];
+            if v >= 0 {
+                return Some(v as u8);
+            }
+            return None;
+        }
+        extras
+            .iter()
+            .find(|(k, _)| *k == cp)
+            .map(|(_, v)| *v)
+    }
+
+    #[inline]
+    fn cp_utf8_len(cp: u32) -> usize {
+        if cp < 0x80 {
+            1
+        } else if cp < 0x800 {
+            2
+        } else if cp < 0x10000 {
+            3
+        } else {
+            4
+        }
+    }
+
+    /// Decode bytes through a 256-entry code-point table.
+    /// `table[i] < 0` marks byte `i` as unmapped (error).
+    #[inline]
+    pub fn decode<Ctx, E>(
+        mut ctx: Ctx,
+        errors: &E,
+        table: &[i64; 256],
+    ) -> Result<(Wtf8Buf, usize), Ctx::Error>
+    where
+        Ctx: DecodeContext,
+        E: DecodeErrorHandler<Ctx>,
+    {
+        let mut out = Wtf8Buf::with_capacity(ctx.remaining_data().len());
+        loop {
+            let data = ctx.remaining_data();
+            if data.is_empty() {
+                break;
+            }
+            let Some(first_bad) = data.iter().position(|b| table[*b as usize] < 0) else {
+                for b in data {
+                    // table values are valid code points (built from 1-char entries)
+                    out.push(CodePoint::from_u32(table[*b as usize] as u32).unwrap());
+                }
+                ctx.advance(data.len());
+                break;
+            };
+            for b in &data[..first_bad] {
+                out.push(CodePoint::from_u32(table[*b as usize] as u32).unwrap());
+            }
+            let err_start = ctx.position() + first_bad;
+            let replace =
+                ctx.handle_error(errors, err_start..err_start + 1, Some(ERR_REASON))?;
+            out.push_wtf8(replace.as_ref());
+        }
+        Ok((out, ctx.position()))
+    }
+
+    /// Encode a string through a single-byte charmap table.
+    /// `fast[i]` is the byte for code point `i` (`< 0` = unmapped), and `extras`
+    /// covers code points above 255 (e.g. the Euro sign in cp1252).
+    #[inline]
+    pub fn encode<Ctx, E>(
+        mut ctx: Ctx,
+        errors: &E,
+        fast: &[i64; 256],
+        extras: &[(u32, u8)],
+    ) -> Result<Vec<u8>, Ctx::Error>
+    where
+        Ctx: EncodeContext,
+        E: EncodeErrorHandler<Ctx>,
+    {
+        let mut out = Vec::<u8>::new();
+        loop {
+            let data = ctx.remaining_data();
+            let Some((i, ch)) = iter_code_points(data).find(|(_, c)| {
+                table_lookup(c.to_u32(), fast, extras).is_none()
+            }) else {
+                // all remaining code points are mappable: map each one
+                // (the mapped byte is not the UTF-8 encoding of the char,
+                // so we cannot copy the raw source bytes)
+                for (_, c) in iter_code_points(data) {
+                    out.push(table_lookup(c.to_u32(), fast, extras).unwrap());
+                }
+                break;
+            };
+            // map the valid prefix chars individually (byte length differs
+            // from UTF-8 for non-ASCII entries)
+            for (pos, c) in iter_code_points(data) {
+                if pos.bytes >= i.bytes {
+                    break;
+                }
+                out.push(table_lookup(c.to_u32(), fast, extras).unwrap());
+            }
+            let err_start = ctx.position() + i;
+            let err_range = err_start
+                ..err_start
+                    + StrSize {
+                        bytes: cp_utf8_len(ch.to_u32()),
+                        chars: 1,
+                    };
+            let replace = ctx.handle_error(errors, err_range.clone(), Some(ERR_REASON))?;
+            match replace {
+                EncodeReplace::Str(s) => {
+                    for c in s.as_ref().code_points() {
+                        match table_lookup(c.to_u32(), fast, extras) {
+                            Some(b) => out.push(b),
+                            None => {
+                                return Err(ctx.error_encoding(err_range, Some(ERR_REASON)))
+                            }
+                        }
+                    }
+                }
+                EncodeReplace::Bytes(b) => {
+                    out.extend_from_slice(b.as_ref());
+                }
+            }
+        }
+        Ok(out)
+    }
+}

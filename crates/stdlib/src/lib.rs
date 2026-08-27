@@ -37,6 +37,8 @@ mod sha512;
 
 mod json;
 
+mod _decimal;
+
 #[cfg(all(
     feature = "host_env",
     not(any(target_os = "ios", target_arch = "wasm32"))
@@ -171,6 +173,7 @@ use crate::vm::{Context, builtins};
 pub fn stdlib_module_defs(ctx: &Context) -> Vec<&'static builtins::PyModuleDef> {
     vec![
         _asyncio::module_def(ctx),
+        _decimal::module_def(ctx),
         _opcode::module_def(ctx),
         _remote_debugging::module_def(ctx),
         array::module_def(ctx),
