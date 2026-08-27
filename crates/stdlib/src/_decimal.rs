@@ -381,6 +381,94 @@ mod _decimal {
             Ok(self.d.to_string())
         }
 
+        // Reflected ops are handled by the AsNumber right_* slots
+        // (copy_from sets right_add = add, and binop_num checks both args).
+
+        #[pymethod]
+        fn __trunc__(&self, vm: &VirtualMachine) -> PyResult {
+            let mut coeff = self.d.coeff.clone();
+            if self.d.exp < 0 {
+                let pow = BigInt::from(10).pow((-self.d.exp) as u32);
+                coeff = &coeff / &pow;
+            } else if self.d.exp > 0 {
+                coeff *= BigInt::from(10).pow(self.d.exp as u32);
+            }
+            let v = if self.d.sign { -coeff } else { coeff };
+            Ok(vm.ctx.new_int(v).into())
+        }
+
+        #[pymethod]
+        fn __floor__(&self, vm: &VirtualMachine) -> PyResult {
+            // For Decimal, __floor__ = trunc toward zero (same as __trunc__ for non-negative)
+            let mut coeff = self.d.coeff.clone();
+            if self.d.exp < 0 {
+                let pow = BigInt::from(10).pow((-self.d.exp) as u32);
+                coeff = &coeff / &pow;
+            } else if self.d.exp > 0 {
+                coeff *= BigInt::from(10).pow(self.d.exp as u32);
+            }
+            let v = if self.d.sign { -coeff } else { coeff };
+            Ok(vm.ctx.new_int(v).into())
+        }
+
+        #[pymethod]
+        fn __ceil__(&self, vm: &VirtualMachine) -> PyResult {
+            let mut coeff = self.d.coeff.clone();
+            if self.d.exp < 0 {
+                let pow = BigInt::from(10).pow((-self.d.exp) as u32);
+                let r = &coeff % &pow;
+                coeff = &coeff / &pow;
+                if !self.d.sign && r != BigInt::from(0) {
+                    coeff += BigInt::from(1);
+                }
+            } else if self.d.exp > 0 {
+                coeff *= BigInt::from(10).pow(self.d.exp as u32);
+            }
+            let v = if self.d.sign { -coeff } else { coeff };
+            Ok(vm.ctx.new_int(v).into())
+        }
+
+        #[pyclassmethod]
+        fn from_number(cls: PyTypeRef, number: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            // PEP 3141: from_number converts int/float/Decimal to Decimal
+            if number.downcast_ref::<PyDecimal>().is_some() {
+                return Ok(number);
+            }
+            if let Some(i) = number.downcast_ref::<PyInt>() {
+                let d = _decimal_core::dec_from_int(vm, i);
+                let obj: PyObjectRef = PyDecimal { d }.into_ref(&vm.ctx).into();
+                return Ok(obj);
+            }
+            if let Some(f) = number.downcast_ref::<PyFloat>() {
+                let d = _decimal_core::dec_from_float(f.to_f64());
+                let obj: PyObjectRef = PyDecimal { d }.into_ref(&vm.ctx).into();
+                return Ok(obj);
+            }
+            let _ = cls;
+            Err(vm.new_type_error("from_number requires int or float".to_string()))
+        }
+
+        #[pymethod]
+        fn __reduce__(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
+            // Support pickle: return (Decimal, (str(self),))
+            let decimal_type = zelf.class().to_owned();
+            let s = vm.ctx.new_str(zelf.d.to_string());
+            Ok(vm.ctx.new_tuple(vec![
+                decimal_type.into(),
+                vm.ctx.new_tuple(vec![s.into()]).into(),
+            ]).into())
+        }
+
+        #[pymethod]
+        fn __copy__(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
+            Ok(PyDecimal::to_py(vm, zelf.d.clone()))
+        }
+
+        #[pymethod]
+        fn __deepcopy__(zelf: PyRef<Self>, _memo: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            Ok(PyDecimal::to_py(vm, zelf.d.clone()))
+        }
+
         #[pymethod]
         fn __round__(&self, ndigits: OptionalArg<PyObjectRef>, vm: &VirtualMachine) -> PyResult {
             let xd = &self.d;
@@ -559,13 +647,19 @@ mod _decimal {
         vm: &VirtualMachine,
         f: fn(&Ctx, &VirtualMachine, &Dec, &Dec) -> PyResult<Dec>,
     ) -> PyResult {
-        let ad = match a.downcast_ref::<PyDecimal>() {
-            Some(pd) => pd.d.clone(),
-            None => return Ok(vm.ctx.not_implemented()),
-        };
-        let bd = match to_dec(b, vm) {
-            Ok(bd) => bd,
-            Err(_) => return Ok(vm.ctx.not_implemented()),
+        // Try a as Decimal first, then b (for reflected ops where a is int/float)
+        let (ad, bd) = if let Some(pd) = a.downcast_ref::<PyDecimal>() {
+            (pd.d.clone(), match to_dec(b, vm) {
+                Ok(d) => d,
+                Err(_) => return Ok(vm.ctx.not_implemented()),
+            })
+        } else if let Some(pd) = b.downcast_ref::<PyDecimal>() {
+            (match to_dec(a, vm) {
+                Ok(d) => d,
+                Err(_) => return Ok(vm.ctx.not_implemented()),
+            }, pd.d.clone())
+        } else {
+            return Ok(vm.ctx.not_implemented());
         };
         let ctx = current_ctx(vm)?;
         let r = f(&ctx, vm, &ad, &bd)?;
