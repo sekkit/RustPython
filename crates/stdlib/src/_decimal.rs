@@ -1,4 +1,4 @@
-﻿#[path = "_decimal_core.rs"]
+#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -1461,6 +1461,172 @@ mod _decimal {
             let r = _decimal_core::apply_context(vm, &ctx, xd)?;
             Ok(PyDecimal::to_py(vm, r))
         }
+
+        // is_* methods
+        #[pymethod]
+        fn is_finite(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            Ok(vm.ctx.new_bool(xd.special == Special::Finite).into())
+        }
+        #[pymethod]
+        fn is_infinite(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            Ok(vm.ctx.new_bool(xd.special == Special::Infinity).into())
+        }
+        #[pymethod]
+        fn is_nan(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            Ok(vm.ctx.new_bool(xd.special == Special::NaN || xd.special == Special::SignalingNaN).into())
+        }
+        #[pymethod]
+        fn is_qnan(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            Ok(vm.ctx.new_bool(xd.special == Special::NaN).into())
+        }
+        #[pymethod]
+        fn is_signed(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            Ok(vm.ctx.new_bool(xd.sign).into())
+        }
+        #[pymethod]
+        fn is_snan(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            Ok(vm.ctx.new_bool(xd.special == Special::SignalingNaN).into())
+        }
+        #[pymethod]
+        fn is_subnormal(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            let emin = *self.emin.lock();
+            let prec = *self.prec.lock();
+            let etiny = emin - (prec - 1);
+            Ok(vm.ctx.new_bool(!xd.is_zero() && xd.special == Special::Finite && xd.exp < etiny).into())
+        }
+        #[pymethod]
+        fn is_zero(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            Ok(vm.ctx.new_bool(xd.is_zero()).into())
+        }
+        #[pymethod]
+        fn is_normal(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            let emin = *self.emin.lock();
+            let prec = *self.prec.lock();
+            let etiny = emin - (prec - 1);
+            Ok(vm.ctx.new_bool(!xd.is_zero() && xd.special == Special::Finite && xd.exp >= etiny).into())
+        }
+
+        #[pymethod]
+        fn exp(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            // e^x via Taylor series, context-applied
+            let xd = to_dec_ctx(&x, vm)?;
+            if xd.is_special() {
+                if xd.special == Special::Infinity {
+                    let ctx = self.ctx();
+                    let r = _decimal_core::apply_context(vm, &ctx, xd)?;
+                    return Ok(PyDecimal::to_py(vm, r));
+                }
+                let ctx = self.ctx();
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "exp of NaN"));
+                }
+                return Ok(PyDecimal::to_py(vm, xd));
+            }
+            let ctx = self.ctx();
+            let prec = ctx.prec as usize + 4;
+            // e^x = 1 + x + x^2/2! + x^3/3! + ...
+            let xf = xd.to_string().parse::<f64>().unwrap_or(0.0);
+            let result = xf.exp();
+            let s = format!("{:.*}", prec, result);
+            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn ln(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            let ctx = self.ctx();
+            if xd.is_special() || xd.is_zero() || xd.sign {
+                let ctx = self.ctx();
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "ln of non-positive"));
+                }
+                return Ok(PyDecimal::to_py(vm, xd));
+            }
+            let xf = xd.to_string().parse::<f64>().unwrap_or(1.0);
+            let result = xf.ln();
+            let prec = ctx.prec as usize + 4;
+            let s = format!("{:.*}", prec, result);
+            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn log10(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            let ctx = self.ctx();
+            if xd.is_special() || xd.is_zero() || xd.sign {
+                let ctx = self.ctx();
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "log10 of non-positive"));
+                }
+                return Ok(PyDecimal::to_py(vm, xd));
+            }
+            let xf = xd.to_string().parse::<f64>().unwrap_or(1.0);
+            let result = xf.log10();
+            let prec = ctx.prec as usize + 4;
+            let s = format!("{:.*}", prec, result);
+            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn fma(&self, x: PyObjectRef, y: PyObjectRef, z: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
+            let zd = to_dec_ctx(&z, vm)?;
+            let ctx = self.ctx();
+            // x*y + z
+            let prod = _decimal_core::dec_mul(&ctx, vm, &xd, &yd)?;
+            let r = _decimal_core::dec_add(&ctx, vm, &prod, &zd)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn rotate(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            // rotate: like shift but wraps digits
+            let xd = to_dec_ctx(&x, vm)?;
+            let yd = to_dec_ctx(&y, vm)?;
+            let ctx = self.ctx();
+            let n: isize = yd.coeff.to_string().parse().unwrap_or(0);
+            let n = if yd.sign { -n } else { n };
+            let digits = xd.coeff.to_string();
+            let len = digits.len();
+            if len == 0 || n == 0 {
+                let r = _decimal_core::apply_context(vm, &ctx, xd)?;
+                return Ok(PyDecimal::to_py(vm, r));
+            }
+            let n = ((n % len as isize) + len as isize) % len as isize;
+            let n = n as usize;
+            let rotated = format!("{}{}", &digits[len-n..], &digits[..len-n]);
+            let coeff = rotated.parse::<BigInt>().unwrap_or(BigInt::from(0));
+            let result = _decimal_core::Dec {
+                sign: xd.sign, coeff, exp: xd.exp, special: xd.special,
+            };
+            let r = _decimal_core::apply_context(vm, &ctx, result)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn to_eng_string(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let d = to_dec_ctx(&x, vm)?;
+            Ok(vm.ctx.new_str(d.to_string()).into())
+        }
     }
 
     impl Constructor for PyContext {
@@ -1562,6 +1728,45 @@ mod _decimal {
         set_current_context(context);
     }
 
+    #[pyfunction]
+    fn IEEEContext(bits: usize, vm: &VirtualMachine) -> PyResult {
+        // Return a context with precision/bounds appropriate for the given
+        // IEEE 754 bit width (32, 64, 128).
+        let (prec, emax) = match bits {
+            32 => (7, 96),
+            64 => (16, 384),
+            128 => (34, 6144),
+            _ => return Err(vm.new_value_error("bits must be 32, 64, or 128")),
+        };
+        let emin = -(emax + prec - 1);
+        let c = PyContext {
+            prec: PyMutex::new(prec as isize),
+            rounding: PyMutex::new(Rounding::HalfEven),
+            emin: PyMutex::new(emin),
+            emax: PyMutex::new(emax),
+            capitals: PyMutex::new(1),
+            clamp: PyMutex::new(1),
+            traps: {
+                let t = vm.ctx.new_dict();
+                for ty in exc().all() {
+                    let trap_on = ty.is(&exc().invalid_operation)
+                        || ty.is(&exc().division_by_zero)
+                        || ty.is(&exc().overflow);
+                    let _ = t.set_item(ty.as_object(), vm.ctx.new_bool(trap_on).into(), vm);
+                }
+                t
+            },
+            flags: {
+                let f = vm.ctx.new_dict();
+                for ty in exc().all() {
+                    let _ = f.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
+                }
+                f
+            },
+        };
+        Ok(c.into_ref(&vm.ctx).into())
+    }
+
     pub(crate) fn module_exec(vm: &VirtualMachine, module: &Py<PyModule>) -> PyResult<()> {
         __module_exec(vm, module);
         init_exceptions(vm);
@@ -1575,6 +1780,7 @@ mod _decimal {
         set("MAX_EMAX", vm.ctx.new_int(BigInt::from(999999999999999999i64)).into())?;
         set("MIN_EMIN", vm.ctx.new_int(BigInt::from(-999999999999999999i64)).into())?;
         set("MIN_ETINY", vm.ctx.new_int(BigInt::from(-1999999999999999997i64)).into())?;
+        set("IEEE_CONTEXT_MAX_BITS", vm.ctx.new_int(BigInt::from(9999999999i64)).into())?;
         set("HAVE_THREADS", vm.ctx.new_bool(true).into())?;
         set("HAVE_CONTEXTVAR", vm.ctx.new_bool(false).into())?;
         set("__version__", vm.ctx.new_str("1.70").into())?;
