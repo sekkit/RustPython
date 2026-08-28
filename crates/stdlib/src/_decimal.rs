@@ -685,13 +685,15 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn __copy__(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
-            Ok(PyDecimal::to_py(vm, zelf.d.clone()))
+        fn __copy__(zelf: PyRef<Self>, _vm: &VirtualMachine) -> PyResult {
+            // CPython: Decimal is immutable; copy returns the same object.
+            Ok(zelf.into())
         }
 
         #[pymethod]
-        fn __deepcopy__(zelf: PyRef<Self>, _memo: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            Ok(PyDecimal::to_py(vm, zelf.d.clone()))
+        fn __deepcopy__(zelf: PyRef<Self>, _memo: PyObjectRef, _vm: &VirtualMachine) -> PyResult {
+            // CPython: Decimal is immutable; deepcopy returns the same object.
+            Ok(zelf.into())
         }
 
         #[pymethod]
@@ -756,6 +758,17 @@ mod _decimal {
         }
 
         #[pymethod]
+        fn fma(&self, other: PyObjectRef, third: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            // self * other + third, using context
+            let other_d = to_dec_ctx(&other, vm)?;
+            let third_d = to_dec_ctx(&third, vm)?;
+            let ctx = current_ctx(vm)?;
+            let prod = _decimal_core::dec_mul(&ctx, vm, &self.d, &other_d)?;
+            let r = _decimal_core::dec_add(&ctx, vm, &prod, &third_d)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
         fn as_integer_ratio(&self, vm: &VirtualMachine) -> PyResult {
             let d = &self.d;
             if d.is_special() {
@@ -797,11 +810,14 @@ mod _decimal {
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            let value = if args.args.is_empty() {
-                vm.ctx.new_int(0).into()
-            } else {
-                args.args[0].clone()
-            };
+            // Support keyword args: Decimal(value=..., context=...)
+            let value = args.get_optional_kwarg("value")
+                .or_else(|| args.args.get(0).cloned())
+                .unwrap_or_else(|| vm.ctx.new_int(0).into());
+            // context keyword is accepted but we use the current context
+            // for flag/precision application (CPython's context= overrides
+            // the current context for construction).
+            let _context_kw = args.get_optional_kwarg("context");
             if let Some(tuple) = value.downcast_ref::<PyTuple>() {
                 let d = Self::from_tuple(tuple.as_slice(), vm)?;
                 return Ok(PyDecimal { d });

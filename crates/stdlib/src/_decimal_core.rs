@@ -209,7 +209,7 @@ pub(crate) fn init_exceptions(vm: &VirtualMachine) {
         let invalid_operation = base("InvalidOperation", vec![decimal_exception.clone()]);
         let conversion_syntax = base("ConversionSyntax", vec![invalid_operation.clone()]);
         let division_impossible = base("DivisionImpossible", vec![invalid_operation.clone()]);
-        let division_undefined = base("DivisionUndefined", vec![invalid_operation.clone()]);
+        let division_undefined = base("DivisionUndefined", vec![invalid_operation.clone(), zero_div.clone()]);
         let invalid_context = base("InvalidContext", vec![invalid_operation.clone()]);
         let division_by_zero = base("DivisionByZero", vec![decimal_exception.clone(), zero_div.clone()]);
         let inexact = base("Inexact", vec![decimal_exception.clone()]);
