@@ -102,7 +102,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float/str) to Dec.
-    /// Used by Decimal constructor â€” accepts str.
+    /// Used by Decimal constructor Ã¢â‚¬â€ accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -122,7 +122,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float) to Dec.
-    /// Used by Context methods â€” rejects str (CPython behavior).
+    /// Used by Context methods Ã¢â‚¬â€ rejects str (CPython behavior).
     fn to_dec_ctx(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -168,8 +168,8 @@ mod _decimal {
                 let tag = s.as_wtf8().to_string();
                 let special = match tag.as_str() {
                     "F" | "f" | "i" | "I" => Special::Infinity,
-                    "n" | "N" => Special::NaN,
-                    "s" | "S" => Special::SignalingNaN,
+                    "n" => Special::NaN,
+                    "N" | "s" | "S" => Special::SignalingNaN,
                     _ => {
                         return Err(new_decimal_error(
                             vm,
@@ -331,7 +331,7 @@ mod _decimal {
         }
         #[pymethod]
         fn copy_sign(zelf: PyRef<Self>, other: PyObjectRef, vm: &VirtualMachine) -> PyResult<PyDecimal> {
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             let mut d = zelf.d.clone();
             d.sign = b.sign;
             Ok(PyDecimal { d })
@@ -828,6 +828,16 @@ mod _decimal {
                 Ok(b) => b,
                 Err(_) => return Ok(PyComparisonValue::NotImplemented),
             };
+            // sNaN comparisons signal InvalidOperation (CPython parity).
+            let ssnan = zelf.d.special == Special::SignalingNaN
+                || b.special == Special::SignalingNaN;
+            if ssnan {
+                let ctx = current_ctx(vm)?;
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "comparison with sNaN"));
+                }
+            }
             let nan = zelf.d.special == Special::NaN
                 || zelf.d.special == Special::SignalingNaN
                 || b.special == Special::NaN
@@ -1046,8 +1056,8 @@ mod _decimal {
         capitals: PyMutex<isize>,
         #[pytraverse(skip)]
         clamp: PyMutex<isize>,
-        traps: PyDictRef,
-        flags: PyDictRef,
+        traps: PyMutex<PyDictRef>,
+        flags: PyMutex<PyDictRef>,
     }
 
     impl PyContext {
@@ -1070,8 +1080,8 @@ mod _decimal {
                 emax: PyMutex::new(999999),
                 capitals: PyMutex::new(1),
                 clamp: PyMutex::new(0),
-                traps,
-                flags,
+                traps: PyMutex::new(traps),
+                flags: PyMutex::new(flags),
             }
         }
 
@@ -1082,13 +1092,13 @@ mod _decimal {
                 *self.emax.lock(),
                 *self.emin.lock(),
                 *self.clamp.lock(),
-                self.flags.clone(),
-                self.traps.clone(),
+                self.flags.lock().clone(),
+                self.traps.lock().clone(),
             )
         }
     }
 
-    #[pyclass(with(Constructor))]
+    #[pyclass(with(Constructor, Representable))]
     impl PyContext {
         #[pygetset]
         fn prec(&self) -> isize {
@@ -1143,22 +1153,48 @@ mod _decimal {
         }
         #[pygetset]
         fn traps(&self) -> PyDictRef {
-            self.traps.clone()
+            self.traps.lock().clone()
+        }
+        #[pygetset(setter)]
+        fn set_traps(&self, value: PyDictRef, vm: &VirtualMachine) {
+            let new_dict = vm.ctx.new_dict();
+            for (k, v) in value.items_vec() {
+                let _ = new_dict.set_item(k.as_object(), v.clone(), vm);
+            }
+            for ty in exc().all() {
+                if new_dict.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
+                    let _ = new_dict.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
+                }
+            }
+            *self.traps.lock() = new_dict;
         }
         #[pygetset]
         fn flags(&self) -> PyDictRef {
-            self.flags.clone()
+            self.flags.lock().clone()
+        }
+        #[pygetset(setter)]
+        fn set_flags(&self, value: PyDictRef, vm: &VirtualMachine) {
+            let new_dict = vm.ctx.new_dict();
+            for (k, v) in value.items_vec() {
+                let _ = new_dict.set_item(k.as_object(), v.clone(), vm);
+            }
+            for ty in exc().all() {
+                if new_dict.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
+                    let _ = new_dict.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
+                }
+            }
+            *self.flags.lock() = new_dict;
         }
 
         #[pymethod]
         fn copy(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyContext {
             // CPython Context.copy: new flags + traps dicts (deep-copied values)
             let new_flags = vm.ctx.new_dict();
-            for (k, v) in zelf.flags.items_vec() {
+            for (k, v) in zelf.flags.lock().items_vec() {
                 let _ = new_flags.set_item(k.as_object(), v.clone(), vm);
             }
             let new_traps = vm.ctx.new_dict();
-            for (k, v) in zelf.traps.items_vec() {
+            for (k, v) in zelf.traps.lock().items_vec() {
                 let _ = new_traps.set_item(k.as_object(), v.clone(), vm);
             }
             PyContext {
@@ -1168,15 +1204,16 @@ mod _decimal {
                 emax: PyMutex::new(*zelf.emax.lock()),
                 capitals: PyMutex::new(*zelf.capitals.lock()),
                 clamp: PyMutex::new(*zelf.clamp.lock()),
-                traps: new_traps,
-                flags: new_flags,
+                traps: PyMutex::new(new_traps),
+                flags: PyMutex::new(new_flags),
             }
         }
 
         #[pymethod]
         fn clear_flags(&self, vm: &VirtualMachine) {
-            for (k, _) in self.flags.items_vec() {
-                let _ = self.flags.set_item(k.as_object(), vm.ctx.new_bool(false).into(), vm);
+            let keys: Vec<_> = self.flags.lock().items_vec().into_iter().map(|(k, _)| k).collect();
+            for k in keys {
+                let _ = self.flags.lock().set_item(k.as_object(), vm.ctx.new_bool(false).into(), vm);
             }
         }
 
@@ -1355,8 +1392,8 @@ mod _decimal {
                 self.emax.lock(),
                 self.capitals.lock(),
                 self.clamp.lock(),
-                self.flags.size().used,
-                self.traps.size().used,
+                self.flags.lock().size().used,
+                self.traps.lock().size().used,
             )
         }
 
@@ -1834,8 +1871,9 @@ mod _decimal {
 
         #[pymethod]
         fn clear_traps(&self, vm: &VirtualMachine) {
-            for (k, _) in self.traps.items_vec() {
-                let _ = self.traps.set_item(k.as_object(), vm.ctx.new_bool(false).into(), vm);
+            let keys: Vec<_> = self.traps.lock().items_vec().into_iter().map(|(k, _)| k).collect();
+            for k in keys {
+                let _ = self.traps.lock().set_item(k.as_object(), vm.ctx.new_bool(false).into(), vm);
             }
         }
 
@@ -2028,12 +2066,29 @@ mod _decimal {
         }
     }
 
+    impl Representable for PyContext {
+        fn repr(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyStrRef> {
+            let prec = *zelf.prec.lock();
+            let rounding = *zelf.rounding.lock();
+            let rounding_str = rounding.to_str();
+            let emin = *zelf.emin.lock();
+            let emax = *zelf.emax.lock();
+            let capitals = *zelf.capitals.lock();
+            let clamp = *zelf.clamp.lock();
+            let flags = zelf.flags.lock().size().used;
+            let traps = zelf.traps.lock().size().used;
+            Ok(vm.ctx.new_str(format!(
+                "Context(prec={prec}, rounding={rounding_str}, Emin={emin}, Emax={emax}, capitals={capitals}, clamp={clamp}, flags={flags}, traps={traps})",
+            )))
+        }
+    }
+
     impl Constructor for PyContext {
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             let mut c = Self::new_ctx(vm, 28);
-            // Context(prec, rounding, Emin, Emax, capitals, clamp) — accept
+            // Context(prec, rounding, Emin, Emax, capitals, clamp) â€” accept
             // both positional and keyword forms (the test suite uses keyword
             // args like Context(prec=9, rounding=..., traps=...)).
             let mut pos_iter = args.args.iter();
@@ -2069,7 +2124,7 @@ mod _decimal {
                 if let Some(d) = v.downcast_ref::<PyDict>() {
                     for (k, val) in d.items_vec() {
                         let on = val.try_to_value::<bool>(vm)?;
-                        let _ = c.traps.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
+                        let _ = c.traps.lock().set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
                     }
                 }
             }
@@ -2077,7 +2132,7 @@ mod _decimal {
                 if let Some(d) = v.downcast_ref::<PyDict>() {
                     for (k, val) in d.items_vec() {
                         let on = val.try_to_value::<bool>(vm)?;
-                        let _ = c.flags.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
+                        let _ = c.flags.lock().set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
                     }
                 }
             }
@@ -2176,14 +2231,14 @@ mod _decimal {
                         || ty.is(&exc().overflow);
                     let _ = t.set_item(ty.as_object(), vm.ctx.new_bool(trap_on).into(), vm);
                 }
-                t
+                PyMutex::new(t)
             },
             flags: {
                 let f = vm.ctx.new_dict();
                 for ty in exc().all() {
                     let _ = f.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
                 }
-                f
+                PyMutex::new(f)
             },
         };
         Ok(c.into_ref(&vm.ctx).into())
@@ -2248,15 +2303,16 @@ mod _decimal {
         // CPython BasicContext traps: InvalidOperation, DivisionByZero, Overflow,
         // Underflow, Clamped (new_ctx enables the first three).
         if let Some(pc) = basic.downcast_ref::<PyContext>() {
-            let _ = pc.traps.set_item(exc().underflow.as_object(), vm.ctx.new_bool(true).into(), vm);
-            let _ = pc.traps.set_item(exc().clamped.as_object(), vm.ctx.new_bool(true).into(), vm);
+            let _ = pc.traps.lock().set_item(exc().underflow.as_object(), vm.ctx.new_bool(true).into(), vm);
+            let _ = pc.traps.lock().set_item(exc().clamped.as_object(), vm.ctx.new_bool(true).into(), vm);
         }
         set("BasicContext", basic)?;
 
         let extended: PyObjectRef = PyContext::new_ctx(vm, 9).into_ref(&vm.ctx).into();
         if let Some(pc) = extended.downcast_ref::<PyContext>() {
-            for (k, _) in pc.traps.items_vec() {
-                let _ = pc.traps.set_item(k.as_object(), vm.ctx.new_bool(false).into(), vm);
+            let keys: Vec<_> = pc.traps.lock().items_vec().into_iter().map(|(k, _)| k).collect();
+            for k in keys {
+                let _ = pc.traps.lock().set_item(k.as_object(), vm.ctx.new_bool(false).into(), vm);
             }
         }
         set("ExtendedContext", extended)?;
@@ -2264,4 +2320,6 @@ mod _decimal {
         Ok(())
     }
 }
+
+
 

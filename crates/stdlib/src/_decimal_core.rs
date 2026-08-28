@@ -593,7 +593,12 @@ pub(crate) fn dec_div(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
 
 /// Parse a decimal string. Returns Dec.
 pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
-    let mut chars = s.trim().chars().peekable();
+    let trimmed = s.trim();
+    // CPython 3.11+: empty string constructs a quiet NaN.
+    if trimmed.is_empty() {
+        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+    }
+    let mut chars = trimmed.chars().peekable();
     let mut sign = false;
     if let Some(&c) = chars.peek() {
         if c == '+' { chars.next(); }
