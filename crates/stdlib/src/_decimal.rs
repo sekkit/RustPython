@@ -845,6 +845,10 @@ mod _decimal {
                     }
                     let ctx = current_ctx(vm)?;
                     let _ = ctx.set_flag(vm, "InvalidOperation");
+                    // If the InvalidOperation trap is on, raise the error.
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(e);
+                    }
                     Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN }
                 }
             };
@@ -869,14 +873,16 @@ mod _decimal {
                 Ok(b) => b,
                 Err(_) => return Ok(PyComparisonValue::NotImplemented),
             };
-            // sNaN comparisons always signal InvalidOperation (CPython
-            // raises even when the trap is off for sNaN compare).
+            // sNaN comparisons signal InvalidOperation. If the trap is on,
+            // raise; otherwise just set the flag and return the result.
             let ssnan = zelf.d.special == Special::SignalingNaN
                 || b.special == Special::SignalingNaN;
             if ssnan {
                 let ctx = current_ctx(vm)?;
                 ctx.set_flag(vm, "InvalidOperation")?;
-                return Err(new_decimal_error(vm, "InvalidOperation", "comparison with sNaN"));
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "comparison with sNaN"));
+                }
             }
             let nan = zelf.d.special == Special::NaN
                 || zelf.d.special == Special::SignalingNaN
@@ -2171,9 +2177,15 @@ mod _decimal {
             }
             if let Some(v) = get_field("traps") {
                 if let Some(d) = v.downcast_ref::<PyDict>() {
+                    // Replace entirely: first set all to False, then apply
+                    // the provided dict's True values.
+                    let traps_guard = c.traps.lock();
+                    for ty in exc().all() {
+                        let _ = traps_guard.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
+                    }
                     for (k, val) in d.items_vec() {
                         let on = val.try_to_value::<bool>(vm)?;
-                        let _ = c.traps.lock().set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
+                        let _ = traps_guard.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
                     }
                 }
             }
@@ -2264,7 +2276,7 @@ mod _decimal {
             128 => (34, 6144),
             _ => return Err(vm.new_value_error("bits must be 32, 64, or 128")),
         };
-        let emin = -(emax + prec - 1);
+        let emin = -(emax - 1);
         let c = PyContext {
             prec: PyMutex::new(prec as isize),
             rounding: PyMutex::new(Rounding::HalfEven),
@@ -2275,10 +2287,8 @@ mod _decimal {
             traps: {
                 let t = vm.ctx.new_dict();
                 for ty in exc().all() {
-                    let trap_on = ty.is(&exc().invalid_operation)
-                        || ty.is(&exc().division_by_zero)
-                        || ty.is(&exc().overflow);
-                    let _ = t.set_item(ty.as_object(), vm.ctx.new_bool(trap_on).into(), vm);
+                    // IEEEContext: all traps off
+                    let _ = t.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
                 }
                 PyMutex::new(t)
             },
@@ -2306,7 +2316,7 @@ mod _decimal {
         set("MAX_EMAX", vm.ctx.new_int(BigInt::from(999999999999999999i64)).into())?;
         set("MIN_EMIN", vm.ctx.new_int(BigInt::from(-999999999999999999i64)).into())?;
         set("MIN_ETINY", vm.ctx.new_int(BigInt::from(-1999999999999999997i64)).into())?;
-        set("IEEE_CONTEXT_MAX_BITS", vm.ctx.new_int(BigInt::from(9999999999i64)).into())?;
+        set("IEEE_CONTEXT_MAX_BITS", vm.ctx.new_int(BigInt::from(512i64)).into())?;
         set("HAVE_THREADS", vm.ctx.new_bool(true).into())?;
         set("HAVE_CONTEXTVAR", vm.ctx.new_bool(false).into())?;
         set("__version__", vm.ctx.new_str("1.70").into())?;
