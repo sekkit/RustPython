@@ -17,6 +17,7 @@ use crate::vm::{
     function::{FuncArgs, OptionalArg, PyComparisonValue},
     protocol::PyNumberMethods,
     types::{AsNumber, Comparable, Constructor, Hashable, PyComparisonOp, Representable},
+    types::{PyTypeFlags, PyTypeSlots},
 };
 
 use self::_decimal_core::{Ctx, Dec, Rounding, Special, exc, init_exceptions, new_decimal_error};
@@ -2364,6 +2365,19 @@ mod _decimal {
             }
         }
         set("ExtendedContext", extended)?;
+
+        // Enable subclassing: set BASETYPE flag on Decimal and Context types.
+        for name in ["Decimal", "Context"] {
+            if let Ok(cls) = module.get_attr(name, vm) {
+                if let Some(ty) = cls.downcast_ref::<PyType>() {
+                    // Safety: this runs during module initialization before
+                    // any user code can observe the type, and BASETYPE is a
+                    // one-way flag that only needs to be set once.
+                    let slots_ptr = &ty.slots as *const PyTypeSlots as *mut PyTypeSlots;
+                    unsafe { (*slots_ptr).flags |= PyTypeFlags::BASETYPE; }
+                }
+            }
+        }
 
         Ok(())
     }
