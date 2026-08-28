@@ -12,7 +12,7 @@ use rustpython_common::lock::PyMutex;
 
 use crate::vm::{
     AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
-    builtins::{PyDictRef, PyFloat, PyInt, PyModule, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType, PyTypeRef},
+    builtins::{PyDict, PyDictRef, PyFloat, PyInt, PyModule, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType, PyTypeRef},
     convert::ToPyResult,
     function::{FuncArgs, OptionalArg, PyComparisonValue},
     protocol::PyNumberMethods,
@@ -162,6 +162,24 @@ mod _decimal {
                 let dv: u8 = d.try_to_value(vm)?;
                 coeff = &coeff * 10 + BigInt::from(dv);
             }
+            // Exponent may be an int (finite) or a string naming a special
+            // value: 'F'/'f' (Infinity), 'n'/'N' (NaN), 's'/'S' (sNaN).
+            if let Some(s) = items[2].downcast_ref::<PyStr>() {
+                let tag = s.as_wtf8().to_string();
+                let special = match tag.as_str() {
+                    "F" | "f" | "i" | "I" => Special::Infinity,
+                    "n" | "N" => Special::NaN,
+                    "s" | "S" => Special::SignalingNaN,
+                    _ => {
+                        return Err(new_decimal_error(
+                            vm,
+                            "InvalidOperation",
+                            &format!("malformed exponent string '{tag}'"),
+                        ))
+                    }
+                };
+                return Ok(Dec { sign, coeff, exp: 0, special });
+            }
             let exp: isize = items[2].clone().try_to_value(vm)?;
             Ok(Dec { sign, coeff, exp, special: Special::Finite })
         }
@@ -208,17 +226,39 @@ mod _decimal {
         #[pymethod]
         fn as_tuple(&self, vm: &VirtualMachine) -> PyTupleRef {
             let sign = if self.d.sign { 1 } else { 0 };
-            let digits: Vec<PyObjectRef> = self
-                .d
-                .coeff_str()
-                .bytes()
-                .map(|b| vm.ctx.new_int(b - b'0').into())
-                .collect();
-            vm.ctx.new_tuple(vec![
-                vm.ctx.new_int(sign).into(),
-                vm.ctx.new_tuple(digits).into(),
-                vm.ctx.new_int(self.d.exp).into(),
-            ])
+            // CPython as_tuple: finite numbers have an int exponent; special
+            // values carry a string: 'F' (Infinity), 'n' (NaN), 'N' (sNaN).
+            // NaN digits are an empty tuple, Infinity is (0,).
+            match self.d.special {
+                Special::Finite => {
+                    let digits: Vec<PyObjectRef> = self
+                        .d
+                        .coeff_str()
+                        .bytes()
+                        .map(|b| vm.ctx.new_int(b - b'0').into())
+                        .collect();
+                    vm.ctx.new_tuple(vec![
+                        vm.ctx.new_int(sign).into(),
+                        vm.ctx.new_tuple(digits).into(),
+                        vm.ctx.new_int(self.d.exp).into(),
+                    ])
+                }
+                Special::Infinity => vm.ctx.new_tuple(vec![
+                    vm.ctx.new_int(sign).into(),
+                    vm.ctx.new_tuple(vec![vm.ctx.new_int(0).into()]).into(),
+                    vm.ctx.new_str("F").into(),
+                ]),
+                Special::NaN => vm.ctx.new_tuple(vec![
+                    vm.ctx.new_int(sign).into(),
+                    vm.ctx.new_tuple(vec![]).into(),
+                    vm.ctx.new_str("n").into(),
+                ]),
+                Special::SignalingNaN => vm.ctx.new_tuple(vec![
+                    vm.ctx.new_int(sign).into(),
+                    vm.ctx.new_tuple(vec![]).into(),
+                    vm.ctx.new_str("N").into(),
+                ]),
+            }
         }
 
         #[pymethod]
@@ -227,6 +267,10 @@ mod _decimal {
         }
         #[pymethod]
         fn is_nan(&self) -> bool {
+            self.d.special == Special::NaN || self.d.special == Special::SignalingNaN
+        }
+        #[pymethod]
+        fn is_qnan(&self) -> bool {
             self.d.special == Special::NaN
         }
         #[pymethod]
@@ -364,6 +408,168 @@ mod _decimal {
         }
 
         #[pymethod]
+        fn sqrt(&self, vm: &VirtualMachine) -> PyResult {
+            let ctx = current_ctx(vm)?;
+            if self.d.is_special() || self.d.is_zero() {
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            if self.d.sign {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "sqrt of negative"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN }));
+            }
+            let prec = ctx.prec as usize + 4;
+            let xf = self.d.to_string().parse::<f64>().unwrap_or(1.0);
+            let result = xf.sqrt();
+            let s = format!("{:.*}", prec, result);
+            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn exp(&self, vm: &VirtualMachine) -> PyResult {
+            let ctx = current_ctx(vm)?;
+            if self.d.is_special() {
+                if self.d.special == Special::Infinity {
+                    let r = _decimal_core::apply_context(vm, &ctx, self.d.clone())?;
+                    return Ok(PyDecimal::to_py(vm, r));
+                }
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "exp of NaN"));
+                }
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            let prec = ctx.prec as usize + 4;
+            let xf = self.d.to_string().parse::<f64>().unwrap_or(0.0);
+            let result = xf.exp();
+            let s = format!("{:.*}", prec, result);
+            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn ln(&self, vm: &VirtualMachine) -> PyResult {
+            let ctx = current_ctx(vm)?;
+            if self.d.is_special() || self.d.is_zero() || self.d.sign {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "ln of non-positive"));
+                }
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            let prec = ctx.prec as usize + 4;
+            let xf = self.d.to_string().parse::<f64>().unwrap_or(1.0);
+            let result = xf.ln();
+            let s = format!("{:.*}", prec, result);
+            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn log10(&self, vm: &VirtualMachine) -> PyResult {
+            let ctx = current_ctx(vm)?;
+            if self.d.is_special() || self.d.is_zero() || self.d.sign {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "log10 of non-positive"));
+                }
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            let prec = ctx.prec as usize + 4;
+            let xf = self.d.to_string().parse::<f64>().unwrap_or(1.0);
+            let result = xf.log10();
+            let s = format!("{:.*}", prec, result);
+            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn logb(&self, vm: &VirtualMachine) -> PyResult {
+            let ctx = current_ctx(vm)?;
+            if self.d.is_special() {
+                if self.d.special == Special::Infinity {
+                    return Ok(PyDecimal::to_py(vm, self.d.clone()));
+                }
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "logb of NaN"));
+                }
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            if self.d.is_zero() {
+                ctx.set_flag(vm, "DivisionByZero")?;
+                if ctx.trap(vm, "DivisionByZero")? {
+                    return Err(new_decimal_error(vm, "DivisionByZero", "logb of zero"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec { sign: self.d.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity }));
+            }
+            let adj = self.d.exp + _decimal_core::coeff_digits_of(&self.d.coeff) as isize - 1;
+            Ok(PyDecimal::to_py(vm, _decimal_core::Dec { sign: adj < 0, coeff: BigInt::from(adj.unsigned_abs()), exp: 0, special: Special::Finite }))
+        }
+
+        #[pymethod]
+        fn compare_signal(&self, other: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let b = to_dec(&other, vm)?;
+            let ctx = current_ctx(vm)?;
+            if self.d.special == Special::NaN || self.d.special == Special::SignalingNaN
+                || b.special == Special::NaN || b.special == Special::SignalingNaN
+            {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "comparison with NaN"));
+                }
+            }
+            let r = dec_cmp(&self.d, &b);
+            Ok(vm.ctx.new_int(BigInt::from(r)).into())
+        }
+
+        #[pymethod]
+        fn compare_total(&self, other: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let b = to_dec(&other, vm)?;
+            let order = |d: &Dec| -> i64 {
+                match d.special {
+                    Special::SignalingNaN => if d.sign { 0 } else { 9 },
+                    Special::NaN => if d.sign { 1 } else { 10 },
+                    Special::Infinity => if d.sign { 2 } else { 8 },
+                    Special::Finite => { if d.is_zero() { if d.sign { 3 } else { 7 } } else { if d.sign { 4 } else { 6 } } }
+                }
+            };
+            let ox = order(&self.d);
+            let oy = order(&b);
+            let r = if ox != oy {
+                match ox.cmp(&oy) { core::cmp::Ordering::Less => -1, core::cmp::Ordering::Equal => 0, core::cmp::Ordering::Greater => 1 }
+            } else { dec_cmp(&self.d, &b) };
+            Ok(vm.ctx.new_int(BigInt::from(r)).into())
+        }
+
+        #[pymethod]
+        fn compare_total_mag(&self, other: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let mut xd = self.d.clone(); xd.sign = false;
+            let mut yd = to_dec(&other, vm)?; yd.sign = false;
+            let order = |d: &Dec| -> i64 {
+                match d.special {
+                    Special::SignalingNaN => if d.sign { 0 } else { 9 },
+                    Special::NaN => if d.sign { 1 } else { 10 },
+                    Special::Infinity => if d.sign { 2 } else { 8 },
+                    Special::Finite => { if d.is_zero() { if d.sign { 3 } else { 7 } } else { if d.sign { 4 } else { 6 } } }
+                }
+            };
+            let ox = order(&xd);
+            let oy = order(&yd);
+            let r = if ox != oy {
+                match ox.cmp(&oy) { core::cmp::Ordering::Less => -1, core::cmp::Ordering::Equal => 0, core::cmp::Ordering::Greater => 1 }
+            } else { dec_cmp(&xd, &yd) };
+            Ok(vm.ctx.new_int(BigInt::from(r)).into())
+        }
+
+        #[pymethod]
         fn __str__(zelf: &Py<Self>, vm: &VirtualMachine) -> PyStrRef {
             vm.ctx.new_str(zelf.d.to_string())
         }
@@ -448,6 +654,15 @@ mod _decimal {
             Err(vm.new_type_error("from_number requires int or float".to_string()))
         }
 
+        #[pyclassmethod]
+        fn from_float(cls: PyTypeRef, number: f64, vm: &VirtualMachine) -> PyResult {
+            // Exact binary expansion of the float (like CPython's
+            // Decimal.from_float). The _decimal constructor ignores context.
+            let d = _decimal_core::dec_from_float(number);
+            let _ = cls;
+            Ok(PyDecimal::to_py(vm, d))
+        }
+
         #[pymethod]
         fn __reduce__(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
             // Support pickle: return (Decimal, (str(self),))
@@ -496,9 +711,18 @@ mod _decimal {
 
 
         #[pymethod]
-        fn to_integral(&self, vm: &VirtualMachine) -> PyResult {
+        fn to_integral(
+            &self,
+            rounding: OptionalArg<PyStrRef>,
+            vm: &VirtualMachine,
+        ) -> PyResult {
             let ctx = current_ctx(vm)?;
-            let r = _decimal_core::quantize(vm, &ctx, &self.d, 0)?;
+            let mut ctx2 = ctx;
+            if let Some(r) = rounding.into_option() {
+                ctx2.rounding = Rounding::from_str(&r.as_wtf8().to_string())
+                    .ok_or_else(|| vm.new_value_error("invalid rounding mode".to_string()))?;
+            }
+            let r = _decimal_core::quantize(vm, &ctx2, &self.d, 0)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -542,12 +766,12 @@ mod _decimal {
             PyDecimal { d: zelf.d.clone() }
         }
 
-        #[pymethod]
+        #[pygetset]
         fn real(zelf: PyRef<Self>) -> PyDecimal {
             PyDecimal { d: zelf.d.clone() }
         }
 
-        #[pymethod]
+        #[pygetset]
         fn imag(&self, vm: &VirtualMachine) -> PyResult {
             Ok(PyDecimal::to_py(vm, _decimal_core::Dec::zero()))
         }
@@ -647,7 +871,17 @@ mod _decimal {
         vm: &VirtualMachine,
         f: fn(&Ctx, &VirtualMachine, &Dec, &Dec) -> PyResult<Dec>,
     ) -> PyResult {
-        // Try a as Decimal first, then b (for reflected ops where a is int/float)
+        // CPython rules for Decimal mixed arithmetic: Decimal op int works
+        // (int converts exactly), but Decimal op float/str is a TypeError.
+        // Return NotImplemented so the other operand gets a chance, which
+        // ultimately surfaces the same TypeError.
+        let can_convert = |o: &PyObject| -> bool {
+            o.downcast_ref::<PyDecimal>().is_some()
+                || o.downcast_ref::<PyInt>().is_some()
+        };
+        if !can_convert(a) || !can_convert(b) {
+            return Ok(vm.ctx.not_implemented());
+        }
         let (ad, bd) = if let Some(pd) = a.downcast_ref::<PyDecimal>() {
             (pd.d.clone(), match to_dec(b, vm) {
                 Ok(d) => d,
@@ -1728,11 +1962,18 @@ mod _decimal {
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             let mut c = Self::new_ctx(vm, 28);
-            let mut it = args.args.iter();
-            if let Some(v) = it.next() {
+            // Context(prec, rounding, Emin, Emax, capitals, clamp) — accept
+            // both positional and keyword forms (the test suite uses keyword
+            // args like Context(prec=9, rounding=..., traps=...)).
+            let mut pos_iter = args.args.iter();
+            let mut get_field = |key: &str| -> Option<PyObjectRef> {
+                args.get_optional_kwarg(key)
+                    .or_else(|| pos_iter.next().cloned())
+            };
+            if let Some(v) = get_field("prec") {
                 c.prec = PyMutex::new(v.try_to_value::<isize>(vm)?);
             }
-            if let Some(v) = it.next() {
+            if let Some(v) = get_field("rounding") {
                 let s = v
                     .downcast_ref::<PyStr>()
                     .ok_or_else(|| vm.new_type_error("rounding must be a string".to_string()))?;
@@ -1741,17 +1982,33 @@ mod _decimal {
                         .ok_or_else(|| vm.new_value_error("invalid rounding".to_string()))?,
                 );
             }
-            if let Some(v) = it.next() {
+            if let Some(v) = get_field("Emin") {
                 c.emin = PyMutex::new(v.try_to_value::<isize>(vm)?);
             }
-            if let Some(v) = it.next() {
+            if let Some(v) = get_field("Emax") {
                 c.emax = PyMutex::new(v.try_to_value::<isize>(vm)?);
             }
-            if let Some(v) = it.next() {
+            if let Some(v) = get_field("capitals") {
                 c.capitals = PyMutex::new(v.try_to_value::<isize>(vm)?);
             }
-            if let Some(v) = it.next() {
+            if let Some(v) = get_field("clamp") {
                 c.clamp = PyMutex::new(v.try_to_value::<isize>(vm)?);
+            }
+            if let Some(v) = get_field("traps") {
+                if let Some(d) = v.downcast_ref::<PyDict>() {
+                    for (k, val) in d.items_vec() {
+                        let on = val.try_to_value::<bool>(vm)?;
+                        let _ = c.traps.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
+                    }
+                }
+            }
+            if let Some(v) = get_field("flags") {
+                if let Some(d) = v.downcast_ref::<PyDict>() {
+                    for (k, val) in d.items_vec() {
+                        let on = val.try_to_value::<bool>(vm)?;
+                        let _ = c.flags.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
+                    }
+                }
             }
             Ok(c)
         }

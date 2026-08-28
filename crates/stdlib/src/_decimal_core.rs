@@ -214,10 +214,11 @@ pub(crate) fn init_exceptions(vm: &VirtualMachine) {
         let division_by_zero = base("DivisionByZero", vec![decimal_exception.clone(), zero_div.clone()]);
         let inexact = base("Inexact", vec![decimal_exception.clone()]);
         let rounded = base("Rounded", vec![decimal_exception.clone()]);
-        let overflow = base("Overflow", vec![inexact.clone(), rounded.clone()]);
-        let underflow = base("Underflow", vec![inexact.clone(), rounded.clone()]);
         let subnormal = base("Subnormal", vec![decimal_exception.clone()]);
-        let float_operation = base("FloatOperation", vec![decimal_exception.clone()]);
+        let overflow = base("Overflow", vec![inexact.clone(), rounded.clone()]);
+        let underflow = base("Underflow", vec![inexact.clone(), rounded.clone(), subnormal.clone()]);
+        let type_error = vm.ctx.exceptions.type_error.to_owned();
+        let float_operation = base("FloatOperation", vec![decimal_exception.clone(), type_error]);
         DecExc {
             decimal_exception,
             clamped,
@@ -603,10 +604,15 @@ pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
     if lower == "infinity" || lower == "inf" {
         return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
     }
-    if lower == "nan" {
+    // NaN / sNaN with optional diagnostic digits (e.g. nan123, snan042).
+    if lower == "nan"
+        || (lower.starts_with("nan") && lower[3..].chars().all(|c| c.is_ascii_digit()))
+    {
         return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
-    if lower.starts_with("snan") {
+    if lower == "snan"
+        || (lower.starts_with("snan") && lower[4..].chars().all(|c| c.is_ascii_digit()))
+    {
         return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::SignalingNaN });
     }
     // split exponent
@@ -655,8 +661,35 @@ pub(crate) fn dec_from_float(f: f64) -> Dec {
     if f.is_infinite() {
         return Dec { sign: f.is_sign_negative(), coeff: BigInt::from(0), exp: 0, special: Special::Infinity };
     }
-    let repr = format!("{:?}", f);
-    parse_decimal(&repr).unwrap_or(Dec::zero())
+    if f == 0.0 {
+        return Dec { sign: f.is_sign_negative(), coeff: BigInt::from(0), exp: 0, special: Special::Finite };
+    }
+    // Exact binary → decimal expansion: value = m * 2^e.
+    let bits = f.to_bits();
+    let sign = (bits >> 63) != 0;
+    let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & 0x000f_ffff_ffff_ffff;
+    let (m, e) = if exp_bits == 0 {
+        // subnormal
+        (BigInt::from(frac), -1074)
+    } else {
+        (BigInt::from(frac | 0x0010_0000_0000_0000), exp_bits - 1023 - 52)
+    };
+    if e >= 0 {
+        let coeff = m * BigInt::from(2).pow(e as u32);
+        Dec { sign, coeff, exp: 0, special: Special::Finite }
+    } else {
+        let k = (-e) as u32;
+        let pow5 = BigInt::from(5).pow(k);
+        let mut coeff = m * &pow5;
+        let mut exp = -(k as isize);
+        // strip trailing zeros introduced by the 5^k expansion
+        while coeff != BigInt::from(0) && (&coeff % BigInt::from(10)) == BigInt::from(0) {
+            coeff /= BigInt::from(10);
+            exp += 1;
+        }
+        Dec { sign, coeff, exp, special: Special::Finite }
+    }
 }
 
 /// quantize self to exponent `exp` using context rounding.
