@@ -228,7 +228,17 @@ mod _decimal {
             let sign = if self.d.sign { 1 } else { 0 };
             // CPython as_tuple: finite numbers have an int exponent; special
             // values carry a string: 'F' (Infinity), 'n' (NaN), 'N' (sNaN).
-            // NaN digits are an empty tuple, Infinity is (0,).
+            // NaN carries its diagnostic digits; Infinity is (0,).
+            let diag_digits = || -> Vec<PyObjectRef> {
+                // NaN diagnostic info stored in coeff (0 means none).
+                if self.d.coeff == BigInt::from(0) {
+                    return vec![];
+                }
+                self.d.coeff_str()
+                    .bytes()
+                    .map(|b| vm.ctx.new_int(b - b'0').into())
+                    .collect()
+            };
             match self.d.special {
                 Special::Finite => {
                     let digits: Vec<PyObjectRef> = self
@@ -250,12 +260,12 @@ mod _decimal {
                 ]),
                 Special::NaN => vm.ctx.new_tuple(vec![
                     vm.ctx.new_int(sign).into(),
-                    vm.ctx.new_tuple(vec![]).into(),
+                    vm.ctx.new_tuple(diag_digits()).into(),
                     vm.ctx.new_str("n").into(),
                 ]),
                 Special::SignalingNaN => vm.ctx.new_tuple(vec![
                     vm.ctx.new_int(sign).into(),
-                    vm.ctx.new_tuple(vec![]).into(),
+                    vm.ctx.new_tuple(diag_digits()).into(),
                     vm.ctx.new_str("N").into(),
                 ]),
             }
@@ -911,11 +921,56 @@ mod _decimal {
                 remainder: Some(|a, b, vm| binop_num(a, b, vm, _decimal_core::dec_mod)),
                 power: Some(|a, b, c, vm| {
                     if !vm.is_none(c) {
-                        return Err(vm.new_value_error(
-                            "Decimal exponent cannot be supplied".to_string(),
-                        ));
+                        // ternary power: a ** b % m; a/b may be int (like the
+                        // binary slot) as long as one side is a Decimal.
+                        let can = |o: &PyObject| o.downcast_ref::<PyDecimal>().is_some() || o.downcast_ref::<PyInt>().is_some();
+                        if !can(a) || !can(b) {
+                            return Ok(vm.ctx.not_implemented());
+                        }
+                        let c_obj = c.to_owned();
+                        let (ad, bd) = if let Some(pa) = a.downcast_ref::<PyDecimal>() {
+                            (pa.d.clone(), match to_dec(b, vm) {
+                                Ok(d) => d,
+                                Err(_) => return Ok(vm.ctx.not_implemented()),
+                            })
+                        } else if let Some(pb) = b.downcast_ref::<PyDecimal>() {
+                            (match to_dec(a, vm) {
+                                Ok(d) => d,
+                                Err(_) => return Ok(vm.ctx.not_implemented()),
+                            }, pb.d.clone())
+                        } else {
+                            return Ok(vm.ctx.not_implemented());
+                        };
+                        let md = to_dec(&c_obj, vm)?;
+                        let ctx = current_ctx(vm)?;
+                        let r = _decimal_core::dec_pow_mod(&ctx, vm, &ad, &bd, &md)?;
+                        return Ok(PyDecimal::to_py(vm, r));
                     }
                     binop_num(a, b, vm, _decimal_core::dec_pow_int)
+                }),
+                divmod: Some(|a, b, vm| {
+                    // return (a//b, a%b)
+                    if !a.downcast_ref::<PyDecimal>().is_some() && !b.downcast_ref::<PyDecimal>().is_some() {
+                        return Ok(vm.ctx.not_implemented());
+                    }
+                    let (ad, bd) = if let Some(pd) = a.downcast_ref::<PyDecimal>() {
+                        (pd.d.clone(), match to_dec(b, vm) {
+                            Ok(d) => d,
+                            Err(_) => return Ok(vm.ctx.not_implemented()),
+                        })
+                    } else if let Some(pd) = b.downcast_ref::<PyDecimal>() {
+                        (match to_dec(a, vm) {
+                            Ok(d) => d,
+                            Err(_) => return Ok(vm.ctx.not_implemented()),
+                        }, pd.d.clone())
+                    } else {
+                        return Ok(vm.ctx.not_implemented());
+                    };
+                    let (floor, m) = _decimal_core::floor_div_mod(&ad, &bd);
+                    Ok(vm.ctx.new_tuple(vec![
+                        PyDecimal::to_py(vm, floor),
+                        PyDecimal::to_py(vm, m),
+                    ]).into())
                 }),
                 negative: Some(|num, vm| {
                     let pd = PyDecimal::number_downcast(num);
@@ -942,10 +997,10 @@ mod _decimal {
                 int: Some(|num, vm| {
                     let pd = PyDecimal::number_downcast(num);
                     if pd.d.is_special() {
-                        return Err(new_decimal_error(
-                            vm,
-                            "InvalidOperation",
-                            "cannot convert NaN/Infinity to int",
+                        // CPython: int(Decimal('NaN')) / int(Decimal('Infinity'))
+                        // raises ValueError, not InvalidOperation.
+                        return Err(vm.new_value_error(
+                            "cannot convert NaN/infinity to integer".to_string(),
                         ));
                     }
                     let mut coeff = pd.d.coeff.clone();
@@ -1209,11 +1264,27 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn power(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec_ctx(&x, vm)?;
-            let yd = to_dec_ctx(&y, vm)?;
+        fn power(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            // Context.power(a, b, modulo=None); supports positional and
+            // keyword forms (a=, b=, modulo=).
+            let mut pos = args.args.iter();
+            let mut get = |key: &str| -> Option<PyObjectRef> {
+                args.get_optional_kwarg(key).or_else(|| pos.next().cloned())
+            };
+            let a = get("a")
+                .ok_or_else(|| vm.new_type_error("power expected an argument a".to_string()))?;
+            let b = get("b")
+                .ok_or_else(|| vm.new_type_error("power expected an argument b".to_string()))?;
+            let modulo = get("modulo");
+            let ad = to_dec_ctx(&a, vm)?;
+            let bd = to_dec_ctx(&b, vm)?;
             let ctx = self.ctx();
-            let r = _decimal_core::dec_pow_int(&ctx, vm, &xd, &yd)?;
+            if let Some(m) = modulo {
+                let md = to_dec_ctx(&m, vm)?;
+                let r = _decimal_core::dec_pow_mod(&ctx, vm, &ad, &bd, &md)?;
+                return Ok(PyDecimal::to_py(vm, r));
+            }
+            let r = _decimal_core::dec_pow_int(&ctx, vm, &ad, &bd)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -2174,6 +2245,12 @@ mod _decimal {
         set("DefaultContext", default)?;
 
         let basic: PyObjectRef = PyContext::new_ctx(vm, 9).into_ref(&vm.ctx).into();
+        // CPython BasicContext traps: InvalidOperation, DivisionByZero, Overflow,
+        // Underflow, Clamped (new_ctx enables the first three).
+        if let Some(pc) = basic.downcast_ref::<PyContext>() {
+            let _ = pc.traps.set_item(exc().underflow.as_object(), vm.ctx.new_bool(true).into(), vm);
+            let _ = pc.traps.set_item(exc().clamped.as_object(), vm.ctx.new_bool(true).into(), vm);
+        }
         set("BasicContext", basic)?;
 
         let extended: PyObjectRef = PyContext::new_ctx(vm, 9).into_ref(&vm.ctx).into();

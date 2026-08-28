@@ -605,15 +605,27 @@ pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
         return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
     }
     // NaN / sNaN with optional diagnostic digits (e.g. nan123, snan042).
+    // CPython keeps the trailing digits as the NaN payload (visible in
+    // as_tuple()).
     if lower == "nan"
         || (lower.starts_with("nan") && lower[3..].chars().all(|c| c.is_ascii_digit()))
     {
-        return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+        let payload: BigInt = if lower.len() > 3 {
+            lower[3..].parse().unwrap_or_else(|_| BigInt::from(0))
+        } else {
+            BigInt::from(0)
+        };
+        return Ok(Dec { sign, coeff: payload, exp: 0, special: Special::NaN });
     }
     if lower == "snan"
         || (lower.starts_with("snan") && lower[4..].chars().all(|c| c.is_ascii_digit()))
     {
-        return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::SignalingNaN });
+        let payload: BigInt = if lower.len() > 4 {
+            lower[4..].parse().unwrap_or_else(|_| BigInt::from(0))
+        } else {
+            BigInt::from(0)
+        };
+        return Ok(Dec { sign, coeff: payload, exp: 0, special: Special::SignalingNaN });
     }
     // split exponent
     let (mantissa, exp_part) = match rest.find(['e', 'E']) {
@@ -793,6 +805,46 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         }
     }
     Ok(result)
+}
+
+/// Compute a ** b % m (modular exponentiation) for integer operands.
+/// Requires a, b as non-negative integers (exp >= 0); used by
+/// Decimal.__pow__/Context.power with a modulo argument.
+pub(crate) fn dec_pow_mod(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec, m: &Dec) -> PyResult<Dec> {
+    // Require integer operands with exp >= 0 (value = coeff * 10^exp).
+    let intval = |d: &Dec| -> Option<BigInt> {
+        if d.special != Special::Finite || d.exp < 0 {
+            return None;
+        }
+        Some(d.coeff.clone() * BigInt::from(10).pow(d.exp as u32))
+    };
+    let (Some(av), Some(bv), Some(mv)) = (intval(a), intval(b), intval(m)) else {
+        return Err(new_decimal_error(vm, "InvalidOperation", "modulo power requires integers"));
+    };
+    if bv.sign() != Sign::Plus {
+        return Err(new_decimal_error(vm, "InvalidOperation", "modulo power exponent must be non-negative"));
+    }
+    if mv == BigInt::from(0) {
+        return Err(new_decimal_error(vm, "DivisionByZero", "modulo zero"));
+    }
+    // result = av^bv mod mv via modular exponentiation
+    let mut base = if av.sign() == Sign::Minus { -av } else { av.clone() };
+    base %= &mv;
+    let mut result = BigInt::from(1);
+    let mut exp = bv.clone();
+    while exp > BigInt::from(0) {
+        if (&exp % BigInt::from(2)) == BigInt::from(1) {
+            result = (&result * &base) % &mv;
+        }
+        exp >>= 1u32;
+        if exp > BigInt::from(0) {
+            base = (&base * &base) % &mv;
+        }
+    }
+    // result sign: a^b % m follows the sign of m in the common case; CPython
+    // returns a non-negative result when m is positive.
+    let _ = ctx;
+    Ok(Dec { sign: false, coeff: result, exp: 0, special: Special::Finite })
 }
 
 /// floor division a // b and modulo a % b, computed exactly (sign of divisor
