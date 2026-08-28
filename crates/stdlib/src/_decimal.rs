@@ -118,6 +118,10 @@ mod _decimal {
             return _decimal_core::parse_decimal(&txt)
                 .map_err(|e| new_decimal_error(vm, "InvalidOperation", &e));
         }
+        // CPython: Decimal([1,2]) raises ValueError (not TypeError).
+        if obj.downcast_ref::<crate::vm::builtins::PyList>().is_some() {
+            return Err(vm.new_value_error("conversion from list to Decimal is not supported".to_string()));
+        }
         Err(vm.new_type_error(format!("cannot convert {} to Decimal", obj.class().name())))
     }
 
@@ -153,7 +157,11 @@ mod _decimal {
             if items.len() != 3 {
                 return Err(vm.new_value_error("tuple must be (sign, digits, exponent)".to_string()));
             }
-            let sign = items[0].clone().try_to_bool(vm)?;
+            let sign_val: isize = items[0].clone().try_to_value(vm)?;
+            if sign_val != 0 && sign_val != 1 {
+                return Err(vm.new_value_error("sign must be 0 or 1".to_string()));
+            }
+            let sign = sign_val == 1;
             let digits_obj = items[1].downcast_ref::<PyTuple>().ok_or_else(|| {
                 vm.new_type_error("digits must be a tuple".to_string())
             })?;
@@ -1043,10 +1051,15 @@ mod _decimal {
                 int: Some(|num, vm| {
                     let pd = PyDecimal::number_downcast(num);
                     if pd.d.is_special() {
-                        // CPython: int(Decimal('NaN')) / int(Decimal('Infinity'))
-                        // raises ValueError, not InvalidOperation.
+                        // CPython: int(Decimal('Infinity')) raises OverflowError,
+                        // int(Decimal('NaN')) raises ValueError.
+                        if pd.d.special == Special::Infinity {
+                            return Err(vm.new_overflow_error(
+                                "cannot convert Infinity to integer".to_string(),
+                            ));
+                        }
                         return Err(vm.new_value_error(
-                            "cannot convert NaN/infinity to integer".to_string(),
+                            "cannot convert NaN to integer".to_string(),
                         ));
                     }
                     let mut coeff = pd.d.coeff.clone();
