@@ -701,7 +701,7 @@ mod _decimal {
             if let Some(nd) = ndigits.into_option() {
                 let n: isize = nd.try_to_value(vm)?;
                 let r = _decimal_core::quantize(vm, &ctx, xd, -n)?;
-                return Ok(vm.ctx.new_float(r.to_string().parse::<f64>().unwrap_or(0.0)).into());
+                return Ok(PyDecimal::to_py(vm, r));
             }
             let mut coeff = xd.coeff.clone();
             if xd.exp < 0 {
@@ -806,7 +806,16 @@ mod _decimal {
                 let d = Self::from_tuple(tuple.as_slice(), vm)?;
                 return Ok(PyDecimal { d });
             }
-            let d = to_dec(&value, vm)?;
+            // CPython 3.11+: invalid string like 'ugly' constructs a
+            // quiet NaN (with InvalidOperation flag) instead of raising.
+            let d = match to_dec(&value, vm) {
+                Ok(d) => d,
+                Err(_) => {
+                    let ctx = current_ctx(vm)?;
+                    let _ = ctx.set_flag(vm, "InvalidOperation");
+                    Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN }
+                }
+            };
             Ok(PyDecimal { d })
         }
     }
@@ -828,15 +837,14 @@ mod _decimal {
                 Ok(b) => b,
                 Err(_) => return Ok(PyComparisonValue::NotImplemented),
             };
-            // sNaN comparisons signal InvalidOperation (CPython parity).
+            // sNaN comparisons always signal InvalidOperation (CPython
+            // raises even when the trap is off for sNaN compare).
             let ssnan = zelf.d.special == Special::SignalingNaN
                 || b.special == Special::SignalingNaN;
             if ssnan {
                 let ctx = current_ctx(vm)?;
                 ctx.set_flag(vm, "InvalidOperation")?;
-                if ctx.trap(vm, "InvalidOperation")? {
-                    return Err(new_decimal_error(vm, "InvalidOperation", "comparison with sNaN"));
-                }
+                return Err(new_decimal_error(vm, "InvalidOperation", "comparison with sNaN"));
             }
             let nan = zelf.d.special == Special::NaN
                 || zelf.d.special == Special::SignalingNaN
@@ -856,12 +864,11 @@ mod _decimal {
     }
 
     impl Hashable for PyDecimal {
-        fn hash(zelf: &Py<Self>, _vm: &VirtualMachine) -> PyResult<hash::PyHash> {
+        fn hash(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<hash::PyHash> {
             let d = &zelf.d;
-            let hasher = || hash::HashSecret::new(0);
             if d.is_special() {
                 let s = d.to_string();
-                return Ok(hash::fix_sentinel(hasher().hash_str(&s)));
+                return Ok(hash::fix_sentinel(hash::HashSecret::new(0).hash_str(&s)));
             }
             let integral = d.exp >= 0
                 || {
@@ -880,7 +887,13 @@ mod _decimal {
                 }
                 Ok(hash::fix_sentinel(hash::hash_bigint(&v)))
             } else {
-                Ok(hash::fix_sentinel(hasher().hash_str(&d.to_string())))
+                // CPython: hash(Decimal('3.14')) == hash(3.14).
+                // Use the float hash of the decimal's value.
+                let f = d.to_string().parse::<f64>().unwrap_or(0.0);
+                // delegate to float.__hash__ via the VM
+                let float_obj: PyObjectRef = vm.ctx.new_float(f).into();
+                let hash_val = vm.call_method(&float_obj, "__hash__", ())?;
+                hash_val.try_to_value::<hash::PyHash>(vm)
             }
         }
     }
@@ -1858,8 +1871,7 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn radix(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let _ = x;
+        fn radix(&self, _x: OptionalArg<PyObjectRef>, vm: &VirtualMachine) -> PyResult {
             Ok(vm.ctx.new_int(BigInt::from(10)).into())
         }
 
