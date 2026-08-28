@@ -594,16 +594,27 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn __format__(&self, spec: PyStrRef) -> PyResult<String> {
+        fn __format__(
+            &self,
+            spec: PyStrRef,
+            context: OptionalArg<PyObjectRef>,
+            vm: &VirtualMachine,
+        ) -> PyResult<String> {
             let spec = spec.as_wtf8().to_string();
             if spec.is_empty() {
                 return Ok(self.d.to_string());
             }
-            if spec.ends_with('f') || spec.ends_with('F') {
-                let f = self.d.to_string().parse::<f64>().unwrap_or(0.0);
-                return Ok(format!("{f:.6}"));
-            }
-            Ok(self.d.to_string())
+            let ctx = if let Some(c) = context.into_option() {
+                if let Some(pc) = c.downcast_ref::<PyContext>() {
+                    pc.ctx()
+                } else {
+                    return Err(vm.new_type_error("context must be a Context".to_string()));
+                }
+            } else {
+                current_ctx(vm)?
+            };
+            _decimal_core::format_decimal(&self.d, &spec, vm, &ctx)
+                .map_err(|e| new_decimal_error(vm, "InvalidOperation", &e))
         }
 
         // Reflected ops are handled by the AsNumber right_* slots
