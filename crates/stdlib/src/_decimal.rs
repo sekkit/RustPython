@@ -808,9 +808,16 @@ mod _decimal {
             }
             // CPython 3.11+: invalid string like 'ugly' constructs a
             // quiet NaN (with InvalidOperation flag) instead of raising.
+            // But TypeError (e.g. Decimal(None)) must still propagate.
             let d = match to_dec(&value, vm) {
                 Ok(d) => d,
-                Err(_) => {
+                Err(e) => {
+                    // Only InvalidOperation (string parse failure) → NaN.
+                    // TypeError and others propagate as-is.
+                    let is_io = e.class().is(&exc().invalid_operation);
+                    if !is_io {
+                        return Err(e);
+                    }
                     let ctx = current_ctx(vm)?;
                     let _ = ctx.set_flag(vm, "InvalidOperation");
                     Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN }
