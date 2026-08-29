@@ -2845,8 +2845,15 @@ mod _decimal {
     }
 
     #[pyfunction]
-    fn setcontext(context: PyObjectRef) {
-        set_current_context(context);
+    fn setcontext(context: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+        if context.downcast_ref::<PyContext>().is_none() {
+            return Err(vm.new_type_error("context must be a Context object".to_string()));
+        }
+        // CPython setcontext stores a copy; getcontext() returns a new
+        // copy of the stored context each time.
+        let c = vm.call_method(&context, "copy", ())?;
+        set_current_context(c);
+        Ok(())
     }
 
     #[pyfunction]
