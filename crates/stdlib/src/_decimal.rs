@@ -44,6 +44,9 @@ mod _decimal {
 
     static DEFAULT_CTX: SyncMutex<Option<PyObjectRef>> = SyncMutex(PyMutex::new(None));
 
+    // Shared DecimalTuple namedtuple class (created once per process).
+    static DECIMAL_TUPLE: SyncMutex<Option<PyObjectRef>> = SyncMutex(PyMutex::new(None));
+
     fn get_current_context(vm: &VirtualMachine) -> PyObjectRef {
         CURRENT_CONTEXT.with(|c| {
             c.borrow().clone().unwrap_or_else(|| {
@@ -272,10 +275,13 @@ mod _decimal {
                 ),
             };
             // Wrap in the DecimalTuple namedtuple (sign, digits, exponent).
-            let dt_cls = vm
-                .import("_decimal", 0)
-                .and_then(|m| m.get_attr("DecimalTuple", vm))
-                .unwrap_or_else(|_| vm.ctx.types.tuple_type.to_owned().into());
+            // A process-level shared class so all _decimal module instances
+            // (fresh re-imports) use the same type — matches the pickle
+            // interchange test's identity expectations.
+            let dt_cls = DECIMAL_TUPLE
+                .lock()
+                .clone()
+                .unwrap_or_else(|| vm.ctx.types.tuple_type.to_owned().into());
             let sign_obj: PyObjectRef = vm.ctx.new_int(sign).into();
             let dt = vm.invoke(&dt_cls, (sign_obj, digits_tuple, exp_obj))?;
             Ok(dt)
@@ -1473,7 +1479,8 @@ mod _decimal {
             let emax = *zelf.emax.lock();
             let capitals = *zelf.capitals.lock();
             let clamp = *zelf.clamp.lock();
-            // traps/Flags: list of exception objects that are True.
+            // traps/Flags: list of exception objects that are True (matching
+            // CPython's __reduce__ which passes Python lists).
             let trap_names: Vec<PyObjectRef> = zelf
                 .traps
                 .lock()
@@ -1490,6 +1497,8 @@ mod _decimal {
                 .filter(|(_, v)| v.try_to_value::<bool>(vm).unwrap_or(false))
                 .map(|(k, _)| k)
                 .collect();
+            let trap_list = vm.ctx.new_list(trap_names);
+            let flag_list = vm.ctx.new_list(flag_names);
             let args: PyObjectRef = vm.ctx.new_tuple(vec![
                 vm.ctx.new_int(prec).into(),
                 vm.ctx.new_str(rounding_str).into(),
@@ -1497,8 +1506,8 @@ mod _decimal {
                 vm.ctx.new_int(emax).into(),
                 vm.ctx.new_int(capitals).into(),
                 vm.ctx.new_int(clamp).into(),
-                vm.ctx.new_tuple(trap_names).into(),
-                vm.ctx.new_tuple(flag_names).into(),
+                trap_list.into(),
+                flag_list.into(),
             ]).into();
             let cls: PyObjectRef = zelf.class().to_owned().into();
             Ok(vm.ctx.new_tuple(vec![cls, args]).into())
@@ -2263,6 +2272,11 @@ mod _decimal {
                     for item in t.as_slice() {
                         let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
                     }
+                } else if let Some(lst) = v.downcast_ref::<crate::vm::builtins::PyList>() {
+                    let items: Vec<PyObjectRef> = lst.borrow_vec().to_vec();
+                    for item in items {
+                        let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
+                    }
                 }
             }
             Ok(c)
@@ -2476,17 +2490,25 @@ mod _decimal {
 
         // Define DecimalTuple as a namedtuple: (sign, digits, exponent).
         // as_tuple() returns one, matching CPython (_decimal.DecimalTuple).
+        // Created once per process and shared across module instances.
         {
-            let collections_mod = vm.import("collections", 0)?;
-            let nt = collections_mod.get_attr("namedtuple", vm)?;
-            let dt_name: PyObjectRef = vm.ctx.new_str("DecimalTuple").into();
-            let dt_fields: PyObjectRef = vm.ctx.new_str("sign digits exponent").into();
-            let dt = vm.invoke(&nt, (dt_name, dt_fields))?;
-            // CPython's _decimal.DecimalTuple.__module__ is 'decimal'; set it
-            // so pickle resolves through sys.modules['decimal'].
-            let dec_mod: PyObjectRef = vm.ctx.new_str("decimal").into();
-            let _ = dt.set_attr("__module__", dec_mod, vm);
-            set("DecimalTuple", dt)?;
+            let mut guard = DECIMAL_TUPLE.lock();
+            if guard.is_none() {
+                let collections_mod = vm.import("collections", 0)?;
+                let nt = collections_mod.get_attr("namedtuple", vm)?;
+                let dt_name: PyObjectRef = vm.ctx.new_str("DecimalTuple").into();
+                let dt_fields: PyObjectRef = vm.ctx.new_str("sign digits exponent").into();
+                let dt = vm.invoke(&nt, (dt_name, dt_fields))?;
+                // CPython's _decimal.DecimalTuple.__module__ is 'decimal'; set it
+                // so pickle resolves through sys.modules['decimal'].
+                let dec_mod: PyObjectRef = vm.ctx.new_str("decimal").into();
+                let _ = dt.set_attr("__module__", dec_mod, vm);
+                *guard = Some(dt.clone());
+                set("DecimalTuple", dt)?;
+            } else {
+                let dt = guard.clone().unwrap();
+                set("DecimalTuple", dt)?;
+            }
         }
 
         Ok(())
