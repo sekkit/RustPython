@@ -1440,7 +1440,25 @@ mod _decimal {
                                     zelf.d.special,
                                     Special::NaN | Special::SignalingNaN
                                 ) {
-                                    // NaN comparisons are always false except !=.
+                                    // CPython: NaN ordering comparisons with a
+                                    // non-Decimal signal InvalidOperation; only
+                                    // equality is allowed (always false/true).
+                                    if matches!(
+                                        op,
+                                        PyComparisonOp::Lt | PyComparisonOp::Le
+                                            | PyComparisonOp::Gt | PyComparisonOp::Ge
+                                    ) {
+                                        let ctx = current_ctx(vm)?;
+                                        ctx.set_flag(vm, "InvalidOperation")?;
+                                        if ctx.trap(vm, "InvalidOperation")? {
+                                            return Err(new_decimal_error(
+                                                vm,
+                                                "InvalidOperation",
+                                                "order comparison with NaN",
+                                            ));
+                                        }
+                                        return Ok(PyComparisonValue::Implemented(false));
+                                    }
                                     let result = matches!(op, PyComparisonOp::Ne);
                                     return Ok(PyComparisonValue::Implemented(result));
                                 }
