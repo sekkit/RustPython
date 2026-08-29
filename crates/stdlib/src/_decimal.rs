@@ -1361,8 +1361,22 @@ mod _decimal {
         fn hash(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<hash::PyHash> {
             let d = &zelf.d;
             if d.is_special() {
-                let s = d.to_string();
-                return Ok(hash::fix_sentinel(hash::HashSecret::new(0).hash_str(&s)));
+                return match d.special {
+                    // CPython: hash(sNaN) raises TypeError; hash(qNaN) is
+                    // the identity-based object hash.
+                    Special::SignalingNaN => Err(vm.new_type_error(
+                        "unhashable type: 'decimal.Decimal'".to_string(),
+                    )),
+                    Special::NaN => Ok(zelf.as_object().get_id() as hash::PyHash),
+                    // CPython: hash matches the float hash (±inf).
+                    Special::Infinity => {
+                        let f: f64 = if d.sign { f64::NEG_INFINITY } else { f64::INFINITY };
+                        let float_obj: PyObjectRef = vm.ctx.new_float(f).into();
+                        let v = vm.call_method(&float_obj, "__hash__", ())?;
+                        v.try_to_value::<hash::PyHash>(vm)
+                    }
+                    Special::Finite => unreachable!(),
+                };
             }
             let integral = d.exp >= 0
                 || {
