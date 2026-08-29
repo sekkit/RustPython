@@ -201,8 +201,11 @@ mod _decimal {
     impl PyDecimal {
         #[pymethod]
         fn quantize(zelf: &Py<Self>, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let mut iter = args.args.iter();
-            let exp = iter.next().ok_or_else(|| {
+            // Support positional or keyword: quantize(exp, rounding=, context=)
+            let get = |key: &str| -> Option<PyObjectRef> {
+                args.get_optional_kwarg(key).or_else(|| None)
+            };
+            let exp = get("exp").or_else(|| args.args.get(0).cloned()).ok_or_else(|| {
                 vm.new_type_error("quantize requires at least one argument".to_string())
             })?;
             let target_exp: isize = if let Some(pd) = exp.downcast_ref::<PyDecimal>() {
@@ -226,7 +229,15 @@ mod _decimal {
                     None => Err(vm.new_type_error("rounding must be a string".to_string())),
                 })
                 .transpose()?;
-            let mut ctx = current_ctx(vm)?;
+            // context= keyword overrides the current context.
+            let mut ctx = if let Some(c) = get("context") {
+                let pc = c.downcast_ref::<PyContext>().ok_or_else(|| {
+                    vm.new_type_error("context must be a Context object".to_string())
+                })?;
+                pc.ctx()
+            } else {
+                current_ctx(vm)?
+            };
             if let Some(ref rs) = rounding_str {
                 ctx.rounding = Rounding::from_str(rs)
                     .ok_or_else(|| vm.new_value_error("invalid rounding mode".to_string()))?;
@@ -848,16 +859,28 @@ mod _decimal {
             // CPython 3.11+: invalid string like 'ugly' constructs a
             // quiet NaN (with InvalidOperation flag) instead of raising.
             // But TypeError (e.g. Decimal(None)) must still propagate.
+            // Decimal(float) is an implicit float conversion: it sets the
+            // FloatOperation flag (explicit Decimal.from_float does not).
+            let mut ctx = current_ctx(vm)?;
+            if value.downcast_ref::<PyFloat>().is_some() {
+                ctx.set_flag(vm, "FloatOperation")?;
+                if ctx.trap(vm, "FloatOperation")? {
+                    return Err(new_decimal_error(
+                        vm,
+                        "FloatOperation",
+                        "float conversion is not safe for Decimal",
+                    ));
+                }
+            }
             let d = match to_dec(&value, vm) {
                 Ok(d) => d,
                 Err(e) => {
-                    // Only InvalidOperation (string parse failure) â†’ NaN.
+                    // Only InvalidOperation (string parse failure) -> NaN.
                     // TypeError and others propagate as-is.
                     let is_io = e.class().is(&exc().invalid_operation);
                     if !is_io {
                         return Err(e);
                     }
-                    let ctx = current_ctx(vm)?;
                     let _ = ctx.set_flag(vm, "InvalidOperation");
                     // If the InvalidOperation trap is on, raise the error.
                     if ctx.trap(vm, "InvalidOperation")? {
@@ -883,6 +906,19 @@ mod _decimal {
             op: PyComparisonOp,
             vm: &VirtualMachine,
         ) -> PyResult<PyComparisonValue> {
+            // Comparing Decimal with float is an implicit float conversion:
+            // sets the FloatOperation flag (raises if trapped).
+            if other.downcast_ref::<PyFloat>().is_some() {
+                let ctx = current_ctx(vm)?;
+                ctx.set_flag(vm, "FloatOperation")?;
+                if ctx.trap(vm, "FloatOperation")? {
+                    return Err(new_decimal_error(
+                        vm,
+                        "FloatOperation",
+                        "float conversion is not safe for Decimal",
+                    ));
+                }
+            }
             let b = match to_dec(other, vm) {
                 Ok(b) => b,
                 Err(_) => return Ok(PyComparisonValue::NotImplemented),
@@ -1437,8 +1473,19 @@ mod _decimal {
         #[pymethod]
         fn create_decimal(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let d = to_dec(&value, vm)?;
-            // Apply context to the created decimal
-            let ctx = self.ctx();
+            // Apply context to the created decimal; implicit float conversion
+            // sets the FloatOperation flag on this context.
+            let mut ctx = self.ctx();
+            if value.downcast_ref::<PyFloat>().is_some() {
+                ctx.set_flag(vm, "FloatOperation")?;
+                if ctx.trap(vm, "FloatOperation")? {
+                    return Err(new_decimal_error(
+                        vm,
+                        "FloatOperation",
+                        "float conversion is not safe for Decimal",
+                    ));
+                }
+            }
             let r = _decimal_core::apply_context(vm, &ctx, d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
