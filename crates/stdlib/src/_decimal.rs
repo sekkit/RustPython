@@ -1906,18 +1906,8 @@ mod _decimal {
 
 
         #[pymethod]
-        fn __str__(&self) -> String {
-            format!(
-                "Context(prec={}, rounding={}, Emin={}, Emax={}, capitals={}, clamp={}, flags={}, traps={})",
-                self.prec.lock(),
-                self.rounding.lock().to_str(),
-                self.emin.lock(),
-                self.emax.lock(),
-                self.capitals.lock(),
-                self.clamp.lock(),
-                self.flags.lock().size().used,
-                self.traps.lock().size().used,
-            )
+        fn __str__(&self, vm: &VirtualMachine) -> PyResult<String> {
+            Ok(ctx_repr_string_impl(self, vm))
         }
 
         #[pymethod]
@@ -2648,19 +2638,65 @@ mod _decimal {
 
     impl Representable for PyContext {
         fn repr(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyStrRef> {
-            let prec = *zelf.prec.lock();
-            let rounding = *zelf.rounding.lock();
-            let rounding_str = rounding.to_str();
-            let emin = *zelf.emin.lock();
-            let emax = *zelf.emax.lock();
-            let capitals = *zelf.capitals.lock();
-            let clamp = *zelf.clamp.lock();
-            let flags = zelf.flags.lock().size().used;
-            let traps = zelf.traps.lock().size().used;
-            Ok(vm.ctx.new_str(format!(
-                "Context(prec={prec}, rounding={rounding_str}, Emin={emin}, Emax={emax}, capitals={capitals}, clamp={clamp}, flags={flags}, traps={traps})",
-            )))
+            Ok(vm.ctx.new_str(ctx_repr_string_impl(zelf, vm)))
         }
+    }
+
+    /// Build the CPython Context repr/str: lists only True flags/traps by
+    /// diagnostic name.
+    fn ctx_repr_string_impl(zelf: &PyContext, vm: &VirtualMachine) -> String {
+        let repr = ctx_repr_common(
+            *zelf.prec.lock(),
+            *zelf.rounding.lock(),
+            *zelf.emin.lock(),
+            *zelf.emax.lock(),
+            *zelf.capitals.lock(),
+            *zelf.clamp.lock(),
+            &zelf.flags.lock().clone(),
+            &zelf.traps.lock().clone(),
+            vm,
+        );
+        repr
+    }
+
+    /// Name of an exception type object used as a flags/traps dict key.
+    fn exception_name(obj: &PyObject, vm: &VirtualMachine) -> String {
+        if let Some(ty) = obj.downcast_ref::<PyType>() {
+            ty.name().to_string()
+        } else {
+            obj.str(vm).map(|s| s.as_wtf8().to_string()).unwrap_or_default()
+        }
+    }
+
+    fn ctx_repr_common(
+        prec: isize,
+        rounding: Rounding,
+        emin: isize,
+        emax: isize,
+        capitals: isize,
+        clamp: isize,
+        flags: &PyDictRef,
+        traps: &PyDictRef,
+        vm: &VirtualMachine,
+    ) -> String {
+        let rounding_str = rounding.to_str();
+        let flag_names: Vec<String> = flags
+            .items_vec()
+            .into_iter()
+            .filter(|(_, v)| v.try_to_value::<bool>(vm).unwrap_or(false))
+            .map(|(k, _)| exception_name(&k, vm))
+            .collect();
+        let trap_names: Vec<String> = traps
+            .items_vec()
+            .into_iter()
+            .filter(|(_, v)| v.try_to_value::<bool>(vm).unwrap_or(false))
+            .map(|(k, _)| exception_name(&k, vm))
+            .collect();
+        format!(
+            "Context(prec={prec}, rounding={rounding_str}, Emin={emin}, Emax={emax}, capitals={capitals}, clamp={clamp}, flags=[{}], traps=[{}])",
+            flag_names.join(", "),
+            trap_names.join(", "),
+        )
     }
 
     impl Constructor for PyContext {
