@@ -2396,6 +2396,18 @@ mod _decimal {
             }
         }
 
+        // Register Decimal as a virtual subclass of numbers.Number
+        // (CPython: Decimal.register(Number)). The actual registration
+        // goes through the abc machinery.
+        if let (Ok(number_mod), Ok(decimal_cls)) = (
+            vm.import("numbers", 0),
+            module.get_attr("Decimal", vm),
+        ) {
+            if let Ok(number_cls) = number_mod.get_attr("Number", vm) {
+                let _ = vm.call_method(&number_cls, "register", (decimal_cls,));
+            }
+        }
+
         Ok(())
     }
 }
