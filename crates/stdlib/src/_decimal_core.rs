@@ -924,25 +924,6 @@ pub(crate) fn format_decimal(
     vm: &VirtualMachine,
     ctx: &Ctx,
 ) -> Result<String, String> {
-    if d.is_special() {
-        // Special values format as their str form (Infinity, NaN, sNaN),
-        // preserving NaN diagnostic digits from the coefficient.
-        let payload = if d.coeff == BigInt::from(0) {
-            String::new()
-        } else {
-            d.coeff_str()
-        };
-        let mut s = match d.special {
-            Special::Infinity => "Infinity".to_string(),
-            Special::NaN => format!("NaN{payload}"),
-            Special::SignalingNaN => format!("sNaN{payload}"),
-            Special::Finite => unreachable!(),
-        };
-        if d.sign {
-            s.insert(0, '-');
-        }
-        return Ok(s);
-    }
     // Parse the format spec.
     let mut spec = spec.to_string();
     // Type char: valid types are e/E/f/F/g/G/n/%. A trailing alphabetic
@@ -975,23 +956,107 @@ pub(crate) fn format_decimal(
     // characters (raise ValueError on anything unknown like 'fz'); full
     // alignment padding is not implemented (suite focuses on numeric part).
     let rest = spec;
+    // Parse fill/align/width/grouping from the remaining spec.
+    let mut align = '>';
+    let mut fill = ' ';
+    let mut width: usize = 0;
+    let mut grouping: Option<char> = None;
+    let mut sign_flag = '-';
     if !rest.is_empty() {
-        let valid = ['<', '>', '=', '^', '+', '-', ' ', '0', '#', ',', '_'];
-        for c in rest.chars() {
-            if !(valid.contains(&c) || c.is_ascii_digit()) {
+        // fill/align: optional fill char + one of <>=^
+        let rbytes: Vec<char> = rest.chars().collect();
+        let mut idx = 0;
+        if idx + 1 < rbytes.len() && ['<', '>', '=', '^'].contains(&rbytes[idx + 1]) {
+            fill = rbytes[idx];
+            align = rbytes[idx + 1];
+            idx += 2;
+        } else if idx < rbytes.len() && ['<', '>', '=', '^'].contains(&rbytes[idx]) {
+            align = rbytes[idx];
+            idx += 1;
+        }
+        // sign flag
+        if idx < rbytes.len() && (rbytes[idx] == '+' || rbytes[idx] == '-' || rbytes[idx] == ' ') {
+            sign_flag = rbytes[idx];
+            idx += 1;
+        }
+        // '0' means zero-pad after sign
+        if idx < rbytes.len() && rbytes[idx] == '0' {
+            fill = '0';
+            idx += 1;
+        }
+        if idx < rbytes.len() && rbytes[idx] == '#' {
+            idx += 1;
+        }
+        // width (digits)
+        let mut wdigits = String::new();
+        while idx < rbytes.len() && rbytes[idx].is_ascii_digit() {
+            wdigits.push(rbytes[idx]);
+            idx += 1;
+        }
+        if !wdigits.is_empty() {
+            width = wdigits.parse().unwrap_or(0);
+        }
+        // grouping (after width, per format grammar)
+        if idx < rbytes.len() && (rbytes[idx] == ',' || rbytes[idx] == '_') {
+            grouping = Some(rbytes[idx]);
+            idx += 1;
+        }
+        // an optional second grouping char (e.g. `,._e` splits precision
+        // separator; ignore the trailing `_`/`,` here)
+        if idx < rbytes.len() && (rbytes[idx] == ',' || rbytes[idx] == '_') {
+            idx += 1;
+        }
+        // validate remaining
+        for c in rbytes[idx..].iter() {
+            if !c.is_ascii_digit() {
                 return Err(format!("invalid format string: '{c}'"));
             }
         }
     }
-    let ty = type_char.unwrap_or('n'); // default is 'n' like str for Decimal? Actually default is 'g' for floats, but Decimal default is its str.
-    // For Decimal, empty format returns str(d) (already handled by caller for empty spec).
-    let _ = ty;
+    let ty = type_char.unwrap_or('n');
+    // Sign prefix from spec's sign flag + value sign.
+    // `+`: always show sign; `-`: only negatives; ` `: space for positive.
+    let force_sign = sign_flag == '+';
+    let space_sign = sign_flag == ' ';
+    // Also strip the sign flag from `rest` so it isn't misread below.
+    if d.is_special() {
+        let payload = if d.coeff == BigInt::from(0) {
+            String::new()
+        } else {
+            d.coeff_str()
+        };
+        let mut s = match d.special {
+            Special::Infinity => "Infinity".to_string(),
+            Special::NaN => format!("NaN{payload}"),
+            Special::SignalingNaN => format!("sNaN{payload}"),
+            Special::Finite => unreachable!(),
+        };
+        if d.sign {
+            s.insert(0, '-');
+        } else if force_sign {
+            s.insert(0, '+');
+        } else if space_sign {
+            s.insert(0, ' ');
+        }
+        // Apply width padding (NaN/Inf subject to fill/align).
+        if s.chars().count() < width {
+            s = apply_padding(&s, width, fill, align, d.sign, space_sign);
+        }
+        return Ok(s);
+    }
+
+    let sign_str = if d.sign {
+        "-"
+    } else if force_sign {
+        "+"
+    } else if space_sign {
+        " "
+    } else {
+        ""
+    };
 
     let prec = precision.unwrap_or(0);
     let _ = ctx;
-
-    let sign_str = if d.sign { "-" } else { "" };
-    let ty = type_char.unwrap_or('f'); // default like CPython uses for Decimal
 
     // Special handling for %: multiply by 100 (exp += 2, preserving the
     // value's exponent representation for trailing-zero semantics).
@@ -1002,10 +1067,21 @@ pub(crate) fn format_decimal(
         d.clone()
     };
 
+    let no_type = type_char.is_none();
     let value_str = match ty.to_ascii_lowercase() {
         'f' => format_fixed(&dec, precision, vm),
         'e' => format_sci(&dec, precision, ty == 'E', vm),
-        'g' | 'n' => format_general(&dec, precision, ty == 'G' || ty == 'n', vm),
+        'g' | 'n' => {
+            if no_type && precision.is_none() {
+                // No type char: Decimal keeps its exact str representation
+                // (trailing zeros preserved), like format(d, '') == str(d).
+                // Strip the sign (sign_str is applied separately below).
+                let s = dec.to_string();
+                s.trim_start_matches(['-', '+']).to_string()
+            } else {
+                format_general(&dec, precision, ty == 'G' || ty == 'n', vm)
+            }
+        }
         '%' => {
             // Multiply by 100 was done above; format as f with given
             // precision (or exact value when no precision given).
@@ -1015,10 +1091,112 @@ pub(crate) fn format_decimal(
         _ => dec.to_string(),
     };
 
-    if d.sign {
-        Ok(format!("{sign_str}{value_str}"))
+    let mut signed = format!("{sign_str}{value_str}");
+    if grouping.is_some() && !d.is_special() {
+        // Group first, then handle zero-padding so leading zeros are not
+        // drawn into the grouping (e.g. '+09,' of 123456 -> '+0,123,456').
+        let sign_len = if signed.starts_with(['+', '-', ' ']) { 1 } else { 0 };
+        let sign = &signed[..sign_len];
+        let body = &signed[sign_len..];
+        let (int_part, rest) = match body.find(['.', 'e', 'E', '%']) {
+            Some(i) => (&body[..i], &body[i..]),
+            None => (body, ""),
+        };
+        let cur_digits = int_part.chars().count();
+        if fill == '0' && width > signed.chars().count() {
+            // Only pad when the negatively-grouped total still falls short
+            // (fractional parts already widen the string; e.g. '08,' of
+            // 1234.56 -> '1,234.56' with no zero pad).
+            let cur_grouped = cur_digits.saturating_sub(1) / 3;
+            let cur_total = cur_digits + cur_grouped + rest.chars().count();
+            let target = width - sign_len;
+            if cur_total < target {
+                let mut dcount = cur_digits;
+                while dcount + (dcount.saturating_sub(1)) / 3 + rest.chars().count() < target {
+                    dcount += 1;
+                }
+                let pad = dcount - cur_digits;
+                let padded_digits = format!("{}{}", "0".repeat(pad), int_part);
+                signed = format!("{sign}{}{rest}", apply_grouping(&padded_digits, grouping.unwrap()));
+            } else {
+                signed = format!("{sign}{}{rest}", apply_grouping(int_part, grouping.unwrap()));
+            }
+            Ok(signed)
+        } else {
+            let grouped = apply_grouping(body, grouping.unwrap());
+            if width > (sign_len + grouped.chars().count()) {
+                let pad = width - sign_len - grouped.chars().count();
+                signed = match align {
+                    '<' => format!("{sign}{grouped}{}", " ".repeat(pad)),
+                    '^' => {
+                        let left = pad / 2;
+                        format!("{}{}{}{}", " ".repeat(left), sign, grouped, " ".repeat(pad - left))
+                    }
+                    _ => format!("{}{}{}", " ".repeat(pad), sign, grouped),
+                };
+            } else {
+                signed = format!("{sign}{grouped}");
+            }
+            Ok(signed)
+        }
     } else {
-        Ok(value_str)
+        // Apply width padding with fill/alignment.
+        if width > signed.chars().count() {
+            signed = apply_padding(&signed, width, fill, align, d.sign, space_sign);
+        }
+        Ok(signed)
+    }
+}
+
+fn apply_grouping(s: &str, sep: char) -> String {
+    // Group the integer part (before the decimal point / e) in 3s.
+    let (int_part, rest) = match s.find(['.', 'e', 'E', '%']) {
+        Some(i) => (&s[..i], &s[i..]),
+        None => (s, ""),
+    };
+    // Strip leading sign for grouping count.
+    let has_sign = int_part.starts_with(['+', '-', ' ']);
+    let digits = if has_sign { &int_part[1..] } else { int_part };
+    let mut grouped = String::new();
+    let dl = digits.len();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (dl - i) % 3 == 0 {
+            grouped.push(sep);
+        }
+        grouped.push(c);
+    }
+    let mut out = String::new();
+    if has_sign {
+        out.push(int_part.chars().next().unwrap());
+    }
+    out.push_str(&grouped);
+    out.push_str(rest);
+    out
+}
+
+fn apply_padding(s: &str, width: usize, fill: char, align: char, neg: bool, space: bool) -> String {
+    let len = s.chars().count();
+    let pad = width - len;
+    if align == '=' {
+        // '=' align: pad between the sign and the number.
+        let prefix = if s.starts_with(['+', '-', ' ']) { 1 } else { 0 };
+        let (head, tail) = s.split_at(prefix);
+        format!("{}{}{}", head, fill.to_string().repeat(pad), tail)
+    } else if fill == '0' {
+        // zero-pad: insert zeros right after the sign.
+        let prefix = if s.starts_with(['+', '-', ' ']) { 1 } else { 0 };
+        let (head, tail) = s.split_at(prefix);
+        format!("{}{}{}", head, "0".repeat(pad), tail)
+    } else {
+        match align {
+            '<' => format!("{}{}", s, fill.to_string().repeat(pad)),
+            '^' => {
+                let left = pad / 2;
+                let right = pad - left;
+                format!("{}{}{}", fill.to_string().repeat(left), s, fill.to_string().repeat(right))
+            }
+            _ => format!("{}{}", fill.to_string().repeat(pad), s),
+        }
     }
 }
 
