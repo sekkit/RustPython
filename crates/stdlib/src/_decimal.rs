@@ -173,6 +173,36 @@ mod _decimal {
         }
     }
 
+    /// Digit-wise logical operation on decimal coefficients. The result keeps
+    /// the LOW `prec` digits (CPython: result length = context precision).
+    fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
+    where
+        F: Fn(u32, u32) -> u32,
+    {
+        let mut sa = a.to_string();
+        let mut sb = b.to_string();
+        let width = sa.len().max(sb.len()).max(1);
+        while sa.len() < width {
+            sa.insert(0, '0');
+        }
+        while sb.len() < width {
+            sb.insert(0, '0');
+        }
+        let mut out = String::new();
+        for (ca, cb) in sa.chars().zip(sb.chars()) {
+            let da = ca.to_digit(10).unwrap_or(0);
+            let db = cb.to_digit(10).unwrap_or(0);
+            out.push_str(&f(da, db).to_string());
+        }
+        // Keep only the low `prec` digits (rightmost), trim leading zeros.
+        let keep = prec.max(0) as usize;
+        if out.len() > keep && keep > 0 {
+            out = out[out.len() - keep..].to_string();
+        }
+        out.trim_start_matches('0');
+        out.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(0))
+    }
+
     #[pyattr(name = "Decimal")]
     #[pyclass(name = "Decimal", module = "decimal", traverse)]
     #[derive(Debug, PyPayload)]
@@ -360,17 +390,18 @@ mod _decimal {
             true
         }
         #[pymethod]
-        fn is_normal(&self, vm: &VirtualMachine) -> PyResult<bool> {
-            let ctx = current_ctx(vm)?;
+        fn is_normal(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<bool> {
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let etiny = ctx.emin - (ctx.prec - 1);
             Ok(!self.d.is_zero()
                 && self.d.special == Special::Finite
-                && self.d.exp >= ctx.emin
-                && self.d.exp <= ctx.emax)
+                && self.d.exp >= etiny)
         }
         #[pymethod]
-        fn is_subnormal(&self, vm: &VirtualMachine) -> PyResult<bool> {
-            let ctx = current_ctx(vm)?;
-            Ok(!self.d.is_zero() && self.d.special == Special::Finite && self.d.exp < ctx.emin)
+        fn is_subnormal(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<bool> {
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let etiny = ctx.emin - (ctx.prec - 1);
+            Ok(!self.d.is_zero() && self.d.special == Special::Finite && self.d.exp < etiny)
         }
 
         #[pymethod]
@@ -405,7 +436,8 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn number_class(&self, vm: &VirtualMachine) -> PyResult<String> {
+        fn number_class(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<String> {
+            let ctx = ctx_from_funcargs(&args, vm)?;
             let sign = if self.d.sign { "-" } else { "+" };
             match self.d.special {
                 Special::NaN => return Ok(format!("{sign}NaN")),
@@ -416,7 +448,6 @@ mod _decimal {
             if self.d.is_zero() {
                 return Ok(format!("{sign}Zero"));
             }
-            let ctx = current_ctx(vm)?;
             let etiny = ctx.emin - (ctx.prec - 1);
             if self.d.exp < etiny {
                 Ok(format!("{sign}Subnormal"))
@@ -705,8 +736,8 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn logb(&self, vm: &VirtualMachine) -> PyResult {
-            let ctx = current_ctx(vm)?;
+        fn logb(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
             if self.d.is_special() {
                 if self.d.special == Special::Infinity {
                     return Ok(PyDecimal::to_py(vm, self.d.clone()));
@@ -981,8 +1012,141 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn to_eng_string(&self) -> String {
-            self.d.to_string()
+        fn to_eng_string(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<String> {
+            let _ = ctx_from_funcargs(&args, vm)?;
+            Ok(self.d.to_string())
+        }
+
+        // Logical operations (operate on the decimal digit strings; result
+        // keeps the operand's precision width).
+        #[pymethod]
+        fn logical_and(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let other = args.args.get(0).cloned()
+                .ok_or_else(|| vm.new_type_error("logical_and requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let b = to_dec(&other, vm)?;
+            if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
+                return Err(new_decimal_error(vm, "InvalidOperation", "logical_and requires non-negative integers"));
+            }
+            let coeff = logical_digit_op(&self.d.coeff, &b.coeff, ctx.prec, |x, y| x & y);
+            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                sign: false, coeff, exp: 0, special: Special::Finite,
+            }))
+        }
+
+        #[pymethod]
+        fn logical_or(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let other = args.args.get(0).cloned()
+                .ok_or_else(|| vm.new_type_error("logical_or requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let b = to_dec(&other, vm)?;
+            if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
+                return Err(new_decimal_error(vm, "InvalidOperation", "logical_or requires non-negative integers"));
+            }
+            let coeff = logical_digit_op(&self.d.coeff, &b.coeff, ctx.prec, |x, y| x | y);
+            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                sign: false, coeff, exp: 0, special: Special::Finite,
+            }))
+        }
+
+        #[pymethod]
+        fn logical_xor(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let other = args.args.get(0).cloned()
+                .ok_or_else(|| vm.new_type_error("logical_xor requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let b = to_dec(&other, vm)?;
+            if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
+                return Err(new_decimal_error(vm, "InvalidOperation", "logical_xor requires non-negative integers"));
+            }
+            let coeff = logical_digit_op(&self.d.coeff, &b.coeff, ctx.prec, |x, y| x ^ y);
+            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                sign: false, coeff, exp: 0, special: Special::Finite,
+            }))
+        }
+
+        #[pymethod]
+        fn logical_invert(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            if self.d.exp != 0 || self.d.sign {
+                return Err(new_decimal_error(vm, "InvalidOperation", "logical_invert requires non-negative integer"));
+            }
+            // Invert within the context precision width (decimal digits).
+            let coeff_str = self.d.coeff.to_string();
+            let width = ctx.prec.max(coeff_str.len() as isize) as usize;
+            let ones: String = "1".repeat(width);
+            // Build result digit-wise: result digit = operator applied to operand
+            // digits of equal length; 0-pad the shorter operand to width.
+            let mut a = coeff_str;
+            while a.len() < width { a.insert(0, '0'); }
+            let b = &ones;
+            let mut out = String::new();
+            for (ca, cb) in a.chars().zip(b.chars()) {
+                let da = ca.to_digit(10).unwrap_or(0);
+                let db = cb.to_digit(10).unwrap_or(0);
+                let r = !(da != 0) as u32;  // bitwise NOT of da (only 0/1)
+                out.push_str(&r.to_string());
+                let _ = db;
+            }
+            let coeff = out.parse::<BigInt>().unwrap_or(BigInt::from(0));
+            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                sign: false, coeff, exp: 0, special: Special::Finite,
+            }))
+        }
+
+        #[pymethod]
+        fn rotate(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let n_argv = args.args.get(0).cloned()
+                .ok_or_else(|| vm.new_type_error("rotate requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let n_obj = to_dec(&n_argv, vm)?;
+            if self.d.exp < 0 || n_obj.exp < 0 {
+                return Err(new_decimal_error(vm, "InvalidOperation", "rotate requires non-negative integers"));
+            }
+            let n: i64 = (&n_obj.coeff * BigInt::from(10).pow(n_obj.exp.max(0) as u32)).to_string().parse().unwrap_or(0);
+            let digits = self.d.coeff.to_string();
+            let len = digits.len();
+            if len <= 1 {
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            // Normalize n into [0, len).
+            let nshift = ((n % len as i64) + len as i64) % len as i64;
+            let cut = (len as i64 - nshift) as usize;
+            let rotated = format!("{}{}", &digits[cut..], &digits[..cut]);
+            let coeff = rotated.parse::<BigInt>().unwrap_or(BigInt::from(0));
+            let result = _decimal_core::Dec { sign: self.d.sign, coeff, exp: self.d.exp, special: self.d.special };
+            let r = _decimal_core::apply_context(vm, &ctx, result)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn shift(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let n_argv = args.args.get(0).cloned()
+                .ok_or_else(|| vm.new_type_error("shift requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let n_obj = to_dec(&n_argv, vm)?;
+            if self.d.exp < 0 || n_obj.exp < 0 {
+                return Err(new_decimal_error(vm, "InvalidOperation", "shift requires non-negative integers"));
+            }
+            let n: i64 = (&n_obj.coeff * BigInt::from(10).pow(n_obj.exp.max(0) as u32)).to_string().parse().unwrap_or(0);
+            // shift digits (positive = left, negative = right); keeps same exp.
+            let mut digits = self.d.coeff.to_string();
+            if n > 0 {
+                // shift left: move more significant, pad zeros; result may
+                // grow but apply_context trims.
+                let shift_n = n as usize;
+                digits = format!("{}{}", &digits, "0".repeat(shift_n));
+            } else if n < 0 {
+                let drop = (-n) as usize;
+                if drop >= digits.len() {
+                    digits = "0".to_string();
+                } else {
+                    digits = digits[..digits.len() - drop].to_string();
+                }
+            }
+            let coeff = digits.parse::<BigInt>().unwrap_or(BigInt::from(0));
+            let result = _decimal_core::Dec { sign: self.d.sign, coeff, exp: self.d.exp, special: self.d.special };
+            let r = _decimal_core::apply_context(vm, &ctx, result)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
