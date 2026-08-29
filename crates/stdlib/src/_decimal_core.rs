@@ -786,6 +786,68 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
     Ok(result)
 }
 
+/// Round to integer (exp 0) using the context rounding mode, WITHOUT the
+/// Emax/Emin range check (CPython's Decimal.to_integral* returns the rounded
+/// integer even if its adjusted exponent exceeds Emax).
+pub(crate) fn to_integral(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec> {
+    if d.is_special() {
+        if d.special == Special::Infinity || d.special == Special::NaN || d.special == Special::SignalingNaN {
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "to_integral of special"));
+            }
+            return Ok(Dec { sign: d.sign, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+        }
+        return Ok(d.clone());
+    }
+    quantize_inner(vm, ctx, d, 0)
+}
+
+/// quantize to `exp` using context rounding — shared core without the
+/// Emax/Emin InvalidOperation check (used by to_integral).
+fn quantize_inner(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> PyResult<Dec> {
+    let shift = exp - d.exp;
+    let mut coeff = d.coeff.clone();
+    let mut inexact = false;
+    if shift > 0 {
+        let pow = BigInt::from(10).pow(shift as u32);
+        let (q, r) = (&coeff / &pow, &coeff % &pow);
+        let two = BigInt::from(2);
+        let round_up = match ctx.rounding {
+            Rounding::Down => false,
+            Rounding::Up => true,
+            Rounding::Ceiling => !d.sign,
+            Rounding::Floor => d.sign,
+            Rounding::HalfDown => (&r * &two) > pow,
+            Rounding::HalfUp => (&r * &two) >= pow,
+            Rounding::HalfEven => {
+                if (&r * &two) > pow { true }
+                else if (&r * &two) < pow { false }
+                else { (&q % &two) == BigInt::from(1) }
+            }
+            Rounding::Half05Up => {
+                if (&r * &two) >= pow { true }
+                else { (&q % BigInt::from(10)) == BigInt::from(0) || (&q % BigInt::from(10)) == BigInt::from(5) }
+            }
+            Rounding::Half01Up => {
+                if (&r * &two) >= pow { true }
+                else { (&q % BigInt::from(10)) == BigInt::from(0) || (&q % BigInt::from(10)) == BigInt::from(1) }
+            }
+        };
+        inexact = r != BigInt::from(0);
+        coeff = if round_up { q + BigInt::from(1) } else { q };
+    } else if shift < 0 {
+        coeff *= BigInt::from(10).pow((-shift) as u32);
+    }
+    let result = Dec { sign: d.sign, coeff, exp, special: Special::Finite };
+    // to_integral keeps all digits (does not apply context precision).
+    if inexact {
+        ctx.set_flag(vm, "Inexact")?;
+        ctx.set_flag(vm, "Rounded")?;
+    }
+    Ok(result)
+}
+
 /// Integer exponentiation with context rounding.
 pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyResult<Dec> {
     if b.special != Special::Finite {

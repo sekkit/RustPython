@@ -144,6 +144,35 @@ mod _decimal {
         Err(vm.new_type_error(format!("conversion from {} to Decimal is not supported", obj.class().name())))
     }
 
+    /// Resolve the context for a Decimal method call: an explicit
+    /// `context=` keyword/arg overrides the current context (CPython).
+    fn ctx_from_opt(
+        context: OptionalArg<PyObjectRef>,
+        vm: &VirtualMachine,
+    ) -> PyResult<Ctx> {
+        if let Some(c) = context.into_option() {
+            let pc = c
+                .downcast_ref::<PyContext>()
+                .ok_or_else(|| vm.new_type_error("context must be a Context object".to_string()))?;
+            Ok(pc.ctx())
+        } else {
+            current_ctx(vm)
+        }
+    }
+
+    /// Resolve the context from FuncArgs (accepts a `context=` keyword or a
+    /// positional Context argument).
+    fn ctx_from_funcargs(args: &FuncArgs, vm: &VirtualMachine) -> PyResult<Ctx> {
+        if let Some(c) = args.get_optional_kwarg("context") {
+            let pc = c
+                .downcast_ref::<PyContext>()
+                .ok_or_else(|| vm.new_type_error("context must be a Context object".to_string()))?;
+            Ok(pc.ctx())
+        } else {
+            current_ctx(vm)
+        }
+    }
+
     #[pyattr(name = "Decimal")]
     #[pyclass(name = "Decimal", module = "decimal", traverse)]
     #[derive(Debug, PyPayload)]
@@ -399,17 +428,20 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn normalize(&self) -> PyDecimal {
+        fn normalize(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
             let mut d = self.d.clone();
             if d.is_zero() {
                 d.exp = 0;
-                return PyDecimal { d };
+                let r = _decimal_core::apply_context(vm, &ctx, d)?;
+                return Ok(PyDecimal::to_py(vm, r));
             }
             while d.coeff_digits() > 1 && (&d.coeff % BigInt::from(10)) == BigInt::from(0) {
                 d.coeff /= BigInt::from(10);
                 d.exp += 1;
             }
-            PyDecimal { d }
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
@@ -419,9 +451,99 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn compare(&self, other: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        fn compare(
+            &self,
+            args: FuncArgs,
+            vm: &VirtualMachine,
+        ) -> PyResult {
+            let other = args
+                .get_optional_kwarg("other")
+                .or_else(|| args.args.get(0).cloned())
+                .ok_or_else(|| vm.new_type_error("compare requires an argument".to_string()))?;
             let b = to_dec(&other, vm)?;
+            let _ = ctx_from_funcargs(&args, vm)?; // accept context arg
             Ok(vm.ctx.new_int(BigInt::from(dec_cmp(&self.d, &b))).into())
+        }
+
+        #[pymethod]
+        fn next_minus(
+            &self,
+            args: FuncArgs,
+            vm: &VirtualMachine,
+        ) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            Ok(PyDecimal::to_py(vm, self.next_step(vm, &ctx, -1)?))
+        }
+
+        #[pymethod]
+        fn next_plus(
+            &self,
+            args: FuncArgs,
+            vm: &VirtualMachine,
+        ) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            Ok(PyDecimal::to_py(vm, self.next_step(vm, &ctx, 1)?))
+        }
+
+        fn next_step(
+            &self,
+            vm: &VirtualMachine,
+            ctx: &Ctx,
+            dir: i8,
+        ) -> PyResult<Dec> {
+            // next_plus/next_minus: the nearest representable value in the
+            // context's precision just above/below this one.
+            let d = &self.d;
+            if d.is_zero() {
+                // 0 -> +/- 0.1 (smallest representable 1-digit increment)
+                return Ok(Dec {
+                    sign: dir < 0,
+                    coeff: BigInt::from(1),
+                    exp: -1,
+                    special: Special::Finite,
+                });
+            }
+            if d.is_special() {
+                return Ok(d.clone());
+            }
+            // step = 10^expIncrement.
+            let step = BigInt::from(10).pow(d.exp.max(0) as u32);
+            // next_minus moves toward -Inf; next_plus toward +Inf. The sign
+            // is always preserved. next_minus increases magnitude for
+            // negatives (more negative), decreases for positives; next_plus
+            // does the opposite.
+            let want_negative = d.sign;
+            let bigger_mag = (d.sign && dir < 0) || (!d.sign && dir > 0);
+            let (coeff, n_exp) = if bigger_mag {
+                (&d.coeff + &step, d.exp)
+            } else if &d.coeff <= &step {
+                (BigInt::from(9), d.exp - 1)
+            } else {
+                (&d.coeff - &step, d.exp)
+            };
+            let result = Dec { sign: want_negative, coeff, exp: n_exp, special: Special::Finite };
+            let r = _decimal_core::apply_context(vm, ctx, result)?;
+            Ok(r)
+        }
+
+        #[pymethod]
+        fn next_toward(
+            &self,
+            args: FuncArgs,
+            vm: &VirtualMachine,
+        ) -> PyResult {
+            let other = args
+                .args
+                .get(0)
+                .cloned()
+                .ok_or_else(|| vm.new_type_error("next_toward requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let b = to_dec(&other, vm)?;
+            let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
+                sign: b.sign, coeff: self.d.coeff.clone(), exp: self.d.exp,
+                special: self.d.special,
+            })?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
@@ -445,8 +567,8 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn sqrt(&self, vm: &VirtualMachine) -> PyResult {
-            let ctx = current_ctx(vm)?;
+        fn sqrt(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
             if self.d.is_special() || self.d.is_zero() {
                 return Ok(PyDecimal::to_py(vm, self.d.clone()));
             }
@@ -467,8 +589,8 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn exp(&self, vm: &VirtualMachine) -> PyResult {
-            let ctx = current_ctx(vm)?;
+        fn exp(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
             if self.d.is_special() {
                 if self.d.special == Special::Infinity {
                     let r = _decimal_core::apply_context(vm, &ctx, self.d.clone())?;
@@ -490,9 +612,15 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn ln(&self, vm: &VirtualMachine) -> PyResult {
-            let ctx = current_ctx(vm)?;
-            if self.d.is_special() || self.d.is_zero() || self.d.sign {
+        fn ln(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            // CPython: ln(0) = -Infinity; ln(negative) -> InvalidOperation.
+            if self.d.is_zero() {
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: true, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
+                }));
+            }
+            if self.d.is_special() || self.d.sign {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "ln of non-positive"));
@@ -509,9 +637,15 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn log10(&self, vm: &VirtualMachine) -> PyResult {
-            let ctx = current_ctx(vm)?;
-            if self.d.is_special() || self.d.is_zero() || self.d.sign {
+        fn log10(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            // CPython: log10(0) = -Infinity; log10(negative) -> InvalidOperation.
+            if self.d.is_zero() {
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: true, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
+                }));
+            }
+            if self.d.is_special() || self.d.sign {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "log10 of non-positive"));
@@ -759,30 +893,42 @@ mod _decimal {
         #[pymethod]
         fn to_integral(
             &self,
-            rounding: OptionalArg<PyStrRef>,
+            args: FuncArgs,
             vm: &VirtualMachine,
         ) -> PyResult {
-            let ctx = current_ctx(vm)?;
+            let rounding_str: Option<String> = args
+                .get_optional_kwarg("rounding")
+                .or_else(|| args.args.get(0).cloned())
+                .map(|v| match v.downcast_ref::<PyStr>() {
+                    Some(s) => Ok(s.as_wtf8().to_string()),
+                    None => Err(vm.new_type_error("rounding must be a string".to_string())),
+                })
+                .transpose()?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
             let mut ctx2 = ctx;
-            if let Some(r) = rounding.into_option() {
-                ctx2.rounding = Rounding::from_str(&r.as_wtf8().to_string())
+            if let Some(r) = rounding_str {
+                ctx2.rounding = Rounding::from_str(&r)
                     .ok_or_else(|| vm.new_value_error("invalid rounding mode".to_string()))?;
             }
-            let r = _decimal_core::quantize(vm, &ctx2, &self.d, 0)?;
+            let r = _decimal_core::to_integral(vm, &ctx2, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
-        fn to_integral_value(&self, vm: &VirtualMachine) -> PyResult {
-            let ctx = current_ctx(vm)?;
-            let r = _decimal_core::quantize(vm, &ctx, &self.d, 0)?;
+        fn to_integral_value(
+            &self,
+            args: FuncArgs,
+            vm: &VirtualMachine,
+        ) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let r = _decimal_core::to_integral(vm, &ctx, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
-        fn to_integral_exact(&self, vm: &VirtualMachine) -> PyResult {
-            let ctx = current_ctx(vm)?;
-            let r = _decimal_core::quantize(vm, &ctx, &self.d, 0)?;
+        fn to_integral_exact(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let r = _decimal_core::to_integral(vm, &ctx, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -848,10 +994,9 @@ mod _decimal {
             let value = args.get_optional_kwarg("value")
                 .or_else(|| args.args.get(0).cloned())
                 .unwrap_or_else(|| vm.ctx.new_int(0).into());
-            // context keyword is accepted but we use the current context
-            // for flag/precision application (CPython's context= overrides
-            // the current context for construction).
-            let _context_kw = args.get_optional_kwarg("context");
+            // context keyword overrides the current context (CPython uses it for
+            // flag/precision application during construction).
+            let context_kw = args.get_optional_kwarg("context");
             if let Some(tuple) = value.downcast_ref::<PyTuple>() {
                 let d = Self::from_tuple(tuple.as_slice(), vm)?;
                 return Ok(PyDecimal { d });
@@ -861,7 +1006,15 @@ mod _decimal {
             // But TypeError (e.g. Decimal(None)) must still propagate.
             // Decimal(float) is an implicit float conversion: it sets the
             // FloatOperation flag (explicit Decimal.from_float does not).
-            let mut ctx = current_ctx(vm)?;
+            let mut ctx = match &context_kw {
+                Some(c) => {
+                    let pc = c.downcast_ref::<PyContext>().ok_or_else(|| {
+                        vm.new_type_error("context must be a Context object".to_string())
+                    })?;
+                    pc.ctx()
+                }
+                None => current_ctx(vm)?,
+            };
             if value.downcast_ref::<PyFloat>().is_some() {
                 ctx.set_flag(vm, "FloatOperation")?;
                 if ctx.trap(vm, "FloatOperation")? {
@@ -2146,7 +2299,13 @@ mod _decimal {
         fn ln(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
-            if xd.is_special() || xd.is_zero() || xd.sign {
+            // CPython: ln(0) = -Infinity; ln(negative) -> InvalidOperation.
+            if xd.is_zero() {
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: true, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
+                }));
+            }
+            if xd.is_special() || xd.sign {
                 let ctx = self.ctx();
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
@@ -2167,7 +2326,13 @@ mod _decimal {
         fn log10(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
-            if xd.is_special() || xd.is_zero() || xd.sign {
+            // CPython: log10(0) = -Infinity; log10(negative) -> InvalidOperation.
+            if xd.is_zero() {
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: true, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
+                }));
+            }
+            if xd.is_special() || xd.sign {
                 let ctx = self.ctx();
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
