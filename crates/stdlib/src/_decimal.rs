@@ -12,7 +12,7 @@ use rustpython_common::lock::PyMutex;
 
 use crate::vm::{
     AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
-    builtins::{PyDict, PyDictRef, PyFloat, PyInt, PyModule, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType, PyTypeRef},
+    builtins::{PyComplex, PyDict, PyDictRef, PyFloat, PyInt, PyModule, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType, PyTypeRef},
     convert::ToPyResult,
     function::{FuncArgs, OptionalArg, PyComparisonValue},
     protocol::PyNumberMethods,
@@ -967,12 +967,25 @@ mod _decimal {
         }
 
         #[pyclassmethod]
-        fn from_float(cls: PyTypeRef, number: f64, vm: &VirtualMachine) -> PyResult {
+        fn from_float(cls: PyTypeRef, number: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             // Exact binary expansion of the float (like CPython's
-            // Decimal.from_float). The _decimal constructor ignores context.
-            let d = _decimal_core::dec_from_float(number);
-            let _ = cls;
-            Ok(PyDecimal::to_py(vm, d))
+            // Decimal.from_float). Integers are converted exactly; the
+            // _decimal constructor ignores context.
+            let d = if let Some(f) = number.downcast_ref::<PyFloat>() {
+                _decimal_core::dec_from_float(f.to_f64())
+            } else if let Some(i) = number.downcast_ref::<PyInt>() {
+                _decimal_core::dec_from_int(vm, i)
+            } else {
+                return Err(vm.new_type_error(
+                    "argument must be an int or float".to_string(),
+                ));
+            };
+            // Build through the (possibly subclassed) cls so MyDecimal.from_float
+            // returns a MyDecimal instance.
+            let s: PyObjectRef = vm.ctx.new_str(d.to_string()).into();
+            let cls_obj: PyObjectRef = cls.to_owned().into();
+            let inst = vm.invoke(&cls_obj, (s,))?;
+            Ok(inst)
         }
 
         #[pymethod]
@@ -1390,12 +1403,15 @@ mod _decimal {
             op: PyComparisonOp,
             vm: &VirtualMachine,
         ) -> PyResult<PyComparisonValue> {
-            // Comparing Decimal with float is an implicit float conversion:
-            // sets the FloatOperation flag (raises if trapped).
+            // Comparing Decimal with float is an implicit float conversion.
+            // CPython: equality (==/!=) sets the flag but never raises (so
+            // sets/dicts work); ordering (< <= > >=) raises if trapped.
             if other.downcast_ref::<PyFloat>().is_some() {
                 let ctx = current_ctx(vm)?;
                 ctx.set_flag(vm, "FloatOperation")?;
-                if ctx.trap(vm, "FloatOperation")? {
+                if matches!(op, PyComparisonOp::Lt | PyComparisonOp::Le | PyComparisonOp::Gt | PyComparisonOp::Ge)
+                    && ctx.trap(vm, "FloatOperation")?
+                {
                     return Err(new_decimal_error(
                         vm,
                         "FloatOperation",
@@ -1405,7 +1421,167 @@ mod _decimal {
             }
             let b = match to_dec(other, vm) {
                 Ok(b) => b,
-                Err(_) => return Ok(PyComparisonValue::NotImplemented),
+                Err(_) => {
+                    // Fraction comparison: exact via numerator/denominator.
+                    // self (Decimal) vs other (Fraction) — compare the exact
+                    // rational self.d against num/den.
+                    // Specials first: Infinity/NaN never convert to Dec here
+                    // (Fraction is not a Decimal), but compare naturally.
+                    let is_special = zelf.d.special != Special::Finite;
+                    if is_special {
+                        if let (Ok(num), Ok(den)) = (
+                            other.get_attr("numerator", vm),
+                            other.get_attr("denominator", vm),
+                        ) {
+                            let num_is_int = num.downcast_ref::<PyInt>().is_some();
+                            let den_is_int = den.downcast_ref::<PyInt>().is_some();
+                            if num_is_int && den_is_int {
+                                if matches!(
+                                    zelf.d.special,
+                                    Special::NaN | Special::SignalingNaN
+                                ) {
+                                    // NaN comparisons are always false except !=.
+                                    let result = matches!(op, PyComparisonOp::Ne);
+                                    return Ok(PyComparisonValue::Implemented(result));
+                                }
+                                // Infinity ±: always greater/less than any
+                                // finite rational.
+                                let self_pos = !zelf.d.sign;
+                                let result = match op {
+                                    PyComparisonOp::Lt => !self_pos,
+                                    PyComparisonOp::Le => !self_pos,
+                                    PyComparisonOp::Gt => self_pos,
+                                    PyComparisonOp::Ge => self_pos,
+                                    PyComparisonOp::Eq => false,
+                                    PyComparisonOp::Ne => true,
+                                };
+                                return Ok(PyComparisonValue::Implemented(result));
+                            }
+                        }
+                    }
+                    if let (Ok(num), Ok(den)) = (
+                        other.get_attr("numerator", vm),
+                        other.get_attr("denominator", vm),
+                    ) {
+                        let num: BigInt = num
+                            .downcast_ref::<PyInt>()
+                            .map(|i| i.as_bigint().clone())
+                            .unwrap_or_default();
+                        let den: BigInt = den
+                            .downcast_ref::<PyInt>()
+                            .map(|i| i.as_bigint().clone())
+                            .unwrap_or_default();
+                        if den != BigInt::from(0) {
+                            // Compare exact rationals:
+                            //   self = s * c * 10^e  vs  num/den
+                            // Guard: for astronomically large |e|, materializing
+                            // 10^|e| would be unbounded, so the comparison is
+                            // decided by sign/zero dominance instead.
+                            let s = if zelf.d.sign { -1i8 } else { 1i8 };
+                            // Fractions normalize denominator positive, so the
+                            // sign of num determines the fraction's sign.
+                            let frac_pos = num >= BigInt::from(0);
+                            if zelf.d.exp.abs() > 1_000_000 {
+                                let self_zero = zelf.d.coeff == BigInt::from(0);
+                                let self_pos = s > 0;
+                                // Fraction is zero (num==0): compare self against 0.
+                                if num == BigInt::from(0) {
+                                    let result = match op {
+                                        PyComparisonOp::Eq => self_zero,
+                                        PyComparisonOp::Ne => !self_zero,
+                                        PyComparisonOp::Lt => !self_pos && !self_zero, // self < 0 iff negative
+                                        PyComparisonOp::Le => !self_pos || self_zero,
+                                        PyComparisonOp::Gt => self_pos && !self_zero, // self > 0 iff positive
+                                        PyComparisonOp::Ge => self_pos || self_zero,
+                                    };
+                                    return Ok(PyComparisonValue::Implemented(result));
+                                }
+                                // Fraction is a finite nonzero rational.
+                                // |self| is either ~0 (e << 0) or unbounded
+                                // (e >> 0), so magnitude dominance decides:
+                                //   tiny self: |self| < |frac| -> Lt iff signs
+                                //     put self left: Lt = frac_pos (see cases)
+                                //   huge self: |self| > |frac| -> Lt iff self<0
+                                let result = if self_zero {
+                                    // self == 0 vs nonzero frac
+                                    match op {
+                                        PyComparisonOp::Eq => false,
+                                        PyComparisonOp::Ne => true,
+                                        PyComparisonOp::Lt => frac_pos, // 0 < positive
+                                        PyComparisonOp::Le => frac_pos,
+                                        PyComparisonOp::Gt => !frac_pos, // 0 > negative
+                                        PyComparisonOp::Ge => !frac_pos,
+                                    }
+                                } else if zelf.d.exp < 0 {
+                                    // self tiny: |self| < |frac|, so self is on
+                                    // the same side of zero but closer.
+                                    // both pos: self < frac (T); both neg: self > frac (F);
+                                    // mixed: negative < positive.
+                                    match op {
+                                        PyComparisonOp::Eq => false,
+                                        PyComparisonOp::Ne => true,
+                                        PyComparisonOp::Lt => frac_pos,
+                                        PyComparisonOp::Le => frac_pos,
+                                        PyComparisonOp::Gt => !frac_pos,
+                                        PyComparisonOp::Ge => !frac_pos,
+                                    }
+                                } else {
+                                    // self huge: |self| > |frac|.
+                                    match op {
+                                        PyComparisonOp::Eq => false,
+                                        PyComparisonOp::Ne => true,
+                                        PyComparisonOp::Lt => !self_pos, // self < frac iff self negative
+                                        PyComparisonOp::Le => !self_pos,
+                                        PyComparisonOp::Gt => self_pos, // self > frac iff self positive
+                                        PyComparisonOp::Ge => self_pos,
+                                    }
+                                };
+                                return Ok(PyComparisonValue::Implemented(result));
+                            }
+                            let (lhs, rhs) = if zelf.d.exp >= 0 {
+                                let self_num = BigInt::from(s)
+                                    * &zelf.d.coeff
+                                    * BigInt::from(10).pow(zelf.d.exp as u32);
+                                (self_num * &den, num)
+                            } else {
+                                let pow = BigInt::from(10).pow((-zelf.d.exp) as u32);
+                                let self_num = BigInt::from(s) * &zelf.d.coeff;
+                                (self_num * &den, num * pow)
+                            };
+                            let r = lhs.cmp(&rhs);
+                            let result = match op {
+                                PyComparisonOp::Lt => r.is_lt(),
+                                PyComparisonOp::Le => r.is_le(),
+                                PyComparisonOp::Gt => r.is_gt(),
+                                PyComparisonOp::Ge => r.is_ge(),
+                                PyComparisonOp::Eq => r.is_eq(),
+                                PyComparisonOp::Ne => r.is_ne(),
+                            };
+                            return Ok(PyComparisonValue::Implemented(result));
+                        }
+                    }
+                    // Complex comparison: only meaningful when the imaginary
+                    // part is zero; then compare against the real part.
+                    if let Some(cx) = other.downcast_ref::<PyComplex>() {
+                        let cv = cx.to_complex64();
+                        let imag = cv.im;
+                        if imag == 0.0 {
+                            let real = cv.re;
+                            let b = _decimal_core::dec_from_float(real);
+                            // Only equality/inequality are well-defined with
+                            // complex; ordering returns NotImplemented.
+                            if matches!(op, PyComparisonOp::Eq | PyComparisonOp::Ne) {
+                                let r = dec_cmp(&zelf.d, &b);
+                                let result = match op {
+                                    PyComparisonOp::Eq => r == 0,
+                                    _ => r != 0,
+                                };
+                                return Ok(PyComparisonValue::Implemented(result));
+                            }
+                        }
+                    }
+                    return Ok(PyComparisonValue::NotImplemented);
+                }
             };
             // sNaN comparisons signal InvalidOperation. If the trap is on,
             // raise; otherwise just set the flag and return the result.
@@ -1989,8 +2165,16 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn create_decimal_from_float(&self, value: f64, vm: &VirtualMachine) -> PyResult {
-            let d = _decimal_core::dec_from_float(value);
+        fn create_decimal_from_float(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let d = if let Some(f) = value.downcast_ref::<PyFloat>() {
+                _decimal_core::dec_from_float(f.to_f64())
+            } else if let Some(i) = value.downcast_ref::<PyInt>() {
+                _decimal_core::dec_from_int(vm, i)
+            } else {
+                return Err(vm.new_type_error(
+                    "argument must be an int or float".to_string(),
+                ));
+            };
             let ctx = self.ctx();
             let r = _decimal_core::apply_context(vm, &ctx, d)?;
             Ok(PyDecimal::to_py(vm, r))

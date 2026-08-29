@@ -422,6 +422,9 @@ pub(crate) fn apply_context(
         ctx.set_flag(vm, "Rounded")?;
         if inexact {
             ctx.set_flag(vm, "Inexact")?;
+            if ctx.trap(vm, "Inexact")? {
+                return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+            }
         }
     }
     dec.coeff = new_coeff;
