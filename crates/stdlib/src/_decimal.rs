@@ -539,31 +539,74 @@ mod _decimal {
                 .ok_or_else(|| vm.new_type_error("next_toward requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec(&other, vm)?;
-            let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
-                sign: b.sign, coeff: self.d.coeff.clone(), exp: self.d.exp,
-                special: self.d.special,
-            })?;
+            // If equal (value-wise), return self.
+            if dec_cmp(&self.d, &b) == 0 && self.d.special == b.special {
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            // Move one ulp toward b: toward -Inf if b < self, else +Inf.
+            let dir = if dec_cmp(&b, &self.d) < 0 { -1i8 } else { 1i8 };
+            let r = self.next_step(vm, &ctx, dir)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
-        fn max(&self, other: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        fn max(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let other = args
+                .args
+                .get(0)
+                .cloned()
+                .ok_or_else(|| vm.new_type_error("max requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec(&other, vm)?;
-            if dec_cmp(&self.d, &b) >= 0 {
-                Ok(Self::to_py(vm, self.d.clone()))
-            } else {
-                Ok(Self::to_py(vm, b))
-            }
+            let chosen = if dec_cmp(&self.d, &b) >= 0 { self.d.clone() } else { b };
+            let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
-        fn min(&self, other: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        fn min(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let other = args
+                .args
+                .get(0)
+                .cloned()
+                .ok_or_else(|| vm.new_type_error("min requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec(&other, vm)?;
-            if dec_cmp(&self.d, &b) <= 0 {
-                Ok(Self::to_py(vm, self.d.clone()))
-            } else {
-                Ok(Self::to_py(vm, b))
-            }
+            let chosen = if dec_cmp(&self.d, &b) <= 0 { self.d.clone() } else { b };
+            let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn max_mag(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let other = args
+                .args
+                .get(0)
+                .cloned()
+                .ok_or_else(|| vm.new_type_error("max_mag requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let b = to_dec(&other, vm)?;
+            let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
+            let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
+            let chosen = if dec_cmp(&xa, &ya) >= 0 { self.d.clone() } else { b };
+            let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn min_mag(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let other = args
+                .args
+                .get(0)
+                .cloned()
+                .ok_or_else(|| vm.new_type_error("min_mag requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let b = to_dec(&other, vm)?;
+            let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
+            let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
+            let chosen = if dec_cmp(&xa, &ya) <= 0 { self.d.clone() } else { b };
+            let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
@@ -686,9 +729,14 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn compare_signal(&self, other: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        fn compare_signal(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let other = args
+                .args
+                .get(0)
+                .cloned()
+                .ok_or_else(|| vm.new_type_error("compare_signal requires an argument".to_string()))?;
             let b = to_dec(&other, vm)?;
-            let ctx = current_ctx(vm)?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
             if self.d.special == Special::NaN || self.d.special == Special::SignalingNaN
                 || b.special == Special::NaN || b.special == Special::SignalingNaN
             {
@@ -938,13 +986,54 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn fma(&self, other: PyObjectRef, third: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            // self * other + third, using context
+        fn fma(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            // self.fma(other, third, context=) ; other=/third= keywords.
+            let get = |key: &str| -> Option<PyObjectRef> {
+                args.get_optional_kwarg(key).or_else(|| None)
+            };
+            let other = get("other").or_else(|| args.args.get(0).cloned()).ok_or_else(|| {
+                vm.new_type_error("fma requires other and third".to_string())
+            })?;
+            let third = get("third").or_else(|| args.args.get(1).cloned()).ok_or_else(|| {
+                vm.new_type_error("fma requires other and third".to_string())
+            })?;
             let other_d = to_dec_ctx(&other, vm)?;
             let third_d = to_dec_ctx(&third, vm)?;
-            let ctx = current_ctx(vm)?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
             let prod = _decimal_core::dec_mul(&ctx, vm, &self.d, &other_d)?;
             let r = _decimal_core::dec_add(&ctx, vm, &prod, &third_d)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn remainder_near(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let other = args
+                .args
+                .get(0)
+                .cloned()
+                .ok_or_else(|| vm.new_type_error("remainder_near requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let b = to_dec(&other, vm)?;
+            // r = self - b * n where n = round(self/b) to nearest int (half-even).
+            // Intermediate division uses extra precision so rounding is exact.
+            let wide = Ctx::from_parts(50, Rounding::HalfEven, 999999999, -999999999, 0,
+                vm.ctx.new_dict(), vm.ctx.new_dict());
+            let div = _decimal_core::dec_div(&wide, vm, &self.d, &b)?;
+            let mut coeff = div.coeff.clone();
+            let mut exp = div.exp;
+            if exp < 0 {
+                let pow = BigInt::from(10).pow((-exp) as u32);
+                let (q, r) = (&coeff / &pow, &coeff % &pow);
+                let tie = &r * BigInt::from(2) == pow;
+                let round_up = (&r * BigInt::from(2) > pow)
+                    || (tie && (&q % BigInt::from(2)) == BigInt::from(1));
+                coeff = if round_up { q + BigInt::from(1) } else { q };
+                exp = 0;
+            }
+            let n = Dec { sign: div.sign, coeff, exp: 0, special: Special::Finite };
+            let prod = _decimal_core::dec_mul(&wide, vm, &b, &n)?;
+            let result = _decimal_core::dec_sub(&wide, vm, &self.d, &prod)?;
+            let r = _decimal_core::apply_context(vm, &ctx, result)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
