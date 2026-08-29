@@ -233,13 +233,13 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn as_tuple(&self, vm: &VirtualMachine) -> PyTupleRef {
+        fn as_tuple(&self, vm: &VirtualMachine) -> PyResult {
             let sign = if self.d.sign { 1 } else { 0 };
-            // CPython as_tuple: finite numbers have an int exponent; special
-            // values carry a string: 'F' (Infinity), 'n' (NaN), 'N' (sNaN).
-            // NaN carries its diagnostic digits; Infinity is (0,).
+            // CPython as_tuple returns a DecimalTuple (namedtuple):
+            // finite -> (sign, digits, int exp); special -> string exp
+            // 'F' (Infinity), 'n' (NaN), 'N' (sNaN); NaN keeps its
+            // diagnostic digits.
             let diag_digits = || -> Vec<PyObjectRef> {
-                // NaN diagnostic info stored in coeff (0 means none).
                 if self.d.coeff == BigInt::from(0) {
                     return vec![];
                 }
@@ -248,7 +248,7 @@ mod _decimal {
                     .map(|b| vm.ctx.new_int(b - b'0').into())
                     .collect()
             };
-            match self.d.special {
+            let (digits_tuple, exp_obj): (PyObjectRef, PyObjectRef) = match self.d.special {
                 Special::Finite => {
                     let digits: Vec<PyObjectRef> = self
                         .d
@@ -256,28 +256,29 @@ mod _decimal {
                         .bytes()
                         .map(|b| vm.ctx.new_int(b - b'0').into())
                         .collect();
-                    vm.ctx.new_tuple(vec![
-                        vm.ctx.new_int(sign).into(),
-                        vm.ctx.new_tuple(digits).into(),
-                        vm.ctx.new_int(self.d.exp).into(),
-                    ])
+                    (vm.ctx.new_tuple(digits).into(), vm.ctx.new_int(self.d.exp).into())
                 }
-                Special::Infinity => vm.ctx.new_tuple(vec![
-                    vm.ctx.new_int(sign).into(),
+                Special::Infinity => (
                     vm.ctx.new_tuple(vec![vm.ctx.new_int(0).into()]).into(),
                     vm.ctx.new_str("F").into(),
-                ]),
-                Special::NaN => vm.ctx.new_tuple(vec![
-                    vm.ctx.new_int(sign).into(),
+                ),
+                Special::NaN => (
                     vm.ctx.new_tuple(diag_digits()).into(),
                     vm.ctx.new_str("n").into(),
-                ]),
-                Special::SignalingNaN => vm.ctx.new_tuple(vec![
-                    vm.ctx.new_int(sign).into(),
+                ),
+                Special::SignalingNaN => (
                     vm.ctx.new_tuple(diag_digits()).into(),
                     vm.ctx.new_str("N").into(),
-                ]),
-            }
+                ),
+            };
+            // Wrap in the DecimalTuple namedtuple (sign, digits, exponent).
+            let dt_cls = vm
+                .import("_decimal", 0)
+                .and_then(|m| m.get_attr("DecimalTuple", vm))
+                .unwrap_or_else(|_| vm.ctx.types.tuple_type.to_owned().into());
+            let sign_obj: PyObjectRef = vm.ctx.new_int(sign).into();
+            let dt = vm.invoke(&dt_cls, (sign_obj, digits_tuple, exp_obj))?;
+            Ok(dt)
         }
 
         #[pymethod]
@@ -2472,6 +2473,21 @@ mod _decimal {
         // '_decimal'); the pyclass declarations use module="decimal" so
         // pickle round-trips resolve through the swapped sys.modules['decimal']
         // (C <-> P interchangeability in the suite).
+
+        // Define DecimalTuple as a namedtuple: (sign, digits, exponent).
+        // as_tuple() returns one, matching CPython (_decimal.DecimalTuple).
+        {
+            let collections_mod = vm.import("collections", 0)?;
+            let nt = collections_mod.get_attr("namedtuple", vm)?;
+            let dt_name: PyObjectRef = vm.ctx.new_str("DecimalTuple").into();
+            let dt_fields: PyObjectRef = vm.ctx.new_str("sign digits exponent").into();
+            let dt = vm.invoke(&nt, (dt_name, dt_fields))?;
+            // CPython's _decimal.DecimalTuple.__module__ is 'decimal'; set it
+            // so pickle resolves through sys.modules['decimal'].
+            let dec_mod: PyObjectRef = vm.ctx.new_str("decimal").into();
+            let _ = dt.set_attr("__module__", dec_mod, vm);
+            set("DecimalTuple", dt)?;
+        }
 
         Ok(())
     }
