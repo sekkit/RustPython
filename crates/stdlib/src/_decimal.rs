@@ -103,7 +103,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float/str) to Dec.
-    /// Used by Decimal constructor Ã¢â‚¬â€ accepts str.
+    /// Used by Decimal constructor ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -127,7 +127,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float) to Dec.
-    /// Used by Context methods Ã¢â‚¬â€ rejects str (CPython behavior).
+    /// Used by Context methods ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â rejects str (CPython behavior).
     fn to_dec_ctx(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -142,7 +142,7 @@ mod _decimal {
     }
 
     #[pyattr(name = "Decimal")]
-    #[pyclass(name = "Decimal", module = "_decimal", traverse)]
+    #[pyclass(name = "Decimal", module = "decimal", traverse)]
     #[derive(Debug, PyPayload)]
     struct PyDecimal {
         #[pytraverse(skip)]
@@ -844,7 +844,7 @@ mod _decimal {
             let d = match to_dec(&value, vm) {
                 Ok(d) => d,
                 Err(e) => {
-                    // Only InvalidOperation (string parse failure) → NaN.
+                    // Only InvalidOperation (string parse failure) â†’ NaN.
                     // TypeError and others propagate as-is.
                     let is_io = e.class().is(&exc().invalid_operation);
                     if !is_io {
@@ -1104,7 +1104,7 @@ mod _decimal {
     }
 
     #[pyattr(name = "Context")]
-    #[pyclass(name = "Context", module = "_decimal", traverse)]
+    #[pyclass(name = "Context", module = "decimal", traverse)]
     #[derive(Debug, PyPayload)]
     struct PyContext {
         #[pytraverse(skip)]
@@ -1458,6 +1458,49 @@ mod _decimal {
                 self.flags.lock().size().used,
                 self.traps.lock().size().used,
             )
+        }
+
+        #[pymethod]
+        fn __reduce__(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
+            // CPython Context.__reduce__ returns
+            // (Context, (prec, rounding, Emin, Emax, capitals, clamp,
+            //  [trap names], flag_names_and_values))
+            let prec = *zelf.prec.lock();
+            let rounding = *zelf.rounding.lock();
+            let rounding_str = rounding.to_str().to_string();
+            let emin = *zelf.emin.lock();
+            let emax = *zelf.emax.lock();
+            let capitals = *zelf.capitals.lock();
+            let clamp = *zelf.clamp.lock();
+            // traps/Flags: list of exception objects that are True.
+            let trap_names: Vec<PyObjectRef> = zelf
+                .traps
+                .lock()
+                .items_vec()
+                .into_iter()
+                .filter(|(_, v)| v.try_to_value::<bool>(vm).unwrap_or(false))
+                .map(|(k, _)| k)
+                .collect();
+            let flag_names: Vec<PyObjectRef> = zelf
+                .flags
+                .lock()
+                .items_vec()
+                .into_iter()
+                .filter(|(_, v)| v.try_to_value::<bool>(vm).unwrap_or(false))
+                .map(|(k, _)| k)
+                .collect();
+            let args: PyObjectRef = vm.ctx.new_tuple(vec![
+                vm.ctx.new_int(prec).into(),
+                vm.ctx.new_str(rounding_str).into(),
+                vm.ctx.new_int(emin).into(),
+                vm.ctx.new_int(emax).into(),
+                vm.ctx.new_int(capitals).into(),
+                vm.ctx.new_int(clamp).into(),
+                vm.ctx.new_tuple(trap_names).into(),
+                vm.ctx.new_tuple(flag_names).into(),
+            ]).into();
+            let cls: PyObjectRef = zelf.class().to_owned().into();
+            Ok(vm.ctx.new_tuple(vec![cls, args]).into())
         }
 
         // --- Missing Context methods (delegating wrappers) ---
@@ -2150,7 +2193,7 @@ mod _decimal {
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             let mut c = Self::new_ctx(vm, 28);
-            // Context(prec, rounding, Emin, Emax, capitals, clamp) â€” accept
+            // Context(prec, rounding, Emin, Emax, capitals, clamp) Ã¢â‚¬â€ accept
             // both positional and keyword forms (the test suite uses keyword
             // args like Context(prec=9, rounding=..., traps=...)).
             let mut pos_iter = args.args.iter();
@@ -2183,24 +2226,41 @@ mod _decimal {
                 c.clamp = PyMutex::new(v.try_to_value::<isize>(vm)?);
             }
             if let Some(v) = get_field("traps") {
+                let traps_guard = c.traps.lock();
+                // Ensure all known signals present (default False).
+                for ty in exc().all() {
+                    let _ = traps_guard.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
+                }
                 if let Some(d) = v.downcast_ref::<PyDict>() {
-                    // Replace entirely: first set all to False, then apply
-                    // the provided dict's True values.
-                    let traps_guard = c.traps.lock();
-                    for ty in exc().all() {
-                        let _ = traps_guard.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
-                    }
                     for (k, val) in d.items_vec() {
                         let on = val.try_to_value::<bool>(vm)?;
                         let _ = traps_guard.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
                     }
+                } else if let Some(t) = v.downcast_ref::<PyTuple>() {
+                    // __reduce__ form: tuple of exception objects to enable.
+                    for item in t.as_slice() {
+                        let _ = traps_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
+                    }
+                } else if let Some(lst) = v.downcast_ref::<crate::vm::builtins::PyList>() {
+                    let items: Vec<PyObjectRef> = lst.borrow_vec().to_vec();
+                    for item in items {
+                        let _ = traps_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
+                    }
                 }
             }
             if let Some(v) = get_field("flags") {
+                let flags_guard = c.flags.lock();
+                for ty in exc().all() {
+                    let _ = flags_guard.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
+                }
                 if let Some(d) = v.downcast_ref::<PyDict>() {
                     for (k, val) in d.items_vec() {
                         let on = val.try_to_value::<bool>(vm)?;
-                        let _ = c.flags.lock().set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
+                        let _ = flags_guard.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
+                    }
+                } else if let Some(t) = v.downcast_ref::<PyTuple>() {
+                    for item in t.as_slice() {
+                        let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
                     }
                 }
             }
@@ -2209,7 +2269,7 @@ mod _decimal {
     }
 
     #[pyattr(name = "localcontext")]
-    #[pyclass(name = "localcontext", module = "_decimal", traverse)]
+    #[pyclass(name = "localcontext", module = "decimal", traverse)]
     #[derive(Debug, PyPayload)]
     struct LocalContext {
         saved: PyMutex<Option<PyObjectRef>>,
@@ -2408,9 +2468,15 @@ mod _decimal {
             }
         }
 
+        // CPython exposes these types with __module__ == 'decimal' (not
+        // '_decimal'); the pyclass declarations use module="decimal" so
+        // pickle round-trips resolve through the swapped sys.modules['decimal']
+        // (C <-> P interchangeability in the suite).
+
         Ok(())
     }
 }
+
 
 
 
