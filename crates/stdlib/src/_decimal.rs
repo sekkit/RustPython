@@ -597,24 +597,20 @@ mod _decimal {
         fn __format__(
             &self,
             spec: PyStrRef,
-            context: OptionalArg<PyObjectRef>,
+            localeconv: OptionalArg<PyObjectRef>,
             vm: &VirtualMachine,
         ) -> PyResult<String> {
             let spec = spec.as_wtf8().to_string();
             if spec.is_empty() {
                 return Ok(self.d.to_string());
             }
-            let ctx = if let Some(c) = context.into_option() {
-                if let Some(pc) = c.downcast_ref::<PyContext>() {
-                    pc.ctx()
-                } else {
-                    return Err(vm.new_type_error("context must be a Context".to_string()));
-                }
-            } else {
-                current_ctx(vm)?
-            };
+            // The second positional arg is localeconv data (dict) for the
+            // 'n' format; it is not a Context. Use it only as a passthrough
+            // (grouping not implemented). The current context applies.
+            let _ = localeconv;
+            let ctx = current_ctx(vm)?;
             _decimal_core::format_decimal(&self.d, &spec, vm, &ctx)
-                .map_err(|e| new_decimal_error(vm, "InvalidOperation", &e))
+                .map_err(|e| vm.new_value_error(e))
         }
 
         // Reflected ops are handled by the AsNumber right_* slots

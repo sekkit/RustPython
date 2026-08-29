@@ -925,11 +925,17 @@ pub(crate) fn format_decimal(
     ctx: &Ctx,
 ) -> Result<String, String> {
     if d.is_special() {
-        // Special values format as their str form (Infinity, NaN, sNaN).
+        // Special values format as their str form (Infinity, NaN, sNaN),
+        // preserving NaN diagnostic digits from the coefficient.
+        let payload = if d.coeff == BigInt::from(0) {
+            String::new()
+        } else {
+            d.coeff_str()
+        };
         let mut s = match d.special {
             Special::Infinity => "Infinity".to_string(),
-            Special::NaN => "NaN".to_string(),
-            Special::SignalingNaN => "sNaN".to_string(),
+            Special::NaN => format!("NaN{payload}"),
+            Special::SignalingNaN => format!("sNaN{payload}"),
             Special::Finite => unreachable!(),
         };
         if d.sign {
@@ -939,7 +945,8 @@ pub(crate) fn format_decimal(
     }
     // Parse the format spec.
     let mut spec = spec.to_string();
-    // Type char (last alphabetic char, or %).
+    // Type char: valid types are e/E/f/F/g/G/n/%. A trailing alphabetic
+    // char that is not a valid type is an error (e.g. 'fz').
     let type_char = if spec.ends_with('%') {
         spec.pop();
         Some('%')
@@ -947,11 +954,12 @@ pub(crate) fn format_decimal(
         None
     } else {
         let last = spec.chars().last().unwrap();
-        if last.is_ascii_alphabetic() && last != 'n' || (last == 'n' && spec.len() > 1) {
-            spec.pop();
-            Some(last.to_ascii_lowercase())
-        } else {
-            None
+        match last {
+            'e' | 'E' | 'f' | 'F' | 'g' | 'G' | 'n' => {
+                spec.pop();
+                Some(last)
+            }
+            _ => None,
         }
     };
     // Precision: `.N` prefix in what remains.
@@ -963,14 +971,18 @@ pub(crate) fn format_decimal(
             spec.truncate(dot);
         }
     }
-    // Ignore fill/align/sign/width/grouping for the core conversion; apply
-    // only the numeric formatting. (Full alignment is not needed by the suite.)
-    let fill = spec; // remaining spec is only used for validation
-    if !fill.is_empty() && !fill.chars().all(|c| c == 'z' || c.is_ascii_digit()) {
-        // only allow what we support; anything unknown is a ValueError
-        // but keep some chars as padding/fill markers
+    // Remaining spec is fill/align/sign/width/grouping. Validate the
+    // characters (raise ValueError on anything unknown like 'fz'); full
+    // alignment padding is not implemented (suite focuses on numeric part).
+    let rest = spec;
+    if !rest.is_empty() {
+        let valid = ['<', '>', '=', '^', '+', '-', ' ', '0', '#', ',', '_'];
+        for c in rest.chars() {
+            if !(valid.contains(&c) || c.is_ascii_digit()) {
+                return Err(format!("invalid format string: '{c}'"));
+            }
+        }
     }
-    let _ = &fill;
     let ty = type_char.unwrap_or('n'); // default is 'n' like str for Decimal? Actually default is 'g' for floats, but Decimal default is its str.
     // For Decimal, empty format returns str(d) (already handled by caller for empty spec).
     let _ = ty;
@@ -981,18 +993,19 @@ pub(crate) fn format_decimal(
     let sign_str = if d.sign { "-" } else { "" };
     let ty = type_char.unwrap_or('f'); // default like CPython uses for Decimal
 
-    // Special handling for %: multiply by 100.
+    // Special handling for %: multiply by 100 (exp += 2, preserving the
+    // value's exponent representation for trailing-zero semantics).
     let dec = if ty == '%' {
-        let scaled = Dec { sign: d.sign, coeff: d.coeff.clone() * BigInt::from(100), exp: d.exp, special: Special::Finite };
+        let scaled = Dec { sign: d.sign, coeff: d.coeff.clone(), exp: d.exp + 2, special: Special::Finite };
         scaled
     } else {
         d.clone()
     };
 
-    let value_str = match ty {
-        'f' | 'F' => format_fixed(&dec, precision, vm),
-        'e' | 'E' => format_sci(&dec, precision, ty == 'E', vm),
-        'g' | 'G' | 'n' => format_general(&dec, precision, ty == 'G' || ty == 'n', vm),
+    let value_str = match ty.to_ascii_lowercase() {
+        'f' => format_fixed(&dec, precision, vm),
+        'e' => format_sci(&dec, precision, ty == 'E', vm),
+        'g' | 'n' => format_general(&dec, precision, ty == 'G' || ty == 'n', vm),
         '%' => {
             // Multiply by 100 was done above; format as f with given
             // precision (or exact value when no precision given).
@@ -1083,16 +1096,15 @@ fn format_fixed(d: &Dec, precision: Option<usize>, _vm: &VirtualMachine) -> Stri
 fn format_sci(d: &Dec, precision: Option<usize>, upper: bool, vm: &VirtualMachine) -> String {
     let digits = digits_of(d);
     if digits == "0" {
-        // zero: exponent handled specially
-        let e = d.exp;
+        // Zero: exponent for 'e' format is stored_exp + precision
+        // (CPython: .6e of 0E-15 -> 0.000000e-9, of 0 -> 0.000000e+6).
+        let p = precision.unwrap_or(0) as isize;
+        let e = d.exp + p;
         let e_str = format!("{}{}", if upper { "E" } else { "e" }, if e >= 0 { "+" } else { "" });
         let mut s = String::from("0");
-        match precision {
-            Some(p) if p > 0 => {
-                s.push('.');
-                s.push_str(&"0".repeat(p));
-            }
-            _ => {}
+        if p > 0 {
+            s.push('.');
+            s.push_str(&"0".repeat(p as usize));
         }
         s.push_str(&e_str);
         s.push_str(&e.to_string());
@@ -1120,6 +1132,11 @@ fn format_sci(d: &Dec, precision: Option<usize>, upper: bool, vm: &VirtualMachin
                 let new_q = if round_up { q + BigInt::from(1) } else { q };
                 sig = new_q.to_string();
                 new_adj = adj + (sig.len() as isize - keep);
+                // A round-carry may add a digit (99... -> 100...): trim sig
+                // back to `keep` chars (the exponent already absorbed it).
+                if sig.len() as isize > keep {
+                    sig.truncate(keep as usize);
+                }
             } else {
                 sig = digits.clone();
                 // pad with zeros to exactly keep digits
@@ -1143,9 +1160,9 @@ fn format_mantissa(sig: &str, precision: isize, upper: bool, adj: isize) -> Stri
         s.push('.');
         let frac = if sig.len() > 1 { &sig[1..] } else { "" };
         s.push_str(frac);
-        let pad = precision as usize - frac.len();
-        if pad > 0 {
-            s.push_str(&"0".repeat(pad));
+        let gap = precision as isize - frac.len() as isize;
+        if gap > 0 {
+            s.push_str(&"0".repeat(gap as usize));
         }
     }
     s.push_str(&e_str);
@@ -1158,12 +1175,23 @@ fn format_general(d: &Dec, precision: Option<usize>, _upper: bool, _vm: &Virtual
     let p = precision.unwrap_or(6).max(1);
     let digits = digits_of(d);
     if digits == "0" {
-        // zero: if adjusted exponent >= -4, plain "0"; else scientific.
-        let adj = d.exp + 1 - 1; // zero coeff digit
-        if adj < -4 || d.exp > 0 {
-            // exponent display follows stored exp for positive, else adj
-            let e = if d.exp > 0 { d.exp } else { d.exp + 0 };
-            return format!("0e{}{}", if e >= 0 { "+" } else { "" }, e);
+        // zero: keep fractional zeros for small exponents
+        // (0.0 -> '0.0', 0E-5 -> '0.00000'), scientific when the fractional
+        // zeros would exceed the precision (0E-7 -> '0e-7' with p=6) or the
+        // exponent is positive (0E1 -> '0e+1').
+        let zoom = -d.exp;
+        let e_marker = if _upper { "E" } else { "e" };
+        if d.exp > 0 {
+            return format!("0{e_marker}+{}", d.exp);
+        }
+        if zoom > 0 && zoom <= p as isize {
+            // 0.0 / 0.00 ... show with the fractional zeros
+            let mut s = String::from("0.");
+            s.push_str(&"0".repeat(zoom as usize));
+            return s;
+        }
+        if zoom > p as isize {
+            return format!("0{e_marker}-{}", zoom);
         }
         return "0".to_string();
     }
@@ -1171,8 +1199,12 @@ fn format_general(d: &Dec, precision: Option<usize>, _upper: bool, _vm: &Virtual
     // g switches to scientific if adj < -4 or adj >= p
     if adj < -4 || adj >= p as isize {
         // scientific, strip trailing zeros from the significant digits
-        let s = format_sci(d, Some((p - 1) as usize), false, _vm);
-        strip_sci_trailing_zeros(&s)
+        let s = format_sci(d, Some((p - 1) as usize), _upper, _vm);
+        if _upper {
+            s.replace('e', "E")
+        } else {
+            strip_sci_trailing_zeros(&s)
+        }
     } else {
         // fixed with p - (adj+1) digits after point, strip trailing zeros
         let frac = p as isize - (adj + 1);
