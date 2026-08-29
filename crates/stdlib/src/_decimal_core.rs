@@ -65,8 +65,20 @@ impl Dec {
         let prefix = if self.sign { "-" } else { "" };
         match self.special {
             Special::Infinity => return format!("{prefix}Infinity"),
-            Special::NaN => return format!("{prefix}NaN"),
-            Special::SignalingNaN => return format!("{prefix}sNaN"),
+            // CPython displays the diagnostic payload digits for
+            // NaN/sNaN: Decimal('NaN123') -> 'NaN123' (no payload for 0).
+            Special::NaN => {
+                if self.coeff == BigInt::from(0) {
+                    return format!("{prefix}NaN");
+                }
+                return format!("{prefix}NaN{}", self.coeff_str());
+            }
+            Special::SignalingNaN => {
+                if self.coeff == BigInt::from(0) {
+                    return format!("{prefix}sNaN");
+                }
+                return format!("{prefix}sNaN{}", self.coeff_str());
+            }
             Special::Finite => {}
         }
         let d = self.coeff_str();
@@ -92,6 +104,11 @@ impl Dec {
                     format!("{prefix}{}.{}", &d[..cut], &d[cut..])
                 }
             } else if ne <= 6 {
+                format!("{prefix}0.{}{d}", "0".repeat(ne - d.len()))
+            } else if e + d.len() as isize - 1 >= -6 && e + d.len() as isize - 1 <= 6 {
+                // CPython keeps a fixed-point form when the ADJUSTED
+                // exponent is modest in magnitude, even with many fractional
+                // digits (e.g. 0.0000372 = 372e-7, adjusted -5).
                 format!("{prefix}0.{}{d}", "0".repeat(ne - d.len()))
             } else {
                 let exp_show = e + d.len() as isize - 1;
@@ -312,7 +329,8 @@ impl Ctx {
         self.traps
             .get_item_opt(ty.as_object(), vm)?
             .map(|v| v.try_to_bool(vm))
-            .unwrap_or(Ok(true))
+            // A signal absent from the traps dict is not trapped.
+            .unwrap_or(Ok(false))
     }
 }
 
@@ -594,6 +612,39 @@ pub(crate) fn dec_div(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
     apply_context(vm, ctx, Dec { sign, coeff, exp, special: Special::Finite })
 }
 
+/// Map a Unicode decimal digit character to its 0-9 value. Covers the common
+/// decimal digit blocks; returns None for non-digit characters.
+fn unicode_decimal_digit(c: char) -> Option<u32> {
+    let cp = c as u32;
+    let blocks: &[(u32, u32)] = &[
+        (0x0030, 0x0039), // ASCII
+        (0x0660, 0x0669), // Arabic-Indic
+        (0x06F0, 0x06F9), // Extended Arabic-Indic
+        (0x0966, 0x096F), // Devanagari
+        (0x09E6, 0x09EF), // Bengali
+        (0x0A66, 0x0A6F), // Gurmukhi
+        (0x0AE6, 0x0AEF), // Gujarati
+        (0x0B66, 0x0B6F), // Oriya
+        (0x0BE6, 0x0BEF), // Tamil
+        (0x0C66, 0x0C6F), // Telugu
+        (0x0CE6, 0x0CEF), // Kannada
+        (0x0D66, 0x0D6F), // Malayalam
+        (0x0E50, 0x0E59), // Thai
+        (0x0ED0, 0x0ED9), // Lao
+        (0x0F20, 0x0F29), // Tibetan
+        (0x1040, 0x1049), // Myanmar
+        (0x17E0, 0x17E9), // Khmer
+        (0x1810, 0x1819), // Mongolian
+        (0xFF10, 0xFF19), // Fullwidth
+    ];
+    for (start, end) in blocks {
+        if cp >= *start && cp <= *end {
+            return Some(cp - *start);
+        }
+    }
+    None
+}
+
 /// Parse a decimal string. Returns Dec.
 pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
     let trimmed = s.trim();
@@ -612,6 +663,24 @@ pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
     // CPython permits underscores as digit separators in literals
     // (Decimal('1_3.3e4_0') == Decimal('1.33E+41')); strip them.
     let rest: String = rest.chars().filter(|&c| c != '_').collect();
+    // Normalize Unicode decimal digits (Arabic-Indic \u0660-\u0669, extended
+    // \u06f0-\u06f9, Devanagari \u0966-\u096f, fullwidth \uff10-\uff19,
+    // etc.) to ASCII. Rust's char::to_digit only covers ASCII, so map by
+    // decimal-digit category manually.
+    let rest: String = rest
+        .chars()
+        .map(|c| {
+            if c.is_ascii() {
+                c
+            } else {
+                let d = unicode_decimal_digit(c);
+                match d {
+                    Some(d) => char::from(b'0' + d as u8),
+                    None => c,
+                }
+            }
+        })
+        .collect();
     let lower = rest.to_ascii_lowercase();
     if lower == "infinity" || lower == "inf" {
         return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });

@@ -315,8 +315,9 @@ mod _decimal {
             })?;
             let target_exp: isize = if let Some(pd) = exp.downcast_ref::<PyDecimal>() {
                 pd.d.exp
-            } else if let Some(i) = exp.downcast_ref::<PyInt>() {
-                i.try_to_primitive::<isize>(vm)?
+            } else if let Some(_i) = exp.downcast_ref::<PyInt>() {
+                // CPython converts an int to Decimal(int), whose exponent is 0.
+                0
             } else if let Some(s) = exp.downcast_ref::<PyStr>() {
                 _decimal_core::parse_decimal(&s.as_wtf8().to_string())
                     .map_err(|e| new_decimal_error(vm, "InvalidOperation", &e))?
@@ -1190,6 +1191,35 @@ mod _decimal {
             let rotated = format!("{}{}", &digits[cut..], &digits[..cut]);
             let coeff = rotated.parse::<BigInt>().unwrap_or(BigInt::from(0));
             let result = _decimal_core::Dec { sign: self.d.sign, coeff, exp: self.d.exp, special: self.d.special };
+            let r = _decimal_core::apply_context(vm, &ctx, result)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
+        #[pymethod]
+        fn scaleb(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+            let n_argv = args.args.get(0).cloned()
+                .ok_or_else(|| vm.new_type_error("scaleb requires an argument".to_string()))?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let n_obj = to_dec(&n_argv, vm)?;
+            if n_obj.special != Special::Finite || n_obj.exp < 0 {
+                return Err(new_decimal_error(vm, "InvalidOperation", "scaleb requires an integer"));
+            }
+            let n: isize = n_obj.coeff.to_string().parse().unwrap_or(isize::MAX);
+            let n = if n_obj.sign { -n } else { n };
+            // CPython raises Overflow when the result's exponent range would
+            // exceed Emax/Emin of the context.
+            if (self.d.exp as i64 + n as i64) > ctx.emax as i64
+                || (self.d.exp as i64 + n as i64) < (ctx.emin - ctx.prec) as i64
+            {
+                ctx.set_flag(vm, "Overflow")?;
+                if ctx.trap(vm, "Overflow")? {
+                    return Err(new_decimal_error(vm, "Overflow", "scaleb overflow"));
+                }
+            }
+            let result = Dec {
+                sign: self.d.sign, coeff: self.d.coeff.clone(), exp: self.d.exp + n,
+                special: self.d.special,
+            };
             let r = _decimal_core::apply_context(vm, &ctx, result)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -2301,7 +2331,9 @@ mod _decimal {
 
         #[pymethod]
         fn copy_decimal(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let d = to_dec(&x, vm)?;
+            // CPython copy_decimal uses PyDec_FromObjectExact: strings are
+            // rejected with TypeError (int/Decimal are accepted).
+            let d = to_dec_ctx(&x, vm)?;
             Ok(PyDecimal::to_py(vm, d))
         }
 
@@ -2699,7 +2731,8 @@ mod _decimal {
 
         #[pymethod]
         fn to_sci_string(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let d = to_dec(&x, vm)?;
+            // CPython: str input raises TypeError (exact object conversion).
+            let d = to_dec_ctx(&x, vm)?;
             Ok(vm.ctx.new_str(d.to_string()).into())
         }
 
