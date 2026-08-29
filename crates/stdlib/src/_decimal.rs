@@ -151,6 +151,9 @@ mod _decimal {
         vm: &VirtualMachine,
     ) -> PyResult<Ctx> {
         if let Some(c) = context.into_option() {
+            if c.is(&vm.ctx.none()) {
+                return current_ctx(vm);
+            }
             let pc = c
                 .downcast_ref::<PyContext>()
                 .ok_or_else(|| vm.new_type_error("context must be a Context object".to_string()))?;
@@ -160,10 +163,20 @@ mod _decimal {
         }
     }
 
+    /// True when the object is the None singleton (used to skip None-valued
+    /// Context constructor fields).
+    fn downcast_ref_none(v: &PyObject, vm: &VirtualMachine) -> bool {
+        v.is(&vm.ctx.none())
+    }
+
     /// Resolve the context from FuncArgs (accepts a `context=` keyword or a
     /// positional Context argument).
     fn ctx_from_funcargs(args: &FuncArgs, vm: &VirtualMachine) -> PyResult<Ctx> {
         if let Some(c) = args.get_optional_kwarg("context") {
+            // None means "use the current context" (CPython).
+            if c.is(&vm.ctx.none()) {
+                return current_ctx(vm);
+            }
             let pc = c
                 .downcast_ref::<PyContext>()
                 .ok_or_else(|| vm.new_type_error("context must be a Context object".to_string()))?;
@@ -220,17 +233,43 @@ mod _decimal {
             if items.len() != 3 {
                 return Err(vm.new_value_error("tuple must be (sign, digits, exponent)".to_string()));
             }
-            let sign_val: isize = items[0].clone().try_to_value(vm)?;
+            // CPython raises ValueError when the sign/exponent isn't an int
+            // (e.g. a float 0.0).
+            let sign_val: isize = match items[0].downcast_ref::<PyInt>() {
+                Some(i) => i.try_to_primitive::<isize>(vm)?,
+                None => {
+                    return Err(vm.new_value_error(
+                        "sign must be an integer".to_string(),
+                    ))
+                }
+            };
             if sign_val != 0 && sign_val != 1 {
                 return Err(vm.new_value_error("sign must be 0 or 1".to_string()));
             }
             let sign = sign_val == 1;
-            let digits_obj = items[1].downcast_ref::<PyTuple>().ok_or_else(|| {
-                vm.new_type_error("digits must be a tuple".to_string())
-            })?;
+            let digit_items: Vec<PyObjectRef> = if let Some(t) = items[1].downcast_ref::<PyTuple>() {
+                t.as_slice().to_vec()
+            } else if let Some(lst) = items[1].downcast_ref::<crate::vm::builtins::PyList>() {
+                lst.borrow_vec().to_vec()
+            } else {
+                // CPython: non-tuple digits -> ValueError.
+                return Err(vm.new_value_error("coefficient must be a tuple".to_string()));
+            };
             let mut coeff = BigInt::from(0);
-            for d in digits_obj.iter() {
-                let dv: u8 = d.try_to_value(vm)?;
+            for d in digit_items {
+                // Each digit must be an int in [0, 9]; anything else is a
+                // ValueError (CPython).
+                let dv: i64 = match d.downcast_ref::<PyInt>() {
+                    Some(i) => i.try_to_primitive::<i64>(vm)?,
+                    None => {
+                        return Err(vm.new_value_error("coefficient digit must be an integer".to_string()))
+                    }
+                };
+                if dv < 0 || dv > 9 {
+                    return Err(vm.new_value_error(
+                        "coefficient digit must be in [0, 9]".to_string(),
+                    ));
+                }
                 coeff = &coeff * 10 + BigInt::from(dv);
             }
             // Exponent may be an int (finite) or a string naming a special
@@ -242,16 +281,23 @@ mod _decimal {
                     "n" => Special::NaN,
                     "N" | "s" | "S" => Special::SignalingNaN,
                     _ => {
-                        return Err(new_decimal_error(
-                            vm,
-                            "InvalidOperation",
-                            &format!("malformed exponent string '{tag}'"),
+                        // CPython raises ValueError for any other string
+                        // (digits, 'wrong!' etc.) in the exponent slot.
+                        return Err(vm.new_value_error(
+                            "malformed exponent: must be an int or a special-value string".to_string(),
                         ))
                     }
                 };
                 return Ok(Dec { sign, coeff, exp: 0, special });
             }
-            let exp: isize = items[2].clone().try_to_value(vm)?;
+            let exp: isize = match items[2].downcast_ref::<PyInt>() {
+                Some(i) => i.try_to_primitive::<isize>(vm)?,
+                None => {
+                    return Err(vm.new_value_error(
+                        "exponent must be an integer".to_string(),
+                    ))
+                }
+            };
             Ok(Dec { sign, coeff, exp, special: Special::Finite })
         }
     }
@@ -678,6 +724,15 @@ mod _decimal {
             }
             let prec = ctx.prec as usize + 4;
             let xf = self.d.to_string().parse::<f64>().unwrap_or(0.0);
+            // exp of a huge positive value overflows to infinity; CPython
+            // raises Overflow (trapped) / returns Infinity.
+            if xf > 709.0 {
+                ctx.set_flag(vm, "Overflow")?;
+                if ctx.trap(vm, "Overflow")? {
+                    return Err(new_decimal_error(vm, "Overflow", "exp overflow"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity }));
+            }
             let result = xf.exp();
             let s = format!("{:.*}", prec, result);
             let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
@@ -1067,8 +1122,16 @@ mod _decimal {
         #[pymethod]
         fn logical_invert(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
             let ctx = ctx_from_funcargs(&args, vm)?;
-            if self.d.exp != 0 || self.d.sign {
-                return Err(new_decimal_error(vm, "InvalidOperation", "logical_invert requires non-negative integer"));
+            if self.d.exp != 0 || self.d.sign
+                || !self.d.coeff.to_string().chars().all(|c| c == '0' || c == '1')
+            {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "logical_invert requires 0/1 digits"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
             // Invert within the context precision width (decimal digits).
             let coeff_str = self.d.coeff.to_string();
@@ -1243,6 +1306,13 @@ mod _decimal {
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
+            // CPython: Decimal accepts at most one positional argument (plus
+            // the optional context keyword). Extra positional args -> TypeError.
+            if args.args.len() > 1 {
+                return Err(vm.new_type_error(
+                    "Decimal() takes at most 2 arguments (value and context)".to_string(),
+                ));
+            }
             // Support keyword args: Decimal(value=..., context=...)
             let value = args.get_optional_kwarg("value")
                 .or_else(|| args.args.get(0).cloned())
@@ -1250,8 +1320,16 @@ mod _decimal {
             // context keyword overrides the current context (CPython uses it for
             // flag/precision application during construction).
             let context_kw = args.get_optional_kwarg("context");
-            if let Some(tuple) = value.downcast_ref::<PyTuple>() {
-                let d = Self::from_tuple(tuple.as_slice(), vm)?;
+            // Accept a tuple OR list as the (sign, digits, exponent) triple.
+            let triple: Vec<PyObjectRef> = if let Some(tuple) = value.downcast_ref::<PyTuple>() {
+                tuple.as_slice().to_vec()
+            } else if let Some(lst) = value.downcast_ref::<crate::vm::builtins::PyList>() {
+                lst.borrow_vec().to_vec()
+            } else {
+                Vec::new()
+            };
+            if !triple.is_empty() {
+                let d = Self::from_tuple(&triple, vm)?;
                 return Ok(PyDecimal { d });
             }
             // CPython 3.11+: invalid string like 'ugly' constructs a
@@ -2725,6 +2803,10 @@ mod _decimal {
             let mut get_field = |key: &str| -> Option<PyObjectRef> {
                 args.get_optional_kwarg(key)
                     .or_else(|| pos_iter.next().cloned())
+                    // None (explicit or from a None keyword) means "inherit
+                    // the default" (CPython: Context(prec=None, ...) is the
+                    // default context).
+                    .filter(|v| !downcast_ref_none(v, vm))
             };
             if let Some(v) = get_field("prec") {
                 c.prec = PyMutex::new(v.try_to_value::<isize>(vm)?);

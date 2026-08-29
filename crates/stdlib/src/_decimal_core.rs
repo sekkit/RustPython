@@ -594,9 +594,10 @@ pub(crate) fn dec_div(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
 /// Parse a decimal string. Returns Dec.
 pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
     let trimmed = s.trim();
-    // CPython 3.11+: empty string constructs a quiet NaN.
+    // CPython raises InvalidOperation for an empty or whitespace-only
+    // literal (ConversionSyntax); only an actual value string is valid.
     if trimmed.is_empty() {
-        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+        return Err("invalid literal".to_string());
     }
     let mut chars = trimmed.chars().peekable();
     let mut sign = false;
@@ -605,6 +606,9 @@ pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
         else if c == '-' { sign = true; chars.next(); }
     }
     let rest: String = chars.collect();
+    // CPython permits underscores as digit separators in literals
+    // (Decimal('1_3.3e4_0') == Decimal('1.33E+41')); strip them.
+    let rest: String = rest.chars().filter(|&c| c != '_').collect();
     let lower = rest.to_ascii_lowercase();
     if lower == "infinity" || lower == "inf" {
         return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
