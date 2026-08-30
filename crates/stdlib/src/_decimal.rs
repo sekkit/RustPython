@@ -905,12 +905,20 @@ mod _decimal {
 
         #[pymethod]
         fn __trunc__(&self, vm: &VirtualMachine) -> PyResult {
-            let mut coeff = self.d.coeff.clone();
-            if self.d.exp < 0 {
-                let pow = BigInt::from(10).pow((-self.d.exp) as u32);
+            let d = &self.d;
+            if d.is_special() {
+                return match d.special {
+                    Special::Infinity => Err(vm.new_overflow_error("cannot convert Infinity to integer".to_string())),
+                    Special::NaN | Special::SignalingNaN => Err(vm.new_value_error("cannot convert NaN to integer".to_string())),
+                    Special::Finite => unreachable!(),
+                };
+            }
+            let mut coeff = d.coeff.clone();
+            if d.exp < 0 {
+                let pow = BigInt::from(10).pow((-d.exp) as u32);
                 coeff = &coeff / &pow;
-            } else if self.d.exp > 0 {
-                coeff *= BigInt::from(10).pow(self.d.exp as u32);
+            } else if d.exp > 0 {
+                coeff *= BigInt::from(10).pow(d.exp as u32);
             }
             let v = if self.d.sign { -coeff } else { coeff };
             Ok(vm.ctx.new_int(v).into())
@@ -918,32 +926,59 @@ mod _decimal {
 
         #[pymethod]
         fn __floor__(&self, vm: &VirtualMachine) -> PyResult {
-            // For Decimal, __floor__ = trunc toward zero (same as __trunc__ for non-negative)
-            let mut coeff = self.d.coeff.clone();
-            if self.d.exp < 0 {
-                let pow = BigInt::from(10).pow((-self.d.exp) as u32);
-                coeff = &coeff / &pow;
-            } else if self.d.exp > 0 {
-                coeff *= BigInt::from(10).pow(self.d.exp as u32);
+            let d = &self.d;
+            if d.is_special() {
+                return match d.special {
+                    Special::Infinity => Err(vm.new_overflow_error("cannot convert Infinity to integer".to_string())),
+                    Special::NaN | Special::SignalingNaN => Err(vm.new_value_error("cannot convert NaN to integer".to_string())),
+                    Special::Finite => unreachable!(),
+                };
             }
-            let v = if self.d.sign { -coeff } else { coeff };
+            // CPython: math.floor rounds toward -Inf.
+            let mut coeff = d.coeff.clone();
+            let mut had_remainder = false;
+            if d.exp < 0 {
+                let pow = BigInt::from(10).pow((-d.exp) as u32);
+                let r = &coeff % &pow;
+                had_remainder = r != BigInt::from(0);
+                coeff = &coeff / &pow;
+            } else if d.exp > 0 {
+                coeff *= BigInt::from(10).pow(d.exp as u32);
+            }
+            let v = if d.sign {
+                if had_remainder {
+                    -(coeff + BigInt::from(1))
+                } else {
+                    -coeff
+                }
+            } else {
+                coeff
+            };
             Ok(vm.ctx.new_int(v).into())
         }
 
         #[pymethod]
         fn __ceil__(&self, vm: &VirtualMachine) -> PyResult {
-            let mut coeff = self.d.coeff.clone();
-            if self.d.exp < 0 {
-                let pow = BigInt::from(10).pow((-self.d.exp) as u32);
+            let d = &self.d;
+            if d.is_special() {
+                return match d.special {
+                    Special::Infinity => Err(vm.new_overflow_error("cannot convert Infinity to integer".to_string())),
+                    Special::NaN | Special::SignalingNaN => Err(vm.new_value_error("cannot convert NaN to integer".to_string())),
+                    Special::Finite => unreachable!(),
+                };
+            }
+            let mut coeff = d.coeff.clone();
+            if d.exp < 0 {
+                let pow = BigInt::from(10).pow((-d.exp) as u32);
                 let r = &coeff % &pow;
                 coeff = &coeff / &pow;
-                if !self.d.sign && r != BigInt::from(0) {
+                if !d.sign && r != BigInt::from(0) {
                     coeff += BigInt::from(1);
                 }
-            } else if self.d.exp > 0 {
-                coeff *= BigInt::from(10).pow(self.d.exp as u32);
+            } else if d.exp > 0 {
+                coeff *= BigInt::from(10).pow(d.exp as u32);
             }
-            let v = if self.d.sign { -coeff } else { coeff };
+            let v = if d.sign { -coeff } else { coeff };
             Ok(vm.ctx.new_int(v).into())
         }
 
@@ -1015,6 +1050,21 @@ mod _decimal {
         #[pymethod]
         fn __round__(&self, ndigits: OptionalArg<PyObjectRef>, vm: &VirtualMachine) -> PyResult {
             let xd = &self.d;
+            if xd.is_special() {
+                // With ndigits, round(special, n) -> NaN (CPython).
+                // Without ndigits, raises ValueError/OverflowError.
+                if ndigits.into_option().is_some() {
+                    return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                        sign: xd.sign, coeff: xd.coeff.clone(), exp: 0,
+                        special: _decimal_core::Special::NaN,
+                    }));
+                }
+                return match xd.special {
+                    Special::Infinity => Err(vm.new_overflow_error("cannot convert Infinity to integer".to_string())),
+                    Special::NaN | Special::SignalingNaN => Err(vm.new_value_error("cannot convert NaN to integer".to_string())),
+                    Special::Finite => unreachable!(),
+                };
+            }
             let ctx = current_ctx(vm)?;
             if let Some(nd) = ndigits.into_option() {
                 let n: isize = nd.try_to_value(vm)?;
@@ -1311,15 +1361,49 @@ mod _decimal {
         fn as_integer_ratio(&self, vm: &VirtualMachine) -> PyResult {
             let d = &self.d;
             if d.is_special() {
-                return Err(new_decimal_error(vm, "InvalidOperation", "cannot convert NaN/Infinity"));
+                return match d.special {
+                    Special::Infinity => Err(vm.new_overflow_error(
+                        "cannot convert Infinity to integer ratio".to_string(),
+                    )),
+                    Special::NaN | Special::SignalingNaN => Err(vm.new_value_error(
+                        "cannot convert NaN to integer ratio".to_string(),
+                    )),
+                    Special::Finite => unreachable!(),
+                };
             }
-            let num = d.coeff.clone();
+            // Strip trailing zeros so p and q are coprime.
+            let mut coeff = d.coeff.clone();
+            let mut exp = d.exp;
+            if coeff == BigInt::from(0) {
+                return Ok(vm.ctx.new_tuple(vec![
+                    vm.ctx.new_int(BigInt::from(0)).into(),
+                    vm.ctx.new_int(BigInt::from(1)).into(),
+                ]).into());
+            }
+            // Reduce by removing all factors of 2 and 5 from the denominator
+            // that also divide the numerator.
+            let den_pow = if exp < 0 { (-exp) as u32 } else { 0 };
+            let mut num = coeff.clone();
+            let mut den = BigInt::from(1);
+            if exp < 0 {
+                den = BigInt::from(10).pow(den_pow);
+                // Strip common factors of 10 (2*5) from both.
+                while (&num % BigInt::from(2)) == BigInt::from(0)
+                    && (&den % BigInt::from(2)) == BigInt::from(0)
+                {
+                    num /= BigInt::from(2);
+                    den /= BigInt::from(2);
+                }
+                while (&num % BigInt::from(5)) == BigInt::from(0)
+                    && (&den % BigInt::from(5)) == BigInt::from(0)
+                {
+                    num /= BigInt::from(5);
+                    den /= BigInt::from(5);
+                }
+            } else if exp > 0 {
+                num *= BigInt::from(10).pow(exp as u32);
+            }
             let n = if d.sign { -num } else { num };
-            let (n, den) = if d.exp >= 0 {
-                (n * BigInt::from(10).pow(d.exp as u32), BigInt::from(1))
-            } else {
-                (n, BigInt::from(10).pow((-d.exp) as u32))
-            };
             Ok(vm.ctx.new_tuple(vec![vm.ctx.new_int(n).into(), vm.ctx.new_int(den).into()]).into())
         }
 
@@ -1646,6 +1730,21 @@ mod _decimal {
                 || zelf.d.special == Special::SignalingNaN
                 || b.special == Special::NaN
                 || b.special == Special::SignalingNaN;
+            // Ordering comparisons with any NaN signal InvalidOperation
+            // (CPython raises when trapped); only ==/!= are non-signaling.
+            if nan
+                && matches!(
+                    op,
+                    PyComparisonOp::Lt | PyComparisonOp::Le | PyComparisonOp::Gt | PyComparisonOp::Ge
+                )
+            {
+                let ctx = current_ctx(vm)?;
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "order comparison with NaN"));
+                }
+                return Ok(PyComparisonValue::Implemented(false));
+            }
             let r = dec_cmp(&zelf.d, &b);
             let result = match op {
                 PyComparisonOp::Lt => !nan && r < 0,
@@ -1855,7 +1954,26 @@ mod _decimal {
                 }),
                 float: Some(|num, vm| {
                     let pd = PyDecimal::number_downcast(num);
-                    let f = pd.d.to_string().parse::<f64>().unwrap_or(f64::NAN);
+                    // Explicit sNaN -> ValueError (CPython). Preserve the
+                    // sign bit for -NaN/-Infinity.
+                    let f = match pd.d.special {
+                        Special::SignalingNaN => {
+                            return Err(vm.new_value_error(
+                                "cannot convert signaling NaN to float".to_string(),
+                            ))
+                        }
+                        Special::NaN => {
+                            let mut f = f64::NAN;
+                            if pd.d.sign {
+                                f = -f;
+                            }
+                            f
+                        }
+                        Special::Infinity => {
+                            if pd.d.sign { f64::NEG_INFINITY } else { f64::INFINITY }
+                        }
+                        Special::Finite => pd.d.to_string().parse::<f64>().unwrap_or(f64::NAN),
+                    };
                     Ok(vm.ctx.new_float(f).into())
                 }),
                 ..PyNumberMethods::NOT_IMPLEMENTED
