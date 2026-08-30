@@ -984,21 +984,31 @@ mod _decimal {
 
         #[pyclassmethod]
         fn from_number(cls: PyTypeRef, number: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            // PEP 3141: from_number converts int/float/Decimal to Decimal
+            // PEP 3141: from_number converts int/float/Decimal to Decimal.
+            // For subclasses, the result is an instance of the subclass.
             if number.downcast_ref::<PyDecimal>().is_some() {
-                return Ok(number);
+                // If already a Decimal of the exact cls, return as-is.
+                if number.class().is(&cls) {
+                    return Ok(number);
+                }
+                // Otherwise reconstruct via str through cls.
+                let pd = number.downcast_ref::<PyDecimal>().unwrap();
+                let s: PyObjectRef = vm.ctx.new_str(pd.d.to_string()).into();
+                let cls_obj: PyObjectRef = cls.to_owned().into();
+                return Ok(vm.invoke(&cls_obj, (s,))?);
             }
             if let Some(i) = number.downcast_ref::<PyInt>() {
                 let d = _decimal_core::dec_from_int(vm, i);
-                let obj: PyObjectRef = PyDecimal { d }.into_ref(&vm.ctx).into();
-                return Ok(obj);
+                let s: PyObjectRef = vm.ctx.new_str(d.to_string()).into();
+                let cls_obj: PyObjectRef = cls.to_owned().into();
+                return Ok(vm.invoke(&cls_obj, (s,))?);
             }
             if let Some(f) = number.downcast_ref::<PyFloat>() {
                 let d = _decimal_core::dec_from_float(f.to_f64());
-                let obj: PyObjectRef = PyDecimal { d }.into_ref(&vm.ctx).into();
-                return Ok(obj);
+                let s: PyObjectRef = vm.ctx.new_str(d.to_string()).into();
+                let cls_obj: PyObjectRef = cls.to_owned().into();
+                return Ok(vm.invoke(&cls_obj, (s,))?);
             }
-            let _ = cls;
             Err(vm.new_type_error("from_number requires int or float".to_string()))
         }
 
@@ -2052,17 +2062,27 @@ mod _decimal {
             *self.prec.lock()
         }
         #[pygetset(setter)]
-        fn set_prec(&self, value: isize) {
-            *self.prec.lock() = value;
+        fn set_prec(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let v: isize = value
+                .downcast_ref::<PyInt>()
+                .ok_or_else(|| vm.new_type_error("prec must be an integer".to_string()))?
+                .try_to_primitive(vm)?;
+            if v < 1 {
+                return Err(vm.new_value_error("prec must be >= 1".to_string()));
+            }
+            *self.prec.lock() = v;
+            Ok(())
         }
         #[pygetset]
         fn rounding(&self) -> String {
             self.rounding.lock().to_str().to_string()
         }
         #[pygetset(setter)]
-        fn set_rounding(&self, value: PyStrRef, vm: &VirtualMachine) -> PyResult<()> {
-            let r = Rounding::from_str(&value.as_wtf8().to_string())
-                .ok_or_else(|| vm.new_value_error("invalid rounding mode".to_string()))?;
+        fn set_rounding(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let s = value.downcast_ref::<PyStr>()
+                .ok_or_else(|| vm.new_type_error("rounding must be a string".to_string()))?;
+            let r = Rounding::from_str(&s.as_wtf8().to_string())
+                .ok_or_else(|| vm.new_type_error("invalid rounding mode".to_string()))?;
             *self.rounding.lock() = r;
             Ok(())
         }
@@ -2071,66 +2091,100 @@ mod _decimal {
             *self.emin.lock()
         }
         #[pygetset(setter)]
-        fn set_Emin(&self, value: isize) {
-            *self.emin.lock() = value;
+        fn set_Emin(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let v: isize = value
+                .downcast_ref::<PyInt>()
+                .ok_or_else(|| vm.new_type_error("Emin must be an integer".to_string()))?
+                .try_to_primitive(vm)?;
+            if v > 0 {
+                return Err(vm.new_value_error("Emin must be <= 0".to_string()));
+            }
+            *self.emin.lock() = v;
+            Ok(())
         }
         #[pygetset]
         fn Emax(&self) -> isize {
             *self.emax.lock()
         }
         #[pygetset(setter)]
-        fn set_Emax(&self, value: isize) {
-            *self.emax.lock() = value;
+        fn set_Emax(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let v: isize = value
+                .downcast_ref::<PyInt>()
+                .ok_or_else(|| vm.new_type_error("Emax must be an integer".to_string()))?
+                .try_to_primitive(vm)?;
+            if v < 0 {
+                return Err(vm.new_value_error("Emax must be >= 0".to_string()));
+            }
+            *self.emax.lock() = v;
+            Ok(())
         }
         #[pygetset]
         fn capitals(&self) -> isize {
             *self.capitals.lock()
         }
         #[pygetset(setter)]
-        fn set_capitals(&self, value: isize) {
-            *self.capitals.lock() = value;
+        fn set_capitals(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let v: isize = value
+                .downcast_ref::<PyInt>()
+                .ok_or_else(|| vm.new_type_error("capitals must be an integer".to_string()))?
+                .try_to_primitive(vm)?;
+            if v != 0 && v != 1 {
+                return Err(vm.new_value_error("capitals must be 0 or 1".to_string()));
+            }
+            *self.capitals.lock() = v;
+            Ok(())
         }
         #[pygetset]
         fn clamp(&self) -> isize {
             *self.clamp.lock()
         }
         #[pygetset(setter)]
-        fn set_clamp(&self, value: isize) {
-            *self.clamp.lock() = value;
+        fn set_clamp(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let v: isize = value
+                .downcast_ref::<PyInt>()
+                .ok_or_else(|| vm.new_type_error("clamp must be an integer".to_string()))?
+                .try_to_primitive(vm)?;
+            if v != 0 && v != 1 {
+                return Err(vm.new_value_error("clamp must be 0 or 1".to_string()));
+            }
+            *self.clamp.lock() = v;
+            Ok(())
         }
         #[pygetset]
         fn traps(&self) -> PyDictRef {
             self.traps.lock().clone()
         }
         #[pygetset(setter)]
-        fn set_traps(&self, value: PyDictRef, vm: &VirtualMachine) {
-            let new_dict = vm.ctx.new_dict();
-            for (k, v) in value.items_vec() {
-                let _ = new_dict.set_item(k.as_object(), v.clone(), vm);
-            }
+        fn set_traps(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            // CPython: non-dict -> TypeError; dict missing known signals -> KeyError.
+            let value_dict = value.downcast_ref::<PyDict>()
+                .ok_or_else(|| vm.new_type_error("traps must be a signal dict".to_string()))?
+                .clone();
+            // Every signal must be present in the dict (by exception class).
             for ty in exc().all() {
-                if new_dict.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
-                    let _ = new_dict.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
+                if value_dict.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
+                    return Err(vm.new_key_error(format!("{} not in traps", ty.name())));
                 }
             }
-            *self.traps.lock() = new_dict;
+            *self.traps.lock() = value_dict;
+            Ok(())
         }
         #[pygetset]
         fn flags(&self) -> PyDictRef {
             self.flags.lock().clone()
         }
         #[pygetset(setter)]
-        fn set_flags(&self, value: PyDictRef, vm: &VirtualMachine) {
-            let new_dict = vm.ctx.new_dict();
-            for (k, v) in value.items_vec() {
-                let _ = new_dict.set_item(k.as_object(), v.clone(), vm);
-            }
+        fn set_flags(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let value_dict = value.downcast_ref::<PyDict>()
+                .ok_or_else(|| vm.new_type_error("flags must be a signal dict".to_string()))?
+                .clone();
             for ty in exc().all() {
-                if new_dict.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
-                    let _ = new_dict.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
+                if value_dict.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
+                    return Err(vm.new_key_error(format!("{} not in flags", ty.name())));
                 }
             }
-            *self.flags.lock() = new_dict;
+            *self.flags.lock() = value_dict;
+            Ok(())
         }
 
         #[pymethod]
@@ -2312,10 +2366,26 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn create_decimal(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let d = to_dec(&value, vm)?;
-            // Apply context to the created decimal; implicit float conversion
-            // sets the FloatOperation flag on this context.
+        fn create_decimal(&self, value: OptionalArg<PyObjectRef>, vm: &VirtualMachine) -> PyResult {
+            let value = match value.into_option() {
+                Some(v) => v,
+                None => vm.ctx.new_int(0).into(),
+            };
+            // CPython: Context.create_decimal uses string parsing (to_dec),
+            // but strings with internal whitespace -> NaN (InvalidOperation).
+            // The context's precision is applied after construction.
+            let d = match to_dec(&value, vm) {
+                Ok(d) => d,
+                Err(e) => {
+                    // Parse failure: return NaN with InvalidOperation flag.
+                    let ctx = self.ctx();
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(e);
+                    }
+                    _decimal_core::Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: _decimal_core::Special::NaN }
+                }
+            };
             let mut ctx = self.ctx();
             if value.downcast_ref::<PyFloat>().is_some() {
                 ctx.set_flag(vm, "FloatOperation")?;
