@@ -2389,11 +2389,12 @@ mod _decimal {
                 Some(v) => v,
                 None => vm.ctx.new_int(0).into(),
             };
-            // CPython: Context.create_decimal does NOT trim whitespace from
-            // string args (unlike Decimal()); '3.14\n' -> InvalidOperation -> NaN.
+            // CPython: Context.create_decimal does NOT trim whitespace or strip
+            // underscores from string args (unlike Decimal()).
+            // '3.14\n' / ' 1234' / '12_34' -> InvalidOperation -> NaN.
             if let Some(s) = value.downcast_ref::<PyStr>() {
                 let txt = s.as_wtf8().to_string();
-                if txt != txt.trim() {
+                if txt != txt.trim() || txt.contains('_') {
                     let ctx = self.ctx();
                     ctx.set_flag(vm, "InvalidOperation")?;
                     if ctx.trap(vm, "InvalidOperation")? {
@@ -3323,6 +3324,8 @@ mod _decimal {
                     for item in items {
                         let _ = traps_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
                     }
+                } else {
+                    return Err(vm.new_type_error("traps must be a dict, list, or tuple".to_string()));
                 }
             }
             if let Some(v) = get_field("flags") {
@@ -3344,6 +3347,8 @@ mod _decimal {
                     for item in items {
                         let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
                     }
+                } else {
+                    return Err(vm.new_type_error("flags must be a dict, list, or tuple".to_string()));
                 }
             }
             Ok(c)
