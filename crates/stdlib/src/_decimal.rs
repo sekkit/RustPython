@@ -2157,16 +2157,19 @@ mod _decimal {
         #[pygetset(setter)]
         fn set_traps(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
             // CPython: non-dict -> TypeError; dict missing known signals -> KeyError.
-            let value_dict = value.downcast_ref::<PyDict>()
-                .ok_or_else(|| vm.new_type_error("traps must be a signal dict".to_string()))?
-                .clone();
+            if !value.isinstance(&vm.ctx.types.dict_type) {
+                return Err(vm.new_type_error("traps must be a signal dict".to_string()));
+            }
+            let value_ref = value.downcast_ref::<PyDict>().unwrap();
             // Every signal must be present in the dict (by exception class).
             for ty in exc().all() {
-                if value_dict.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
-                    return Err(vm.new_key_error(format!("{} not in traps", ty.name())));
+                if value_ref.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
+                    let msg: PyObjectRef = vm.ctx.new_str(format!("{} not in traps", ty.name())).into();
+                    return Err(vm.new_key_error(msg));
                 }
             }
-            *self.traps.lock() = value_dict;
+            // PyDictRef is PyRef<PyDict>; clone from the owned value.
+            *self.traps.lock() = value.downcast::<PyDict>().unwrap();
             Ok(())
         }
         #[pygetset]
@@ -2175,15 +2178,17 @@ mod _decimal {
         }
         #[pygetset(setter)]
         fn set_flags(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
-            let value_dict = value.downcast_ref::<PyDict>()
-                .ok_or_else(|| vm.new_type_error("flags must be a signal dict".to_string()))?
-                .clone();
+            if !value.isinstance(&vm.ctx.types.dict_type) {
+                return Err(vm.new_type_error("flags must be a signal dict".to_string()));
+            }
+            let value_ref = value.downcast_ref::<PyDict>().unwrap();
             for ty in exc().all() {
-                if value_dict.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
-                    return Err(vm.new_key_error(format!("{} not in flags", ty.name())));
+                if value_ref.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
+                    let msg: PyObjectRef = vm.ctx.new_str(format!("{} not in flags", ty.name())).into();
+                    return Err(vm.new_key_error(msg));
                 }
             }
-            *self.flags.lock() = value_dict;
+            *self.flags.lock() = value.downcast::<PyDict>().unwrap();
             Ok(())
         }
 
