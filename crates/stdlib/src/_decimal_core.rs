@@ -1013,6 +1013,13 @@ pub(crate) fn dec_pow_mod(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec, m: &
 /// floor division a // b and modulo a % b, computed exactly (sign of divisor
 /// for modulo, floor for division). Returns (floor, mod).
 pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
+    // Specials: NaN/Infinity in divmod -> (NaN, NaN) per CPython.
+    if a.is_special() || b.is_special() {
+        return (
+            Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN },
+            Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN },
+        );
+    }
     // value = ca*10^ea / (cb*10^eb)
     let e = a.exp - b.exp;
     let (num, den) = if e >= 0 {

@@ -1917,6 +1917,11 @@ mod _decimal {
                         return Ok(vm.ctx.not_implemented());
                     };
                     let (floor, m) = _decimal_core::floor_div_mod(&ad, &bd);
+                    // Set InvalidOperation flag if either operand was NaN.
+                    if ad.is_special() || bd.is_special() {
+                        let ctx = current_ctx(vm)?;
+                        ctx.set_flag(vm, "InvalidOperation")?;
+                    }
                     Ok(vm.ctx.new_tuple(vec![
                         PyDecimal::to_py(vm, floor),
                         PyDecimal::to_py(vm, m),
@@ -3164,6 +3169,7 @@ mod _decimal {
 
         #[pymethod]
         fn fma(&self, x: PyObjectRef, y: PyObjectRef, z: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            // CPython: Context.fma rejects strings (TypeError).
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let zd = to_dec_ctx(&z, vm)?;
@@ -3417,6 +3423,24 @@ mod _decimal {
                 None
             } else {
                 Some(args.args[0].clone())
+            };
+            // CPython: localcontext accepts kwargs to modify the context copy.
+            // If kwargs are present, create a Context with them as the source.
+            let ctx_arg = if args.kwargs.is_empty() {
+                ctx_arg
+            } else {
+                // Build a new Context with the kwargs.
+                let ctx_cls: PyObjectRef = vm
+                    .import("_decimal", 0)
+                    .and_then(|m| m.get_attr("Context", vm))
+                    .unwrap_or_else(|_| vm.ctx.none());
+                let kw: Vec<(String, PyObjectRef)> = args
+                    .kwargs
+                    .iter()
+                    .map(|(k, v)| (k.as_str().to_string(), v.clone()))
+                    .collect();
+                let pos: Vec<PyObjectRef> = args.args.clone();
+                Some(vm.invoke(&ctx_cls, FuncArgs::new(pos, kw))?)
             };
             Ok(LocalContext {
                 saved: PyMutex::new(None),
