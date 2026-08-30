@@ -2426,6 +2426,21 @@ mod _decimal {
                 }
             };
             let mut ctx = self.ctx();
+            // CPython: NaN payload digits must not exceed context precision.
+            if d.is_special() && d.special == _decimal_core::Special::NaN
+                || d.special == _decimal_core::Special::SignalingNaN
+            {
+                let payload_digits = _decimal_core::coeff_digits_of(&d.coeff) as isize;
+                if payload_digits > ctx.prec {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "NaN payload too long"));
+                    }
+                    return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                        sign: d.sign, coeff: BigInt::from(0), exp: 0, special: _decimal_core::Special::NaN,
+                    }));
+                }
+            }
             if value.downcast_ref::<PyFloat>().is_some() {
                 ctx.set_flag(vm, "FloatOperation")?;
                 if ctx.trap(vm, "FloatOperation")? {
