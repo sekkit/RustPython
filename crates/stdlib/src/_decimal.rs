@@ -2224,6 +2224,12 @@ mod _decimal {
         }
 
         #[pymethod]
+        fn __delattr__(&self, _name: PyStrRef, vm: &VirtualMachine) -> PyResult<()> {
+            // CPython: attributes are read-only; deletion -> AttributeError.
+            Err(vm.new_attribute_error("context attributes cannot be deleted".to_string()))
+        }
+
+        #[pymethod]
         fn quantize(&self, x: PyObjectRef, y: PyObjectRef, rounding: OptionalArg<PyStrRef>, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
@@ -2378,17 +2384,22 @@ mod _decimal {
             };
             // CPython: Context.create_decimal uses string parsing (to_dec),
             // but strings with internal whitespace -> NaN (InvalidOperation).
-            // The context's precision is applied after construction.
+            // TypeError (e.g. None) must propagate.
             let d = match to_dec(&value, vm) {
                 Ok(d) => d,
                 Err(e) => {
-                    // Parse failure: return NaN with InvalidOperation flag.
-                    let ctx = self.ctx();
-                    ctx.set_flag(vm, "InvalidOperation")?;
-                    if ctx.trap(vm, "InvalidOperation")? {
+                    // Only InvalidOperation (string parse failure) -> NaN;
+                    // TypeError/ValueError propagate.
+                    if e.class().is(&exc().invalid_operation) {
+                        let ctx = self.ctx();
+                        ctx.set_flag(vm, "InvalidOperation")?;
+                        if ctx.trap(vm, "InvalidOperation")? {
+                            return Err(e);
+                        }
+                        _decimal_core::Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: _decimal_core::Special::NaN }
+                    } else {
                         return Err(e);
                     }
-                    _decimal_core::Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: _decimal_core::Special::NaN }
                 }
             };
             let mut ctx = self.ctx();
@@ -3163,14 +3174,6 @@ mod _decimal {
         }
     }
 
-    impl PyContext {
-        #[pymethod]
-        fn __delattr__(&self, _name: PyStrRef, vm: &VirtualMachine) -> PyResult<()> {
-            // CPython: attributes are read-only; deletion -> AttributeError.
-            Err(vm.new_attribute_error("context attributes cannot be deleted".to_string()))
-        }
-    }
-
     /// Build the CPython Context repr/str: lists only True flags/traps by
     /// diagnostic name.
     fn ctx_repr_string_impl(zelf: &PyContext, vm: &VirtualMachine) -> String {
@@ -3254,7 +3257,7 @@ mod _decimal {
                     .ok_or_else(|| vm.new_type_error("rounding must be a string".to_string()))?;
                 c.rounding = PyMutex::new(
                     Rounding::from_str(&s.as_wtf8().to_string())
-                        .ok_or_else(|| vm.new_value_error("invalid rounding".to_string()))?,
+                        .ok_or_else(|| vm.new_type_error("invalid rounding mode".to_string()))?,
                 );
             }
             if let Some(v) = get_field("Emin") {
@@ -3264,10 +3267,18 @@ mod _decimal {
                 c.emax = PyMutex::new(v.try_to_value::<isize>(vm)?);
             }
             if let Some(v) = get_field("capitals") {
-                c.capitals = PyMutex::new(v.try_to_value::<isize>(vm)?);
+                let cv: isize = v.try_to_value(vm)?;
+                if cv != 0 && cv != 1 {
+                    return Err(vm.new_value_error("capitals must be 0 or 1".to_string()));
+                }
+                c.capitals = PyMutex::new(cv);
             }
             if let Some(v) = get_field("clamp") {
-                c.clamp = PyMutex::new(v.try_to_value::<isize>(vm)?);
+                let cv: isize = v.try_to_value(vm)?;
+                if cv != 0 && cv != 1 {
+                    return Err(vm.new_value_error("clamp must be 0 or 1".to_string()));
+                }
+                c.clamp = PyMutex::new(cv);
             }
             if let Some(v) = get_field("traps") {
                 let traps_guard = c.traps.lock();

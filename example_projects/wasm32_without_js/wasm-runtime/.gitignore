@@ -1,4 +1,0 @@
-*.wasm
-target
-Cargo.lock
-!wasm/rustpython.wasm
