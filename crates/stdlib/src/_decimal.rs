@@ -1054,8 +1054,9 @@ mod _decimal {
                 // With ndigits, round(special, n) -> NaN (CPython).
                 // Without ndigits, raises ValueError/OverflowError.
                 if ndigits.into_option().is_some() {
+                    // CPython: round(Inf, n) -> NaN (sign dropped).
                     return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                        sign: xd.sign, coeff: xd.coeff.clone(), exp: 0,
+                        sign: false, coeff: xd.coeff.clone(), exp: 0,
                         special: _decimal_core::Special::NaN,
                     }));
                 }
