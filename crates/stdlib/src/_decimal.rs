@@ -122,7 +122,14 @@ mod _decimal {
             return _decimal_core::parse_decimal(&txt)
                 .map_err(|e| new_decimal_error(vm, "InvalidOperation", &e));
         }
-        // CPython: Decimal([1,2]) raises ValueError (not TypeError).
+        // Tuples/lists as (sign, digits, exponent) triples.
+        if let Some(t) = obj.downcast_ref::<PyTuple>() {
+            return PyDecimal::from_tuple(t.as_slice(), vm);
+        }
+        if let Some(lst) = obj.downcast_ref::<crate::vm::builtins::PyList>() {
+            let items: Vec<PyObjectRef> = lst.borrow_vec().to_vec();
+            return PyDecimal::from_tuple(&items, vm);
+        }
         if obj.downcast_ref::<crate::vm::builtins::PyList>().is_some() {
             return Err(vm.new_value_error("conversion from list to Decimal is not supported".to_string()));
         }
@@ -2382,6 +2389,21 @@ mod _decimal {
                 Some(v) => v,
                 None => vm.ctx.new_int(0).into(),
             };
+            // CPython: Context.create_decimal does NOT trim whitespace from
+            // string args (unlike Decimal()); '3.14\n' -> InvalidOperation -> NaN.
+            if let Some(s) = value.downcast_ref::<PyStr>() {
+                let txt = s.as_wtf8().to_string();
+                if txt != txt.trim() {
+                    let ctx = self.ctx();
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "conversion syntax"));
+                    }
+                    return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                        sign: false, coeff: BigInt::from(0), exp: 0, special: _decimal_core::Special::NaN,
+                    }));
+                }
+            }
             // CPython: Context.create_decimal uses string parsing (to_dec),
             // but strings with internal whitespace -> NaN (InvalidOperation).
             // TypeError (e.g. None) must propagate.
