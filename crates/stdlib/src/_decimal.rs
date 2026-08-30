@@ -2157,7 +2157,7 @@ mod _decimal {
         #[pygetset(setter)]
         fn set_traps(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
             // CPython: non-dict -> TypeError; dict missing known signals -> KeyError.
-            if !value.isinstance(&vm.ctx.types.dict_type) {
+            if !value.class().fast_issubclass(vm.ctx.types.dict_type) {
                 return Err(vm.new_type_error("traps must be a signal dict".to_string()));
             }
             let value_ref = value.downcast_ref::<PyDict>().unwrap();
@@ -2178,7 +2178,7 @@ mod _decimal {
         }
         #[pygetset(setter)]
         fn set_flags(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
-            if !value.isinstance(&vm.ctx.types.dict_type) {
+            if !value.class().fast_issubclass(vm.ctx.types.dict_type) {
                 return Err(vm.new_type_error("flags must be a signal dict".to_string()));
             }
             let value_ref = value.downcast_ref::<PyDict>().unwrap();
@@ -3160,6 +3160,14 @@ mod _decimal {
     impl Representable for PyContext {
         fn repr(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyStrRef> {
             Ok(vm.ctx.new_str(ctx_repr_string_impl(zelf, vm)))
+        }
+    }
+
+    impl PyContext {
+        #[pymethod]
+        fn __delattr__(&self, _name: PyStrRef, vm: &VirtualMachine) -> PyResult<()> {
+            // CPython: attributes are read-only; deletion -> AttributeError.
+            Err(vm.new_attribute_error("context attributes cannot be deleted".to_string()))
         }
     }
 
