@@ -145,9 +145,7 @@ mod _decimal {
         if let Some(i) = obj.downcast_ref::<PyInt>() {
             return Ok(_decimal_core::dec_from_int(vm, i));
         }
-        if let Some(f) = obj.downcast_ref::<PyFloat>() {
-            return Ok(_decimal_core::dec_from_float(f.to_f64()));
-        }
+        // CPython: Context methods reject float and str (TypeError).
         Err(vm.new_type_error(format!("conversion from {} to Decimal is not supported", obj.class().name())))
     }
 
@@ -3284,6 +3282,18 @@ mod _decimal {
             // both positional and keyword forms (the test suite uses keyword
             // args like Context(prec=9, rounding=..., traps=...)).
             let mut pos_iter = args.args.iter();
+            // Validate kwargs: only known Context params are accepted.
+            const VALID_KEYS: &[&str] = &[
+                "prec", "rounding", "Emin", "Emax", "capitals", "clamp",
+                "flags", "traps",
+            ];
+            for k in args.kwargs.keys() {
+                if !VALID_KEYS.contains(&k.as_str()) {
+                    return Err(vm.new_type_error(
+                        format!("Context() got an unexpected keyword argument '{}'", k),
+                    ));
+                }
+            }
             let mut get_field = |key: &str| -> Option<PyObjectRef> {
                 args.get_optional_kwarg(key)
                     .or_else(|| pos_iter.next().cloned())
@@ -3429,18 +3439,13 @@ mod _decimal {
             let ctx_arg = if args.kwargs.is_empty() {
                 ctx_arg
             } else {
-                // Build a new Context with the kwargs.
                 let ctx_cls: PyObjectRef = vm
                     .import("_decimal", 0)
                     .and_then(|m| m.get_attr("Context", vm))
                     .unwrap_or_else(|_| vm.ctx.none());
-                let kw: Vec<(String, PyObjectRef)> = args
-                    .kwargs
-                    .iter()
-                    .map(|(k, v)| (k.as_str().to_string(), v.clone()))
-                    .collect();
-                let pos: Vec<PyObjectRef> = args.args.clone();
-                Some(vm.invoke(&ctx_cls, FuncArgs::new(pos, kw))?)
+                let pos_args = args.args.clone();
+                let kw_args = args.kwargs.clone();
+                Some(vm.invoke(&ctx_cls, FuncArgs::new(pos_args, kw_args))?)
             };
             Ok(LocalContext {
                 saved: PyMutex::new(None),
