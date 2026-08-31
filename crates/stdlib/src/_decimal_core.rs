@@ -1013,12 +1013,37 @@ pub(crate) fn dec_pow_mod(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec, m: &
 /// floor division a // b and modulo a % b, computed exactly (sign of divisor
 /// for modulo, floor for division). Returns (floor, mod).
 pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
-    // Specials: NaN/Infinity in divmod -> (NaN, NaN) per CPython.
-    if a.is_special() || b.is_special() {
+    // Specials per CPython:
+    //   divmod(inf, finite)   = (Inf, NaN)
+    //   divmod(finite, inf)   = (0, a)
+    //   divmod(inf, inf)      = (NaN, NaN)
+    //   divmod(nan, x)        = (NaN, NaN)
+    //   divmod(x, 0)          = (NaN, NaN)
+    let nan = Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN };
+    let is_nan = |d: &Dec| d.special == Special::NaN || d.special == Special::SignalingNaN;
+    if is_nan(a) || is_nan(b) {
+        return (nan.clone(), nan.clone());
+    }
+    let zero = Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite };
+    if b.is_zero() {
+        // b == 0 -> (NaN, NaN)
+        return (nan.clone(), nan.clone());
+    }
+    if a.is_special() {
+        // a == Infinity
+        if b.is_special() {
+            // inf / inf -> (NaN, NaN)
+            return (nan.clone(), nan.clone());
+        }
+        // inf / finite -> (Inf, NaN)
         return (
-            Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN },
-            Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN },
+            Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity },
+            nan.clone(),
         );
+    }
+    if b.is_special() {
+        // finite / inf -> (0, a)
+        return (zero, a.clone());
     }
     // value = ca*10^ea / (cb*10^eb)
     let e = a.exp - b.exp;
