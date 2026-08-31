@@ -665,7 +665,7 @@ mod _decimal {
             } else {
                 &d.coeff * &d_shift
             };
-            let new_signed = if dir < 0 { signed - 1 } else { signed + 1 };
+            let new_signed: BigInt = if dir < 0 { signed - BigInt::from(1) } else { signed + BigInt::from(1) };
             let coeff = new_signed.abs();
             let shifted = Dec {
                 sign: new_signed < BigInt::from(0),
