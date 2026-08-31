@@ -1,4 +1,4 @@
-#[path = "_decimal_core.rs"]
+﻿#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -106,7 +106,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float/str) to Dec.
-    /// Used by Decimal constructor ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â accepts str.
+    /// Used by Decimal constructor ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -137,7 +137,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float) to Dec.
-    /// Used by Context methods ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â rejects str (CPython behavior).
+    /// Used by Context methods ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â rejects str (CPython behavior).
     fn to_dec_ctx(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -189,6 +189,17 @@ mod _decimal {
         } else {
             current_ctx(vm)
         }
+    }
+
+    /// Resolve the context for a no-arg method: rejects any positional args
+    /// (TypeError, CPython parity) and accepts only context= keyword.
+    fn ctx_from_noargs(args: &FuncArgs, vm: &VirtualMachine) -> PyResult<Ctx> {
+        if !args.args.is_empty() {
+            return Err(vm.new_type_error(
+                "unexpected positional argument".to_string(),
+            ));
+        }
+        ctx_from_funcargs(args, vm)
     }
 
     /// Digit-wise logical operation on decimal coefficients. The result keeps
@@ -398,7 +409,7 @@ mod _decimal {
             };
             // Wrap in the DecimalTuple namedtuple (sign, digits, exponent).
             // A process-level shared class so all _decimal module instances
-            // (fresh re-imports) use the same type â€” matches the pickle
+            // (fresh re-imports) use the same type Ã¢â‚¬â€ matches the pickle
             // interchange test's identity expectations.
             let dt_cls = DECIMAL_TUPLE
                 .lock()
@@ -443,7 +454,7 @@ mod _decimal {
         }
         #[pymethod]
         fn is_normal(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<bool> {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             let etiny = ctx.emin - (ctx.prec - 1);
             Ok(!self.d.is_zero()
                 && self.d.special == Special::Finite
@@ -451,7 +462,7 @@ mod _decimal {
         }
         #[pymethod]
         fn is_subnormal(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<bool> {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             let etiny = ctx.emin - (ctx.prec - 1);
             Ok(!self.d.is_zero() && self.d.special == Special::Finite && self.d.exp < etiny)
         }
@@ -489,7 +500,7 @@ mod _decimal {
 
         #[pymethod]
         fn number_class(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<String> {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             let sign = if self.d.sign { "-" } else { "+" };
             match self.d.special {
                 Special::NaN => return Ok(format!("{sign}NaN")),
@@ -512,7 +523,7 @@ mod _decimal {
 
         #[pymethod]
         fn normalize(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             let mut d = self.d.clone();
             if d.is_zero() {
                 d.exp = 0;
@@ -787,7 +798,7 @@ mod _decimal {
 
         #[pymethod]
         fn sqrt(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             if self.d.is_special() || self.d.is_zero() {
                 return Ok(PyDecimal::to_py(vm, self.d.clone()));
             }
@@ -809,7 +820,7 @@ mod _decimal {
 
         #[pymethod]
         fn exp(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             if self.d.is_special() {
                 if self.d.special == Special::Infinity {
                     let r = _decimal_core::apply_context(vm, &ctx, self.d.clone())?;
@@ -841,7 +852,7 @@ mod _decimal {
 
         #[pymethod]
         fn ln(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             // CPython: ln(0) = -Infinity; ln(negative) -> InvalidOperation.
             if self.d.is_zero() {
                 return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
@@ -866,7 +877,7 @@ mod _decimal {
 
         #[pymethod]
         fn log10(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             // CPython: log10(0) = -Infinity; log10(negative) -> InvalidOperation.
             if self.d.is_zero() {
                 return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
@@ -891,7 +902,7 @@ mod _decimal {
 
         #[pymethod]
         fn logb(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             if self.d.is_special() {
                 if self.d.special == Special::Infinity {
                     return Ok(PyDecimal::to_py(vm, self.d.clone()));
@@ -1000,9 +1011,14 @@ mod _decimal {
                 );
             }
             // The second positional arg is localeconv data (dict) for the
-            // 'n' format; it is not a Context. Use it only as a passthrough
-            // (grouping not implemented). The current context applies.
-            let _ = localeconv;
+            // 'n' format; it must be None or a dict (TypeError otherwise).
+            if let Some(lc) = localeconv.into_option() {
+                if !lc.is(&vm.ctx.none()) && lc.downcast_ref::<PyDict>().is_none() {
+                    return Err(vm.new_type_error(
+                        "localeconv must be a dict or None".to_string(),
+                    ));
+                }
+            }
             let ctx = current_ctx(vm)?;
             _decimal_core::format_decimal(&self.d, &spec, vm, &ctx)
                 .map_err(|e| vm.new_value_error(e))
@@ -1213,19 +1229,32 @@ mod _decimal {
             args: FuncArgs,
             vm: &VirtualMachine,
         ) -> PyResult {
+            // CPython: the optional rounding arg must be a valid rounding mode
+            // string; anything else is a TypeError.
+            if args.args.len() > 1 {
+                return Err(vm.new_type_error("optional argument must be a context".to_string()));
+            }
             let rounding_str: Option<String> = args
                 .get_optional_kwarg("rounding")
                 .or_else(|| args.args.get(0).cloned())
                 .map(|v| match v.downcast_ref::<PyStr>() {
-                    Some(s) => Ok(s.as_wtf8().to_string()),
+                    Some(s) => {
+                        let txt = s.as_wtf8().to_string();
+                        if Rounding::from_str(&txt).is_none() {
+                            return Err(vm.new_type_error(format!(
+                                "invalid rounding mode: {txt} (valid: {})",
+                                "ROUND_CEILING, ROUND_FLOOR, ROUND_DOWN, ROUND_UP, ROUND_HALF_DOWN, ROUND_HALF_EVEN, ROUND_HALF_UP, ROUND_05UP"
+                            )));
+                        }
+                        Ok(txt)
+                    }
                     None => Err(vm.new_type_error("rounding must be a string".to_string())),
                 })
                 .transpose()?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let mut ctx2 = ctx;
             if let Some(r) = rounding_str {
-                ctx2.rounding = Rounding::from_str(&r)
-                    .ok_or_else(|| vm.new_value_error("invalid rounding mode".to_string()))?;
+                ctx2.rounding = Rounding::from_str(&r).unwrap();
             }
             let r = _decimal_core::to_integral(vm, &ctx2, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -1251,7 +1280,7 @@ mod _decimal {
 
         #[pymethod]
         fn to_eng_string(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<String> {
-            let _ = ctx_from_funcargs(&args, vm)?;
+            let _ = ctx_from_noargs(&args, vm)?;
             Ok(self.d.to_string())
         }
 
@@ -1304,7 +1333,7 @@ mod _decimal {
 
         #[pymethod]
         fn logical_invert(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             if self.d.exp != 0 || self.d.sign
                 || !self.d.coeff.to_string().chars().all(|c| c == '0' || c == '1')
             {
@@ -1594,7 +1623,7 @@ mod _decimal {
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            // CPython: Decimal(value[, context]) â€” the second positional may be
+            // CPython: Decimal(value[, context]) Ã¢â‚¬â€ the second positional may be
             // a Context; anything more or a non-Context second arg -> TypeError.
             if args.args.len() > 2 {
                 return Err(vm.new_type_error(
@@ -1706,7 +1735,7 @@ mod _decimal {
                 Ok(b) => b,
                 Err(_) => {
                     // Fraction comparison: exact via numerator/denominator.
-                    // self (Decimal) vs other (Fraction) â€” compare the exact
+                    // self (Decimal) vs other (Fraction) Ã¢â‚¬â€ compare the exact
                     // rational self.d against num/den.
                     // Specials first: Infinity/NaN never convert to Dec here
                     // (Fraction is not a Decimal), but compare naturally.
@@ -1745,7 +1774,7 @@ mod _decimal {
                                     let result = matches!(op, PyComparisonOp::Ne);
                                     return Ok(PyComparisonValue::Implemented(result));
                                 }
-                                // Infinity Â±: always greater/less than any
+                                // Infinity Ã‚Â±: always greater/less than any
                                 // finite rational.
                                 let self_pos = !zelf.d.sign;
                                 let result = match op {
@@ -1938,7 +1967,7 @@ mod _decimal {
                         "unhashable type: 'decimal.Decimal'".to_string(),
                     )),
                     Special::NaN => Ok(zelf.as_object().get_id() as hash::PyHash),
-                    // CPython: hash matches the float hash (Â±inf).
+                    // CPython: hash matches the float hash (Ã‚Â±inf).
                     Special::Infinity => {
                         let f: f64 = if d.sign { f64::NEG_INFINITY } else { f64::INFINITY };
                         let float_obj: PyObjectRef = vm.ctx.new_float(f).into();
@@ -3452,7 +3481,7 @@ mod _decimal {
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             let mut c = Self::new_ctx(vm, 28);
-            // Context(prec, rounding, Emin, Emax, capitals, clamp) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â accept
+            // Context(prec, rounding, Emin, Emax, capitals, clamp) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â accept
             // both positional and keyword forms (the test suite uses keyword
             // args like Context(prec=9, rounding=..., traps=...)).
             let mut pos_iter = args.args.iter();
