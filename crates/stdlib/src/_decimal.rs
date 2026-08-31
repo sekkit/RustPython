@@ -1335,21 +1335,40 @@ mod _decimal {
                 .ok_or_else(|| vm.new_type_error("rotate requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let n_obj = to_dec(&n_argv, vm)?;
-            if self.d.exp < 0 || n_obj.exp < 0 {
+            if self.d.exp < 0 || n_obj.exp != 0 {
                 return Err(new_decimal_error(vm, "InvalidOperation", "rotate requires non-negative integers"));
             }
-            let n: i64 = (&n_obj.coeff * BigInt::from(10).pow(n_obj.exp.max(0) as u32)).to_string().parse().unwrap_or(0);
-            let digits = self.d.coeff.to_string();
-            let len = digits.len();
-            if len <= 1 {
+            let n: i64 = n_obj.coeff.to_string().parse().unwrap_or(0);
+            let n = if n_obj.sign { -n } else { n };
+            // CPython bounds the rotation amount to [-prec, prec].
+            if !(-(ctx.prec as i64) <= n && n <= ctx.prec as i64) {
+                return Err(new_decimal_error(vm, "InvalidOperation", "rotate amount out of range"));
+            }
+            if self.d.special == Special::Infinity {
                 return Ok(PyDecimal::to_py(vm, self.d.clone()));
             }
-            // Normalize n into [0, len).
-            let nshift = ((n % len as i64) + len as i64) % len as i64;
-            let cut = (len as i64 - nshift) as usize;
+            // Pad or truncate the coefficient to the context precision.
+            let mut digits = self.d.coeff.to_string();
+            let topad = ctx.prec - digits.len() as isize;
+            if topad > 0 {
+                digits = format!("{}{}", "0".repeat(topad as usize), digits);
+            } else if topad < 0 {
+                digits = digits[digits.len() - ctx.prec as usize..].to_string();
+            }
+            let len = digits.len() as i64;
+            if len == 0 {
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec::zero()));
+            }
+            let nshift = ((n % len) + len) % len;
+            let cut = (len - nshift) as usize;
             let rotated = format!("{}{}", &digits[cut..], &digits[..cut]);
-            let coeff = rotated.parse::<BigInt>().unwrap_or(BigInt::from(0));
-            let result = _decimal_core::Dec { sign: self.d.sign, coeff, exp: self.d.exp, special: self.d.special };
+            let cleaned = rotated.trim_start_matches('0');
+            let coeff: BigInt = if cleaned.is_empty() {
+                BigInt::from(0)
+            } else {
+                cleaned.parse().unwrap_or_else(|_| BigInt::from(0))
+            };
+            let result = _decimal_core::Dec { sign: self.d.sign, coeff, exp: self.d.exp, special: Special::Finite };
             let r = _decimal_core::apply_context(vm, &ctx, result)?;
             Ok(PyDecimal::to_py(vm, r))
         }
