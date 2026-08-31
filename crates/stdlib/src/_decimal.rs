@@ -1,4 +1,4 @@
-﻿#[path = "_decimal_core.rs"]
+#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -569,7 +569,7 @@ mod _decimal {
             args: FuncArgs,
             vm: &VirtualMachine,
         ) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             Ok(PyDecimal::to_py(vm, self.next_step(vm, &ctx, -1)?))
         }
 
@@ -579,7 +579,7 @@ mod _decimal {
             args: FuncArgs,
             vm: &VirtualMachine,
         ) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             Ok(PyDecimal::to_py(vm, self.next_step(vm, &ctx, 1)?))
         }
 
@@ -1266,14 +1266,14 @@ mod _decimal {
             args: FuncArgs,
             vm: &VirtualMachine,
         ) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             let r = _decimal_core::to_integral(vm, &ctx, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
         fn to_integral_exact(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_funcargs(&args, vm)?;
+            let ctx = ctx_from_noargs(&args, vm)?;
             let r = _decimal_core::to_integral(vm, &ctx, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
