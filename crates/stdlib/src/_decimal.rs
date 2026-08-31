@@ -989,6 +989,16 @@ mod _decimal {
             if spec.is_empty() {
                 return Ok(self.d.to_string());
             }
+            // Deprecated 'N' type: emits a DeprecationWarning and formats
+            // like uppercase 'n' (CPython).
+            if spec.ends_with('N') {
+                let _ = crate::common::stdlib::_warnings::warn(
+                    vm.ctx.exceptions.deprecation_warning,
+                    "The 'N' format code is deprecated in Python and will be removed in the future.".to_owned(),
+                    2,
+                    vm,
+                );
+            }
             // The second positional arg is localeconv data (dict) for the
             // 'n' format; it is not a Context. Use it only as a passthrough
             // (grouping not implemented). The current context applies.

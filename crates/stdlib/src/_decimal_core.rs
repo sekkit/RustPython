@@ -1173,7 +1173,7 @@ pub(crate) fn format_decimal(
     } else {
         let last = spec.chars().last().unwrap();
         match last {
-            'e' | 'E' | 'f' | 'F' | 'g' | 'G' | 'n' => {
+            'e' | 'E' | 'f' | 'F' | 'g' | 'G' | 'n' | 'N' => {
                 spec.pop();
                 Some(last)
             }
@@ -1344,7 +1344,7 @@ pub(crate) fn format_decimal(
                 let s = dec.to_string();
                 s.trim_start_matches(['-', '+']).to_string()
             } else {
-                format_general(&dec, precision, ty == 'G' || ty == 'n', vm)
+                format_general(&dec, precision, ty == 'G' || ty == 'N' || ty == 'n', vm)
             }
         }
         '%' => {
