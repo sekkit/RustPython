@@ -510,6 +510,10 @@ pub(crate) fn ctx_trap_exc(vm: &VirtualMachine, name: &str, _msg: &str) -> PyBas
 
 /// Add two finite decimals (context applied).
 pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyResult<Dec> {
+    // Special propagation.
+    if a.is_special() || b.is_special() {
+        return special_binary(vm, ctx, a, b, "add");
+    }
     let e = a.exp.min(b.exp);
     let pa = BigInt::from(10).pow((a.exp - e) as u32);
     let pb = BigInt::from(10).pow((b.exp - e) as u32);
