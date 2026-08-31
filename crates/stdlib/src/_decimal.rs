@@ -1,4 +1,4 @@
-#[path = "_decimal_core.rs"]
+﻿#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -106,7 +106,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float/str) to Dec.
-    /// Used by Decimal constructor ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â accepts str.
+    /// Used by Decimal constructor ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -137,7 +137,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float) to Dec.
-    /// Used by Context methods ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â rejects str (CPython behavior).
+    /// Used by Context methods ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â rejects str (CPython behavior).
     fn to_dec_ctx(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -409,7 +409,7 @@ mod _decimal {
             };
             // Wrap in the DecimalTuple namedtuple (sign, digits, exponent).
             // A process-level shared class so all _decimal module instances
-            // (fresh re-imports) use the same type Ã¢â‚¬â€ matches the pickle
+            // (fresh re-imports) use the same type ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â matches the pickle
             // interchange test's identity expectations.
             let dt_cls = DECIMAL_TUPLE
                 .lock()
@@ -744,7 +744,7 @@ mod _decimal {
                 .cloned()
                 .ok_or_else(|| vm.new_type_error("max requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             let chosen = if dec_cmp(&self.d, &b) >= 0 { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -758,7 +758,7 @@ mod _decimal {
                 .cloned()
                 .ok_or_else(|| vm.new_type_error("min requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             let chosen = if dec_cmp(&self.d, &b) <= 0 { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -772,7 +772,7 @@ mod _decimal {
                 .cloned()
                 .ok_or_else(|| vm.new_type_error("max_mag requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
             let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
             let chosen = if dec_cmp(&xa, &ya) >= 0 { self.d.clone() } else { b };
@@ -788,7 +788,7 @@ mod _decimal {
                 .cloned()
                 .ok_or_else(|| vm.new_type_error("min_mag requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
             let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
             let chosen = if dec_cmp(&xa, &ya) <= 0 { self.d.clone() } else { b };
@@ -931,7 +931,7 @@ mod _decimal {
                 .get(0)
                 .cloned()
                 .ok_or_else(|| vm.new_type_error("compare_signal requires an argument".to_string()))?;
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             if self.d.special == Special::NaN || self.d.special == Special::SignalingNaN
                 || b.special == Special::NaN || b.special == Special::SignalingNaN
@@ -1338,7 +1338,7 @@ mod _decimal {
             let other = args.args.get(0).cloned()
                 .ok_or_else(|| vm.new_type_error("logical_and requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
                 return Err(new_decimal_error(vm, "InvalidOperation", "logical_and requires non-negative integers"));
             }
@@ -1353,7 +1353,7 @@ mod _decimal {
             let other = args.args.get(0).cloned()
                 .ok_or_else(|| vm.new_type_error("logical_or requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
                 return Err(new_decimal_error(vm, "InvalidOperation", "logical_or requires non-negative integers"));
             }
@@ -1420,7 +1420,7 @@ mod _decimal {
             let n_argv = args.args.get(0).cloned()
                 .ok_or_else(|| vm.new_type_error("rotate requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let n_obj = to_dec(&n_argv, vm)?;
+            let n_obj = to_dec_ctx(&n_argv, vm)?;
             if self.d.exp < 0 || n_obj.exp != 0 {
                 return Err(new_decimal_error(vm, "InvalidOperation", "rotate requires non-negative integers"));
             }
@@ -1464,7 +1464,7 @@ mod _decimal {
             let n_argv = args.args.get(0).cloned()
                 .ok_or_else(|| vm.new_type_error("scaleb requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let n_obj = to_dec(&n_argv, vm)?;
+            let n_obj = to_dec_ctx(&n_argv, vm)?;
             if n_obj.special != Special::Finite || n_obj.exp < 0 {
                 return Err(new_decimal_error(vm, "InvalidOperation", "scaleb requires an integer"));
             }
@@ -1493,7 +1493,7 @@ mod _decimal {
             let n_argv = args.args.get(0).cloned()
                 .ok_or_else(|| vm.new_type_error("shift requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let n_obj = to_dec(&n_argv, vm)?;
+            let n_obj = to_dec_ctx(&n_argv, vm)?;
             if self.d.exp < 0 || n_obj.exp != 0 {
                 return Err(new_decimal_error(vm, "InvalidOperation", "shift requires integer"));
             }
@@ -1570,7 +1570,7 @@ mod _decimal {
                 .cloned()
                 .ok_or_else(|| vm.new_type_error("remainder_near requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             // r = self - b * n where n = round(self/b) to nearest int (half-even).
             // Intermediate division uses extra precision so rounding is exact.
             let wide = Ctx::from_parts(50, Rounding::HalfEven, 999999999, -999999999, 0,
@@ -1670,7 +1670,7 @@ mod _decimal {
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            // CPython: Decimal(value[, context]) Ã¢â‚¬â€ the second positional may be
+            // CPython: Decimal(value[, context]) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the second positional may be
             // a Context; anything more or a non-Context second arg -> TypeError.
             if args.args.len() > 2 {
                 return Err(vm.new_type_error(
@@ -1782,7 +1782,7 @@ mod _decimal {
                 Ok(b) => b,
                 Err(_) => {
                     // Fraction comparison: exact via numerator/denominator.
-                    // self (Decimal) vs other (Fraction) Ã¢â‚¬â€ compare the exact
+                    // self (Decimal) vs other (Fraction) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compare the exact
                     // rational self.d against num/den.
                     // Specials first: Infinity/NaN never convert to Dec here
                     // (Fraction is not a Decimal), but compare naturally.
@@ -1821,7 +1821,7 @@ mod _decimal {
                                     let result = matches!(op, PyComparisonOp::Ne);
                                     return Ok(PyComparisonValue::Implemented(result));
                                 }
-                                // Infinity Ã‚Â±: always greater/less than any
+                                // Infinity Ãƒâ€šÃ‚Â±: always greater/less than any
                                 // finite rational.
                                 let self_pos = !zelf.d.sign;
                                 let result = match op {
@@ -2014,7 +2014,7 @@ mod _decimal {
                         "unhashable type: 'decimal.Decimal'".to_string(),
                     )),
                     Special::NaN => Ok(zelf.as_object().get_id() as hash::PyHash),
-                    // CPython: hash matches the float hash (Ã‚Â±inf).
+                    // CPython: hash matches the float hash (Ãƒâ€šÃ‚Â±inf).
                     Special::Infinity => {
                         let f: f64 = if d.sign { f64::NEG_INFINITY } else { f64::INFINITY };
                         let float_obj: PyObjectRef = vm.ctx.new_float(f).into();
@@ -3519,7 +3519,7 @@ mod _decimal {
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             let mut c = Self::new_ctx(vm, 28);
-            // Context(prec, rounding, Emin, Emax, capitals, clamp) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â accept
+            // Context(prec, rounding, Emin, Emax, capitals, clamp) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â accept
             // both positional and keyword forms (the test suite uses keyword
             // args like Context(prec=9, rounding=..., traps=...)).
             let mut pos_iter = args.args.iter();
