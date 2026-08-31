@@ -1408,27 +1408,50 @@ mod _decimal {
                 .ok_or_else(|| vm.new_type_error("shift requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let n_obj = to_dec(&n_argv, vm)?;
-            if self.d.exp < 0 || n_obj.exp < 0 {
-                return Err(new_decimal_error(vm, "InvalidOperation", "shift requires non-negative integers"));
+            if self.d.exp < 0 || n_obj.exp != 0 {
+                return Err(new_decimal_error(vm, "InvalidOperation", "shift requires integer"));
             }
-            let n: i64 = (&n_obj.coeff * BigInt::from(10).pow(n_obj.exp.max(0) as u32)).to_string().parse().unwrap_or(0);
-            // shift digits (positive = left, negative = right); keeps same exp.
+            let n: i64 = n_obj.coeff.to_string().parse().unwrap_or(0);
+            let n = if n_obj.sign { -n } else { n };
+            if !(-(ctx.prec as i64) <= n && n <= ctx.prec as i64) {
+                return Err(new_decimal_error(vm, "InvalidOperation", "shift amount out of range"));
+            }
+            if self.d.special == Special::Infinity {
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            // Pad or truncate the coefficient to the context precision.
             let mut digits = self.d.coeff.to_string();
-            if n > 0 {
-                // shift left: move more significant, pad zeros; result may
-                // grow but apply_context trims.
-                let shift_n = n as usize;
-                digits = format!("{}{}", &digits, "0".repeat(shift_n));
-            } else if n < 0 {
+            let topad = ctx.prec - digits.len() as isize;
+            if topad > 0 {
+                digits = format!("{}{}", "0".repeat(topad as usize), digits);
+            } else if topad < 0 {
+                digits = digits[digits.len() - ctx.prec as usize..].to_string();
+            }
+            let shifted = if n < 0 {
+                // Shift right: drop the last |n| digits (Python negative slice).
                 let drop = (-n) as usize;
                 if drop >= digits.len() {
-                    digits = "0".to_string();
+                    String::new()
                 } else {
-                    digits = digits[..digits.len() - drop].to_string();
+                    digits[..digits.len() - drop].to_string()
                 }
-            }
-            let coeff = digits.parse::<BigInt>().unwrap_or(BigInt::from(0));
-            let result = _decimal_core::Dec { sign: self.d.sign, coeff, exp: self.d.exp, special: self.d.special };
+            } else {
+                // Shift left: append zeros, keep last prec digits.
+                let s = format!("{}{}", digits, "0".repeat(n as usize));
+                let plen = ctx.prec as usize;
+                if s.len() > plen {
+                    s[s.len() - plen..].to_string()
+                } else {
+                    s
+                }
+            };
+            let cleaned = shifted.trim_start_matches('0');
+            let coeff: BigInt = if cleaned.is_empty() {
+                BigInt::from(0)
+            } else {
+                cleaned.parse().unwrap_or_else(|_| BigInt::from(0))
+            };
+            let result = _decimal_core::Dec { sign: self.d.sign, coeff, exp: self.d.exp, special: Special::Finite };
             let r = _decimal_core::apply_context(vm, &ctx, result)?;
             Ok(PyDecimal::to_py(vm, r))
         }
