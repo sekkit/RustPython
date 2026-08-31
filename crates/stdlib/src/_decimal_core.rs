@@ -966,7 +966,7 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
             Rounding::HalfEven,
             ctx.emax,
             ctx.emin,
-            ctx.capitals,
+            ctx.clamp,
             vm.ctx.new_dict(),
             vm.ctx.new_dict(),
         );
