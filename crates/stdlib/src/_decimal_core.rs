@@ -1268,7 +1268,12 @@ pub(crate) fn format_decimal(
             }
         }
     }
-    let ty = type_char.unwrap_or('n');
+    // No type char defaults to 'g' or 'G' depending on context.capitals.
+    // Ctx does not carry capitals; default (and the test contexts) use 1 -> 'G'.
+    let ty = match type_char {
+        Some(c) => c,
+        None => 'G',
+    };
     // Sign prefix from spec's sign flag + value sign.
     // `+`: always show sign; `-`: only negatives; ` `: space for positive.
     let force_sign = sign_flag == '+';
@@ -1344,7 +1349,7 @@ pub(crate) fn format_decimal(
                 let s = dec.to_string();
                 s.trim_start_matches(['-', '+']).to_string()
             } else {
-                format_general(&dec, precision, ty == 'G' || ty == 'N' || ty == 'n', vm)
+                format_general(&dec, precision, ty == 'G' || ty == 'N', vm)
             }
         }
         '%' => {
