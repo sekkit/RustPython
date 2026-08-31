@@ -1298,11 +1298,16 @@ pub(crate) fn format_decimal(
         } else if space_sign {
             s.insert(0, ' ');
         }
-        // Apply width padding (NaN/Inf subject to fill/align).
-        if s.chars().count() < width {
-            s = apply_padding(&s, width, fill, align, neg, space_sign);
+        // '%' type appends a percent sign for specials too.
+        let mut padded = s.clone();
+        if ty == '%' {
+            padded.push('%');
         }
-        return Ok(s);
+        // Apply width padding (NaN/Inf subject to fill/align).
+        if padded.chars().count() < width {
+            padded = apply_padding(&padded, width, fill, align, neg, space_sign);
+        }
+        return Ok(padded);
     }
 
     let sign_str = if neg {
@@ -1352,6 +1357,21 @@ pub(crate) fn format_decimal(
     };
 
     let mut signed = format!("{sign_str}{value_str}");
+    // 'z' option: if the FORMATTED value (after rounding) is negative zero,
+    // drop the minus sign (e.g. '-.01' with '.1f' rounds to '-0.0' -> '0.0').
+    if coerce_negzero && sign_str == "-" {
+        let body = signed.trim_start_matches('-');
+        let mantissa: String = body
+            .split(['e', 'E', '%'])
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|&c| c != '.' && c != ',')
+            .collect();
+        if !mantissa.is_empty() && mantissa.chars().all(|c| c == '0') {
+            signed = signed.replacen('-', "", 1);
+        }
+    }
     // '#' alternate form: force a decimal point on f/F (and no-type) output.
     if alternate && (ty.to_ascii_lowercase() == 'f' || no_type)
         && !signed.contains(['.', 'e', 'E', '%'])
