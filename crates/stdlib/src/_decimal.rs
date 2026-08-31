@@ -992,7 +992,7 @@ mod _decimal {
             // Deprecated 'N' type: emits a DeprecationWarning and formats
             // like uppercase 'n' (CPython).
             if spec.ends_with('N') {
-                let _ = crate::common::stdlib::_warnings::warn(
+                let _ = crate::vm::stdlib::_warnings::warn(
                     vm.ctx.exceptions.deprecation_warning,
                     "The 'N' format code is deprecated in Python and will be removed in the future.".to_owned(),
                     2,
