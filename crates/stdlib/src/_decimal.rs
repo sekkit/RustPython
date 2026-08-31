@@ -1,4 +1,4 @@
-﻿#[path = "_decimal_core.rs"]
+#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -589,7 +589,15 @@ mod _decimal {
                 });
             }
             if d.is_special() {
-                // next_plus(inf) = inf; next_minus(Â±inf) = largest finite.
+                // sNaN signals InvalidOperation (raises when trapped).
+                if d.special == Special::SignalingNaN {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "next with sNaN"));
+                    }
+                    return Ok(Dec { sign: d.sign, coeff: d.coeff.clone(), exp: 0, special: Special::NaN });
+                }
+                // next_plus(inf) = inf; next_minus(inf) = largest finite.
                 if d.special == Special::Infinity {
                     if dir > 0 {
                         return Ok(d.clone());
@@ -646,18 +654,21 @@ mod _decimal {
             if dec_cmp(&rounded_dec, d) != 0 {
                 return Ok(rounded_dec);
             }
-            // Self is already on the lattice: move by 10^(Etiny-1).
+            // Self is already on the lattice: move by 10^(Etiny-1). Work in the
+            // signed value domain so -1 - tiny = -1.01 (not -0.99).
             let etiny = ctx.emin - (ctx.prec as isize - 1);
             let tiny_exp = etiny - 1;
             let e = tiny_exp.min(d.exp);
             let d_shift = BigInt::from(10).pow((d.exp - e) as u32);
-            let coeff = if dir < 0 {
-                &d.coeff * &d_shift - BigInt::from(1)
+            let signed = if d.sign {
+                -(&d.coeff * &d_shift)
             } else {
-                &d.coeff * &d_shift + BigInt::from(1)
+                &d.coeff * &d_shift
             };
+            let new_signed = if dir < 0 { signed - 1 } else { signed + 1 };
+            let coeff = new_signed.abs();
             let shifted = Dec {
-                sign: d.sign,
+                sign: new_signed < BigInt::from(0),
                 coeff,
                 exp: e,
                 special: Special::Finite,
