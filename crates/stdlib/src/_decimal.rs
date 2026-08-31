@@ -627,7 +627,8 @@ mod _decimal {
                 exp: rounded.1,
                 special: Special::Finite,
             };
-            if rounded_dec.coeff != d.coeff || rounded_dec.exp != d.exp {
+            // Compare by VALUE, not representation ((10, 0) == (1, 1)).
+            if _decimal_core::dec_cmp(&rounded_dec, d) != 0 {
                 return Ok(rounded_dec);
             }
             // Self is already on the lattice: move by 10^(Etiny-1).
