@@ -1266,15 +1266,62 @@ mod _decimal {
             args: FuncArgs,
             vm: &VirtualMachine,
         ) -> PyResult {
-            let ctx = ctx_from_noargs(&args, vm)?;
-            let r = _decimal_core::to_integral(vm, &ctx, &self.d)?;
+            // Accepts an optional positional rounding mode (CPython).
+            if args.args.len() > 1 {
+                return Err(vm.new_type_error("too many arguments".to_string()));
+            }
+            let rounding_str: Option<String> = args
+                .get_optional_kwarg("rounding")
+                .or_else(|| args.args.get(0).cloned())
+                .map(|v| match v.downcast_ref::<PyStr>() {
+                    Some(s) => {
+                        let txt = s.as_wtf8().to_string();
+                        if Rounding::from_str(&txt).is_none() {
+                            return Err(vm.new_type_error(format!(
+                                "invalid rounding mode: {txt}"
+                            )));
+                        }
+                        Ok(txt)
+                    }
+                    None => Err(vm.new_type_error("rounding must be a string".to_string())),
+                })
+                .transpose()?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let mut ctx2 = ctx;
+            if let Some(r) = rounding_str {
+                ctx2.rounding = Rounding::from_str(&r).unwrap();
+            }
+            let r = _decimal_core::to_integral(vm, &ctx2, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
         fn to_integral_exact(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_noargs(&args, vm)?;
-            let r = _decimal_core::to_integral(vm, &ctx, &self.d)?;
+            if args.args.len() > 1 {
+                return Err(vm.new_type_error("too many arguments".to_string()));
+            }
+            let rounding_str: Option<String> = args
+                .get_optional_kwarg("rounding")
+                .or_else(|| args.args.get(0).cloned())
+                .map(|v| match v.downcast_ref::<PyStr>() {
+                    Some(s) => {
+                        let txt = s.as_wtf8().to_string();
+                        if Rounding::from_str(&txt).is_none() {
+                            return Err(vm.new_type_error(format!(
+                                "invalid rounding mode: {txt}"
+                            )));
+                        }
+                        Ok(txt)
+                    }
+                    None => Err(vm.new_type_error("rounding must be a string".to_string())),
+                })
+                .transpose()?;
+            let ctx = ctx_from_funcargs(&args, vm)?;
+            let mut ctx2 = ctx;
+            if let Some(r) = rounding_str {
+                ctx2.rounding = Rounding::from_str(&r).unwrap();
+            }
+            let r = _decimal_core::to_integral(vm, &ctx2, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
