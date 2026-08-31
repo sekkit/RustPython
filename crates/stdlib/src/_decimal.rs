@@ -589,16 +589,31 @@ mod _decimal {
                 });
             }
             if d.is_special() {
-                // next_plus(inf) = inf; next_minus(inf) = largest finite.
+                // next_plus(inf) = inf; next_minus(±inf) = largest finite.
                 if d.special == Special::Infinity {
                     if dir > 0 {
                         return Ok(d.clone());
                     }
-                    // next_minus(+inf) = 9...9 E+Etop ; for -inf keep -inf.
                     let etop = ctx.emax - (ctx.prec - 1);
                     let nines = "9".repeat(ctx.prec.max(1) as usize);
                     return Ok(Dec {
                         sign: false,
+                        coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
+                        exp: etop - (ctx.prec as isize - 1),
+                        special: Special::Finite,
+                    });
+                }
+                return Ok(d.clone());
+            }
+            // A finite value above Emax behaves like +Inf for next_*:
+            // next_minus -> largest finite; next_plus -> stays huge (Inf).
+            let adj = d.exp + _decimal_core::coeff_digits_of(&d.coeff) as isize - 1;
+            if adj > ctx.emax {
+                if dir < 0 {
+                    let etop = ctx.emax - (ctx.prec - 1);
+                    let nines = "9".repeat(ctx.prec.max(1) as usize);
+                    return Ok(Dec {
+                        sign: d.sign,
                         coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
                         exp: etop - (ctx.prec as isize - 1),
                         special: Special::Finite,
