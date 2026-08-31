@@ -523,7 +523,11 @@ mod _decimal {
                 d.coeff /= BigInt::from(10);
                 d.exp += 1;
             }
-            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            let mut r = _decimal_core::apply_context(vm, &ctx, d)?;
+            // Underflow to zero: CPython normalizes to plain '0' (exp 0).
+            if r.is_zero() {
+                r.exp = 0;
+            }
             Ok(PyDecimal::to_py(vm, r))
         }
 
