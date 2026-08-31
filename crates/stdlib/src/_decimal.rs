@@ -1,4 +1,4 @@
-#[path = "_decimal_core.rs"]
+﻿#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -106,7 +106,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float/str) to Dec.
-    /// Used by Decimal constructor ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â accepts str.
+    /// Used by Decimal constructor ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -137,7 +137,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float) to Dec.
-    /// Used by Context methods ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â rejects str (CPython behavior).
+    /// Used by Context methods ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â rejects str (CPython behavior).
     fn to_dec_ctx(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -398,7 +398,7 @@ mod _decimal {
             };
             // Wrap in the DecimalTuple namedtuple (sign, digits, exponent).
             // A process-level shared class so all _decimal module instances
-            // (fresh re-imports) use the same type — matches the pickle
+            // (fresh re-imports) use the same type â€” matches the pickle
             // interchange test's identity expectations.
             let dt_cls = DECIMAL_TUPLE
                 .lock()
@@ -589,7 +589,7 @@ mod _decimal {
                 });
             }
             if d.is_special() {
-                // next_plus(inf) = inf; next_minus(±inf) = largest finite.
+                // next_plus(inf) = inf; next_minus(Â±inf) = largest finite.
                 if d.special == Special::Infinity {
                     if dir > 0 {
                         return Ok(d.clone());
@@ -599,7 +599,7 @@ mod _decimal {
                     return Ok(Dec {
                         sign: false,
                         coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
-                        exp: etop - (ctx.prec as isize - 1),
+                        exp: etop,
                         special: Special::Finite,
                     });
                 }
@@ -615,7 +615,7 @@ mod _decimal {
                     return Ok(Dec {
                         sign: d.sign,
                         coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
-                        exp: etop - (ctx.prec as isize - 1),
+                        exp: etop,
                         special: Special::Finite,
                     });
                 }
@@ -1517,7 +1517,7 @@ mod _decimal {
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            // CPython: Decimal(value[, context]) — the second positional may be
+            // CPython: Decimal(value[, context]) â€” the second positional may be
             // a Context; anything more or a non-Context second arg -> TypeError.
             if args.args.len() > 2 {
                 return Err(vm.new_type_error(
@@ -1629,7 +1629,7 @@ mod _decimal {
                 Ok(b) => b,
                 Err(_) => {
                     // Fraction comparison: exact via numerator/denominator.
-                    // self (Decimal) vs other (Fraction) — compare the exact
+                    // self (Decimal) vs other (Fraction) â€” compare the exact
                     // rational self.d against num/den.
                     // Specials first: Infinity/NaN never convert to Dec here
                     // (Fraction is not a Decimal), but compare naturally.
@@ -1668,7 +1668,7 @@ mod _decimal {
                                     let result = matches!(op, PyComparisonOp::Ne);
                                     return Ok(PyComparisonValue::Implemented(result));
                                 }
-                                // Infinity ±: always greater/less than any
+                                // Infinity Â±: always greater/less than any
                                 // finite rational.
                                 let self_pos = !zelf.d.sign;
                                 let result = match op {
@@ -1861,7 +1861,7 @@ mod _decimal {
                         "unhashable type: 'decimal.Decimal'".to_string(),
                     )),
                     Special::NaN => Ok(zelf.as_object().get_id() as hash::PyHash),
-                    // CPython: hash matches the float hash (±inf).
+                    // CPython: hash matches the float hash (Â±inf).
                     Special::Infinity => {
                         let f: f64 = if d.sign { f64::NEG_INFINITY } else { f64::INFINITY };
                         let float_obj: PyObjectRef = vm.ctx.new_float(f).into();
@@ -3375,7 +3375,7 @@ mod _decimal {
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             let mut c = Self::new_ctx(vm, 28);
-            // Context(prec, rounding, Emin, Emax, capitals, clamp) Ã¢â‚¬â€ accept
+            // Context(prec, rounding, Emin, Emax, capitals, clamp) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â accept
             // both positional and keyword forms (the test suite uses keyword
             // args like Context(prec=9, rounding=..., traps=...)).
             let mut pos_iter = args.args.iter();
@@ -3747,6 +3747,7 @@ mod _decimal {
         Ok(())
     }
 }
+
 
 
 
