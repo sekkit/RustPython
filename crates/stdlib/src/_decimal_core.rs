@@ -431,7 +431,20 @@ pub(crate) fn apply_context(
     ctx: &Ctx,
     mut dec: Dec,
 ) -> PyResult<Dec> {
-    if dec.is_special() || dec.is_zero() {
+    if dec.is_special() {
+        return Ok(dec);
+    }
+    // Zero still needs exponent-range handling: '0e-999' with a small
+    // Emin gets clamped (Clamped signal) even though the value is zero.
+    if dec.is_zero() {
+        let etiny = ctx.emin - (ctx.prec as isize - 1);
+        if dec.exp < etiny {
+            ctx.set_flag(vm, "Clamped")?;
+            if ctx.trap(vm, "Clamped")? {
+                return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+            }
+            dec.exp = etiny;
+        }
         return Ok(dec);
     }
     let (new_coeff, new_exp, inexact) =
@@ -470,6 +483,9 @@ pub(crate) fn apply_context(
             ctx.set_flag(vm, "Rounded")?;
         }
         ctx.set_flag(vm, "Clamped")?;
+        if ctx.trap(vm, "Clamped")? {
+            return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+        }
     } else if dec.exp + coeff_digits_of(&dec.coeff) as isize - 1 > ctx.emax {
         // Overflow is determined by the adjusted exponent, not just the
         // stored coefficient exponent: 999 * 1E+425000000 has adjusted
