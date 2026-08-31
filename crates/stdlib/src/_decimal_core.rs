@@ -1199,6 +1199,8 @@ pub(crate) fn format_decimal(
     let mut width: usize = 0;
     let mut grouping: Option<char> = None;
     let mut sign_flag = '-';
+    let mut coerce_negzero = false;
+    let mut alternate = false;
     if !rest.is_empty() {
         // fill/align: optional fill char + one of <>=^
         let rbytes: Vec<char> = rest.chars().collect();
@@ -1211,9 +1213,24 @@ pub(crate) fn format_decimal(
             align = rbytes[idx];
             idx += 1;
         }
-        // sign flag
+        // sign flag (+ - space); 'z' is a separate option that coerces a
+        // negative zero to an unsigned zero before the sign is applied.
+        // e.g. 'z'  -> -0 => '0'; '+z' -> -0 => '+0'; ' z' -> -0 => ' 0'.
+        // NB: 'z' as a FILL char (z< / z> / z= / z^) is handled above and
+        // must NOT be treated as the coerce option.
         if idx < rbytes.len() && (rbytes[idx] == '+' || rbytes[idx] == '-' || rbytes[idx] == ' ') {
             sign_flag = rbytes[idx];
+            idx += 1;
+            // 'z' may follow a sign flag: '+z', ' z', '-z'.
+            if idx < rbytes.len() && rbytes[idx] == 'z' {
+                coerce_negzero = true;
+                idx += 1;
+            }
+        } else if idx < rbytes.len() && rbytes[idx] == 'z'
+            && (idx + 1 >= rbytes.len() || !['<', '>', '=', '^'].contains(&rbytes[idx + 1]))
+        {
+            // 'z' as the sign group itself (a following non-align char, or end).
+            coerce_negzero = true;
             idx += 1;
         }
         // '0' means zero-pad after sign
@@ -1222,6 +1239,7 @@ pub(crate) fn format_decimal(
             idx += 1;
         }
         if idx < rbytes.len() && rbytes[idx] == '#' {
+            alternate = true;
             idx += 1;
         }
         // width (digits)
@@ -1256,6 +1274,11 @@ pub(crate) fn format_decimal(
     let force_sign = sign_flag == '+';
     let space_sign = sign_flag == ' ';
     // Also strip the sign flag from `rest` so it isn't misread below.
+    let mut neg = d.sign;
+    // 'z' option: a negative zero formats as unsigned zero.
+    if coerce_negzero && d.is_zero() {
+        neg = false;
+    }
     if d.is_special() {
         let payload = if d.coeff == BigInt::from(0) {
             String::new()
@@ -1268,7 +1291,7 @@ pub(crate) fn format_decimal(
             Special::SignalingNaN => format!("sNaN{payload}"),
             Special::Finite => unreachable!(),
         };
-        if d.sign {
+        if neg {
             s.insert(0, '-');
         } else if force_sign {
             s.insert(0, '+');
@@ -1277,12 +1300,12 @@ pub(crate) fn format_decimal(
         }
         // Apply width padding (NaN/Inf subject to fill/align).
         if s.chars().count() < width {
-            s = apply_padding(&s, width, fill, align, d.sign, space_sign);
+            s = apply_padding(&s, width, fill, align, neg, space_sign);
         }
         return Ok(s);
     }
 
-    let sign_str = if d.sign {
+    let sign_str = if neg {
         "-"
     } else if force_sign {
         "+"
@@ -1329,6 +1352,12 @@ pub(crate) fn format_decimal(
     };
 
     let mut signed = format!("{sign_str}{value_str}");
+    // '#' alternate form: force a decimal point on f/F (and no-type) output.
+    if alternate && (ty.to_ascii_lowercase() == 'f' || no_type)
+        && !signed.contains(['.', 'e', 'E', '%'])
+    {
+        signed.push('.');
+    }
     if grouping.is_some() && !d.is_special() {
         // Group first, then handle zero-padding so leading zeros are not
         // drawn into the grouping (e.g. '+09,' of 123456 -> '+0,123,456').
