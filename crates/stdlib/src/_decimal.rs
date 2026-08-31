@@ -574,8 +574,10 @@ mod _decimal {
             ctx: &Ctx,
             dir: i8,
         ) -> PyResult<Dec> {
-            // next_plus/next_minus: the nearest representable value in the
-            // context's precision just above/below this one.
+            // CPython (_pydecimal): next_plus uses ROUND_CEILING, next_minus
+            // uses ROUND_FLOOR. Round self to the context; if that changes the
+            // value, it IS the next representable. Otherwise add/subtract the
+            // smallest lattice increment 10^(Etiny-1) and re-round.
             let d = &self.d;
             if d.is_zero() {
                 // 0 -> +/- 0.1 (smallest representable 1-digit increment)
@@ -587,26 +589,66 @@ mod _decimal {
                 });
             }
             if d.is_special() {
+                // next_plus(inf) = inf; next_minus(inf) = largest finite.
+                if d.special == Special::Infinity {
+                    if dir > 0 {
+                        return Ok(d.clone());
+                    }
+                    // next_minus(+inf) = 9...9 E+Etop ; for -inf keep -inf.
+                    let etop = ctx.emax - (ctx.prec - 1);
+                    let nines = "9".repeat(ctx.prec.max(1) as usize);
+                    return Ok(Dec {
+                        sign: false,
+                        coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
+                        exp: etop - (ctx.prec as isize - 1),
+                        special: Special::Finite,
+                    });
+                }
                 return Ok(d.clone());
             }
-            // step = 10^expIncrement.
-            let step = BigInt::from(10).pow(d.exp.max(0) as u32);
-            // next_minus moves toward -Inf; next_plus toward +Inf. The sign
-            // is always preserved. next_minus increases magnitude for
-            // negatives (more negative), decreases for positives; next_plus
-            // does the opposite.
-            let want_negative = d.sign;
-            let bigger_mag = (d.sign && dir < 0) || (!d.sign && dir > 0);
-            let (coeff, n_exp) = if bigger_mag {
-                (&d.coeff + &step, d.exp)
-            } else if &d.coeff <= &step {
-                (BigInt::from(9), d.exp - 1)
-            } else {
-                (&d.coeff - &step, d.exp)
+            let dir_rounding = if dir < 0 { Rounding::Floor } else { Rounding::Ceiling };
+            // Clone the context with the directional rounding.
+            let mut rctx = ctx.clone();
+            rctx.rounding = dir_rounding;
+            // Round self to precision with that rounding.
+            let rounded = _decimal_core::round_to_prec(
+                vm, &rctx, d.sign, &d.coeff, d.exp, ctx.prec,
+            )?;
+            let rounded_dec = Dec {
+                sign: d.sign,
+                coeff: rounded.0,
+                exp: rounded.1,
+                special: Special::Finite,
             };
-            let result = Dec { sign: want_negative, coeff, exp: n_exp, special: Special::Finite };
-            let r = _decimal_core::apply_context(vm, ctx, result)?;
-            Ok(r)
+            if rounded_dec.coeff != d.coeff || rounded_dec.exp != d.exp {
+                return Ok(rounded_dec);
+            }
+            // Self is already on the lattice: move by 10^(Etiny-1).
+            let etiny = ctx.emin - (ctx.prec as isize - 1);
+            let tiny_exp = etiny - 1;
+            let e = tiny_exp.min(d.exp);
+            let d_shift = BigInt::from(10).pow((d.exp - e) as u32);
+            let coeff = if dir < 0 {
+                &d.coeff * &d_shift - BigInt::from(1)
+            } else {
+                &d.coeff * &d_shift + BigInt::from(1)
+            };
+            let shifted = Dec {
+                sign: d.sign,
+                coeff,
+                exp: e,
+                special: Special::Finite,
+            };
+            // Re-round with the directional rounding.
+            let r2 = _decimal_core::round_to_prec(
+                vm, &rctx, shifted.sign, &shifted.coeff, shifted.exp, ctx.prec,
+            )?;
+            Ok(Dec {
+                sign: shifted.sign,
+                coeff: r2.0,
+                exp: r2.1,
+                special: Special::Finite,
+            })
         }
 
         #[pymethod]
