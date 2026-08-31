@@ -1249,7 +1249,13 @@ pub(crate) fn format_decimal(
             idx += 1;
         }
         if !wdigits.is_empty() {
-            width = wdigits.parse().unwrap_or(0);
+            // CPython raises ValueError when the requested width exceeds
+            // internal limits (avoids a pathological allocation).
+            let parsed: u128 = wdigits.parse().unwrap_or(u128::MAX);
+            if parsed > 2_000_000_000 {
+                return Err("format specification exceeds internal limits of _decimal".to_string());
+            }
+            width = parsed as usize;
         }
         // grouping (after width, per format grammar)
         if idx < rbytes.len() && (rbytes[idx] == ',' || rbytes[idx] == '_') {
