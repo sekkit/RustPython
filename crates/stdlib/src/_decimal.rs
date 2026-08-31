@@ -647,16 +647,19 @@ mod _decimal {
                 exp: e,
                 special: Special::Finite,
             };
-            // Re-round with the directional rounding.
+            // Re-round with the directional rounding, then apply the full
+            // context (Emax/Emin clamping) like CPython's _fix+_check for
+            // next_minus(inf-like) cases (e.g. 1e9999 -> 9.999999E+999).
             let r2 = _decimal_core::round_to_prec(
                 vm, &rctx, shifted.sign, &shifted.coeff, shifted.exp, ctx.prec,
             )?;
-            Ok(Dec {
+            let candidate = Dec {
                 sign: shifted.sign,
                 coeff: r2.0,
                 exp: r2.1,
                 special: Special::Finite,
-            })
+            };
+            _decimal_core::apply_context(vm, ctx, candidate)
         }
 
         #[pymethod]
@@ -1499,9 +1502,14 @@ mod _decimal {
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            // CPython: Decimal accepts at most one positional argument (plus
-            // the optional context keyword). Extra positional args -> TypeError.
-            if args.args.len() > 1 {
+            // CPython: Decimal(value[, context]) — the second positional may be
+            // a Context; anything more or a non-Context second arg -> TypeError.
+            if args.args.len() > 2 {
+                return Err(vm.new_type_error(
+                    "Decimal() accepts at most 2 positional arguments".to_string(),
+                ));
+            }
+            if args.args.len() == 2 && args.args[1].downcast_ref::<PyContext>().is_none() {
                 return Err(vm.new_type_error(
                     "Decimal() takes at most 2 arguments (value and context)".to_string(),
                 ));
@@ -1511,8 +1519,11 @@ mod _decimal {
                 .or_else(|| args.args.get(0).cloned())
                 .unwrap_or_else(|| vm.ctx.new_int(0).into());
             // context keyword overrides the current context (CPython uses it for
-            // flag/precision application during construction).
-            let context_kw = args.get_optional_kwarg("context");
+            // flag/precision application during construction). A positional 2nd
+            // arg is also accepted as the context.
+            let context_kw = args
+                .get_optional_kwarg("context")
+                .or_else(|| args.args.get(1).cloned());
             // Accept a tuple OR list as the (sign, digits, exponent) triple.
             let triple: Vec<PyObjectRef> = if let Some(tuple) = value.downcast_ref::<PyTuple>() {
                 tuple.as_slice().to_vec()
