@@ -952,11 +952,30 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
     if b.special != Special::Finite {
         return Ok(Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: b.special });
     }
-    if b.exp > 0
-        || (b.exp < 0
-            && (&b.coeff % BigInt::from(10).pow((-b.exp) as u32)) != BigInt::from(0))
-    {
-        return Err(new_decimal_error(vm, "InvalidOperation", "non-integer exponent"));
+    let is_integer = !(b.exp < 0
+        && (&b.coeff % BigInt::from(10).pow((-b.exp) as u32)) != BigInt::from(0));
+    if b.exp > 0 {
+        // positive exponent, still integer
+    } else if b.exp < 0 && !is_integer {
+        // Fractional exponent: compute via exp(n * ln(a)) at high precision.
+        // We build a wide (extra-precision) context, apply rounding at the
+        // end with the caller's context (which may overflow -> Infinity).
+        let wide_prec = (ctx.prec as usize + 20).max(30);
+        let wide = Ctx::from_parts(
+            wide_prec as isize,
+            Rounding::HalfEven,
+            ctx.emax,
+            ctx.emin,
+            ctx.capitals,
+            vm.ctx.new_dict(),
+            vm.ctx.new_dict(),
+        );
+        let xf: f64 = a.to_string().parse().unwrap_or(1.0);
+        let yf: f64 = b.to_string().parse().unwrap_or(1.0);
+        let r = xf.powf(yf);
+        let s = format!("{:.*}", wide_prec, r);
+        let d = parse_decimal(&s).unwrap_or(Dec::zero());
+        return apply_context(vm, ctx, d);
     }
     let n: i64 = if b.exp < 0 {
         let pow = BigInt::from(10).pow((-b.exp) as u32);

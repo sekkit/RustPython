@@ -1869,8 +1869,8 @@ mod _decimal {
                 remainder: Some(|a, b, vm| binop_num(a, b, vm, _decimal_core::dec_mod)),
                 power: Some(|a, b, c, vm| {
                     if !vm.is_none(c) {
-                        // ternary power: a ** b % m; a/b may be int (like the
-                        // binary slot) as long as one side is a Decimal.
+                        // ternary power: a ** b % m; Decimal can be the base,
+                        // exponent, or modulus (CPython dispatches on any of them)
                         let can = |o: &PyObject| o.downcast_ref::<PyDecimal>().is_some() || o.downcast_ref::<PyInt>().is_some();
                         if !can(a) || !can(b) {
                             return Ok(vm.ctx.not_implemented());
@@ -1887,7 +1887,15 @@ mod _decimal {
                                 Err(_) => return Ok(vm.ctx.not_implemented()),
                             }, pb.d.clone())
                         } else {
-                            return Ok(vm.ctx.not_implemented());
+                            // Neither a nor b is Decimal: only the modulus is.
+                            // Convert both ints to Decimal via to_dec.
+                            (match to_dec(a, vm) {
+                                Ok(d) => d,
+                                Err(_) => return Ok(vm.ctx.not_implemented()),
+                            }, match to_dec(b, vm) {
+                                Ok(d) => d,
+                                Err(_) => return Ok(vm.ctx.not_implemented()),
+                            })
                         };
                         let md = to_dec(&c_obj, vm)?;
                         let ctx = current_ctx(vm)?;
