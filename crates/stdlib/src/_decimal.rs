@@ -608,8 +608,15 @@ mod _decimal {
             }
             let dir_rounding = if dir < 0 { Rounding::Floor } else { Rounding::Ceiling };
             // Clone the context with the directional rounding.
-            let mut rctx = ctx.clone();
-            rctx.rounding = dir_rounding;
+            let mut rctx = Ctx::from_parts(
+                ctx.prec,
+                dir_rounding,
+                ctx.emax,
+                ctx.emin,
+                ctx.clamp,
+                ctx.flags.clone(),
+                ctx.traps.clone(),
+            );
             // Round self to precision with that rounding.
             let rounded = _decimal_core::round_to_prec(
                 vm, &rctx, d.sign, &d.coeff, d.exp, ctx.prec,
