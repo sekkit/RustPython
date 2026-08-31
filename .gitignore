@@ -1,0 +1,49 @@
+/target
+/*/target
+**/*.rs.bk
+**/*.bytecode
+__pycache__/
+**/*.pytest_cache
+.*sw*
+.repl_history.txt
+.vscode/
+wasm-pack.log
+.idea/*
+!.idea/icon.svg
+!.idea/vcs.xml
+.envrc
+
+flame-graph.html
+flame.txt
+flamescope.json
+/wapm.lock
+/wapm_packages
+/.cargo/config
+
+extra_tests/snippets/resources
+extra_tests/not_impl.py
+
+Lib/_sysconfig_vars*.json
+Lib/site-packages/*
+!Lib/site-packages/README.txt
+Lib/test/data/*
+!Lib/test/data/README
+cpython/
+.claude/
+docs/superpowers/
+
+# pip --target downloads and lab scratch (never commit vendored packages)
+bench/sitepkg*/
+bench/labs/
+bench/reports/*.tmp
+bench/*.exe
+bench/*.pyc
+# Sweep test runner logs (see bench\sweep*.ps1)
+bench/*.log
+bench/*.log.err
+# Built C-API test extension modules (see bench\build_test_extensions.ps1)
+Lib/*.pyd
+# cl.exe /LD leaves intermediate artifacts in the invoking directory
+/*.obj
+/*.exp
+/*.lib

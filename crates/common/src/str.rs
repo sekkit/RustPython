@@ -1,0 +1,1259 @@
+// spell-checker:ignore uncomputed
+use crate::atomic::{OncePtr, PyAtomic, Radium};
+use crate::format::CharLen;
+use crate::wtf8::{CodePoint, Wtf8, Wtf8Buf};
+use crate::wtf8_index::Wtf8Index;
+use ascii::{AsciiChar, AsciiStr, AsciiString};
+use core::fmt;
+use core::ops::{Bound, RangeBounds};
+use core::sync::atomic::Ordering::Relaxed;
+
+#[allow(non_camel_case_types)]
+pub type wchar_t = cfg_select! {
+    target_arch = "wasm32" => u32,
+    _ => libc::wchar_t,
+};
+
+/// Utf8 + state.ascii (+ PyUnicode_Kind in future)
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StrKind {
+    Ascii,
+    Utf8,
+    Wtf8,
+}
+
+impl core::ops::BitOr for StrKind {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Wtf8, _) | (_, Self::Wtf8) => Self::Wtf8,
+            (Self::Utf8, _) | (_, Self::Utf8) => Self::Utf8,
+            (Self::Ascii, Self::Ascii) => Self::Ascii,
+        }
+    }
+}
+
+impl StrKind {
+    #[must_use]
+    pub const fn is_ascii(&self) -> bool {
+        matches!(self, Self::Ascii)
+    }
+
+    #[must_use]
+    pub const fn is_utf8(&self) -> bool {
+        matches!(self, Self::Ascii | Self::Utf8)
+    }
+
+    #[inline(always)]
+    #[must_use]
+    pub fn can_encode(&self, code: CodePoint) -> bool {
+        match self {
+            Self::Ascii => code.is_ascii(),
+            Self::Utf8 => code.to_char().is_some(),
+            Self::Wtf8 => true,
+        }
+    }
+}
+
+pub trait DeduceStrKind {
+    fn str_kind(&self) -> StrKind;
+}
+
+impl DeduceStrKind for str {
+    fn str_kind(&self) -> StrKind {
+        if self.is_ascii() {
+            StrKind::Ascii
+        } else {
+            StrKind::Utf8
+        }
+    }
+}
+
+impl DeduceStrKind for Wtf8 {
+    fn str_kind(&self) -> StrKind {
+        if self.is_ascii() {
+            StrKind::Ascii
+        } else if self.is_utf8() {
+            StrKind::Utf8
+        } else {
+            StrKind::Wtf8
+        }
+    }
+}
+
+impl DeduceStrKind for String {
+    fn str_kind(&self) -> StrKind {
+        (**self).str_kind()
+    }
+}
+
+impl DeduceStrKind for Wtf8Buf {
+    fn str_kind(&self) -> StrKind {
+        (**self).str_kind()
+    }
+}
+
+impl<T: DeduceStrKind + ?Sized> DeduceStrKind for &T {
+    fn str_kind(&self) -> StrKind {
+        (**self).str_kind()
+    }
+}
+
+impl<T: DeduceStrKind + ?Sized> DeduceStrKind for Box<T> {
+    fn str_kind(&self) -> StrKind {
+        (**self).str_kind()
+    }
+}
+
+#[derive(Debug)]
+pub enum PyKindStr<'a> {
+    Ascii(&'a AsciiStr),
+    Utf8(&'a str),
+    Wtf8(&'a Wtf8),
+}
+
+/// How far from an end an index is resolved by walking rather than by building
+/// the code point index.
+///
+/// PyPy spells this `MAX_UNROLL_NEXT_CODEPOINT_POS`, in a guard that also asks
+/// the JIT whether the index is a constant, so that the walk unrolls. There is
+/// no JIT here to ask, and the walk is short rather than free -- but four steps
+/// still beat a pass over the whole buffer, and skipping the build is what
+/// keeps `s[0]` and `s[1:-1]` on a long string from paying for a table.
+const MAX_WALK_TO_INDEX: usize = 4;
+
+#[derive(Debug, Clone)]
+pub struct StrData {
+    data: StrStorage,
+    kind: StrKind,
+    len: StrLen,
+    index: Wtf8IndexSlot,
+}
+
+/// A borrowed view of a string's WTF-8 data, used by the header-only
+/// [`PyStr`] layout where the data lives inline at a fixed offset instead of
+/// in an owned [`StrData`] field. Constructed on demand from the object's
+/// inline bytes; all accessors mirror their [`StrData`] counterparts.
+#[derive(Debug, Clone, Copy)]
+pub struct StrDataRef<'a> {
+    bytes: &'a [u8],
+    kind: StrKind,
+    char_len: usize,
+}
+
+impl<'a> StrDataRef<'a> {
+    /// Construct a borrowed view. `char_len` is supplied by the caller (it is
+    /// the character count stored in the object header); ASCII strings have
+    /// `char_len == bytes.len()`.
+    #[inline]
+    pub const fn new(bytes: &'a [u8], kind: StrKind, char_len: usize) -> Self {
+        Self {
+            bytes,
+            kind,
+            char_len,
+        }
+    }
+
+    #[inline]
+    pub const fn as_wtf8(&self) -> &Wtf8 {
+        // WTF-8 bytes are always valid WTF-8 by construction.
+        unsafe { Wtf8::from_bytes_unchecked(self.bytes) }
+    }
+
+    // TODO: rename to to_str
+    #[inline]
+    pub fn as_str(&self) -> Option<&str> {
+        self.kind
+            .is_utf8()
+            .then(|| unsafe { core::str::from_utf8_unchecked(self.bytes) })
+    }
+
+    #[inline]
+    pub fn as_ascii(&self) -> Option<&AsciiStr> {
+        self.kind
+            .is_ascii()
+            .then(|| unsafe { AsciiStr::from_ascii_unchecked(self.bytes) })
+    }
+
+    #[inline]
+    pub const fn kind(&self) -> StrKind {
+        self.kind
+    }
+
+    #[inline]
+    pub fn as_str_kind(&self) -> PyKindStr<'_> {
+        match self.kind {
+            StrKind::Ascii => {
+                PyKindStr::Ascii(unsafe { AsciiStr::from_ascii_unchecked(self.bytes) })
+            }
+            StrKind::Utf8 => PyKindStr::Utf8(unsafe { core::str::from_utf8_unchecked(self.bytes) }),
+            StrKind::Wtf8 => PyKindStr::Wtf8(self.as_wtf8()),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    #[inline]
+    pub fn char_len(&self) -> usize {
+        self.char_len
+    }
+
+    /// The byte offset of code point `index`, using the shared walk helpers.
+    pub fn char_index_to_byte(&self, index: usize) -> usize {
+        if self.kind.is_ascii() {
+            return index.min(self.bytes.len());
+        }
+        if index >= self.char_len {
+            return self.bytes.len();
+        }
+        self.as_wtf8()
+            .code_point_indices()
+            .nth(index)
+            .map_or(self.bytes.len(), |(byte, _)| byte)
+    }
+
+    /// The byte range spanned by the code points in `range`.
+    #[must_use]
+    pub fn char_range_to_bytes(&self, range: core::ops::Range<usize>) -> core::ops::Range<usize> {
+        if self.kind.is_ascii() {
+            return range;
+        }
+        let start = self.char_index_to_byte(range.start);
+        let end = if range.end >= self.char_len {
+            self.bytes.len()
+        } else {
+            self.char_index_to_byte(range.end)
+        };
+        start..end
+    }
+
+    /// The code point index containing `bytepos`.
+    pub fn byte_to_char_index(&self, bytepos: usize) -> usize {
+        if self.kind.is_ascii() {
+            return bytepos.min(self.bytes.len());
+        }
+        let bytepos = bytepos.min(self.bytes.len());
+        self.as_wtf8()
+            .code_point_indices()
+            .take_while(|(byte, _)| *byte < bytepos)
+            .count()
+    }
+
+    /// The code point at `index`.
+    pub fn nth_char(&self, index: usize) -> CodePoint {
+        self.as_wtf8()
+            .code_point_indices()
+            .nth(index)
+            .map_or(CodePoint::from_char('\u{FFFD}'), |(_, cp)| cp)
+    }
+
+    /// Clone into an owned [`StrData`] from the borrowed bytes.
+    pub fn clone_to_data(&self) -> StrData {
+        let owned: Box<Wtf8> = self.as_wtf8().into_box();
+        StrData::from(owned)
+    }
+}
+
+/// Where a `[StrData]` stores its WTF-8 bytes.
+///
+/// `StrStorage::Heap` owns the data in a heap box (the default for ordinary
+/// RustPython strings). `StrStorage::Inline` owns the data in a `Vec<u8>`
+/// buffer, which backs the C-API inline string path without a separate heap
+/// indirection. `StrStorage::Sso` keeps short strings (any WTF-8) entirely inside
+/// the header — no heap allocation, no pointer chase, and cloning copies the
+/// bytes instead of allocating. `StrStorage::Grow` is a `Wtf8Buf` with spare
+/// capacity used by in-place concatenation (`s += ...` on a uniquely-owned
+/// string): the buffer reallocs geometrically instead of copying from scratch
+/// per append.
+#[derive(Debug, Clone)]
+enum StrStorage {
+    Heap(Box<Wtf8>),
+    Inline(Vec<u8>),
+    Sso(SsoBuf),
+    Grow(Wtf8Buf),
+}
+
+/// Capacity of the small-string-optimization buffer inside [`StrData`].
+///
+/// An SSO buffer must fit into the space the `Vec<u8>` variant already
+/// occupies (24 bytes): one length byte plus up to 22 payload bytes, so
+/// adding it does not grow `StrData` (or the `PyStr` header that embeds it).
+const SSO_CAP: usize = 22;
+
+const _: () = assert!(size_of::<SsoBuf>() <= size_of::<Vec<u8>>());
+
+/// Header-owned bytes of a small pure-ASCII string.
+#[derive(Debug, Clone)]
+struct SsoBuf {
+    len: u8,
+    bytes: [u8; SSO_CAP],
+}
+
+impl SsoBuf {
+    /// Capture `bytes` for header storage; `None` when they are too long.
+    /// Any WTF-8 is accepted (ASCII or not) — the kind lives in
+    /// [`StrData::kind`], not in the buffer.
+    #[inline]
+    fn new(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() > SSO_CAP {
+            return None;
+        }
+        let mut buf = [0u8; SSO_CAP];
+        buf[..bytes.len()].copy_from_slice(bytes);
+        Some(Self {
+            len: bytes.len() as u8,
+            bytes: buf,
+        })
+    }
+
+    #[inline]
+    const fn as_slice(&self) -> &[u8] {
+        let len = self.len as usize;
+        let (head, _) = self.bytes.split_at(len);
+        head
+    }
+}
+
+/// A [`Wtf8Index`] built on first use.
+///
+/// The table is a pure function of `data`, so publishing it races benignly: a
+/// thread that loses the exchange drops its own copy and reads the winner's.
+#[derive(Default)]
+struct Wtf8IndexSlot(OncePtr<Wtf8Index>);
+
+impl Wtf8IndexSlot {
+    #[inline(always)]
+    fn new() -> Self {
+        Self(OncePtr::new())
+    }
+
+    #[inline]
+    fn get_or_build(&self, data: &Wtf8, char_len: usize) -> &Wtf8Index {
+        let index = self
+            .0
+            .get_or_init(|| Box::new(Wtf8Index::new(data, char_len)));
+        // The slot owns the table, never replaces it, and outlives the borrow.
+        unsafe { index.as_ref() }
+    }
+}
+
+impl fmt::Debug for Wtf8IndexSlot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0.get() {
+            Some(_) => f.write_str("<built>"),
+            None => f.write_str("<unbuilt>"),
+        }
+    }
+}
+
+impl Clone for Wtf8IndexSlot {
+    /// A fresh slot: the clone copies the buffer, so it has to index that copy,
+    /// and the table is rebuilt on demand rather than eagerly here.
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Wtf8IndexSlot {
+    fn drop(&mut self) {
+        if let Some(index) = self.0.get() {
+            drop(unsafe { Box::from_raw(index.as_ptr()) });
+        }
+    }
+}
+
+struct StrLen(PyAtomic<usize>);
+
+impl From<usize> for StrLen {
+    #[inline(always)]
+    fn from(value: usize) -> Self {
+        Self(Radium::new(value))
+    }
+}
+
+impl fmt::Debug for StrLen {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let len = self.0.load(Relaxed);
+        if len == usize::MAX {
+            f.write_str("<uncomputed>")
+        } else {
+            len.fmt(f)
+        }
+    }
+}
+
+impl StrLen {
+    #[inline(always)]
+    fn zero() -> Self {
+        0usize.into()
+    }
+
+    #[inline(always)]
+    fn uncomputed() -> Self {
+        usize::MAX.into()
+    }
+}
+
+impl Clone for StrLen {
+    fn clone(&self) -> Self {
+        Self(self.0.load(Relaxed).into())
+    }
+}
+
+impl Default for StrData {
+    fn default() -> Self {
+        Self {
+            data: StrStorage::Heap(<Box<Wtf8>>::default()),
+            kind: StrKind::Ascii,
+            len: StrLen::zero(),
+            index: Wtf8IndexSlot::new(),
+        }
+    }
+}
+
+impl From<Box<Wtf8>> for StrData {
+    fn from(value: Box<Wtf8>) -> Self {
+        // doing the check is ~10x faster for ascii, and is actually only 2% slower worst case for
+        // non-ascii; see https://github.com/RustPython/RustPython/pull/2586#issuecomment-844611532
+        let kind = value.str_kind();
+        if let Some(data) = Self::try_sso(value.as_bytes()) {
+            return data;
+        }
+        unsafe { Self::new_str_unchecked(value, kind) }
+    }
+}
+
+impl From<Box<str>> for StrData {
+    #[inline]
+    fn from(value: Box<str>) -> Self {
+        // doing the check is ~10x faster for ascii, and is actually only 2% slower worst case for
+        // non-ascii; see https://github.com/RustPython/RustPython/pull/2586#issuecomment-844611532
+        let kind = value.str_kind();
+        if let Some(data) = Self::try_sso(value.as_bytes()) {
+            return data;
+        }
+        unsafe { Self::new_str_unchecked(value.into(), kind) }
+    }
+}
+
+impl From<Box<AsciiStr>> for StrData {
+    #[inline]
+    fn from(value: Box<AsciiStr>) -> Self {
+        // Short ASCII strings live entirely in the header; free the box.
+        if let Some(data) = Self::try_sso_ascii(value.as_bytes()) {
+            return data;
+        }
+        Self {
+            len: value.len().into(),
+            data: StrStorage::Heap(value.into()),
+            kind: StrKind::Ascii,
+            index: Wtf8IndexSlot::new(),
+        }
+    }
+}
+
+impl From<AsciiChar> for StrData {
+    fn from(ch: AsciiChar) -> Self {
+        Self::try_sso_ascii(&[ch.as_byte()]).expect("1-byte ASCII always fits SSO")
+    }
+}
+
+impl From<char> for StrData {
+    fn from(ch: char) -> Self {
+        if let Ok(ch) = ascii::AsciiChar::from_ascii(ch) {
+            ch.into()
+        } else {
+            Self {
+                data: StrStorage::Heap(ch.to_string().into()),
+                kind: StrKind::Utf8,
+                len: 1.into(),
+                index: Wtf8IndexSlot::new(),
+            }
+        }
+    }
+}
+
+impl From<CodePoint> for StrData {
+    fn from(ch: CodePoint) -> Self {
+        if let Some(ch) = ch.to_char() {
+            ch.into()
+        } else {
+            Self {
+                data: StrStorage::Heap(Wtf8Buf::from(ch).into()),
+                kind: StrKind::Wtf8,
+                len: 1.into(),
+                index: Wtf8IndexSlot::new(),
+            }
+        }
+    }
+}
+
+impl StrData {
+    /// Store a short string (≤ 22 bytes, any WTF-8) entirely inside the
+    /// header — no heap allocation at all. Returns `None` when the bytes are
+    /// too long, in which case callers fall back to boxed storage.
+    ///
+    /// The kind is deduced from the bytes; for non-ASCII the character count
+    /// is computed once here (the buffer is at most 22 bytes, so the scan is
+    /// trivial) and cached in the length slot like every other storage.
+    #[inline]
+    pub fn try_sso(bytes: &[u8]) -> Option<Self> {
+        let buf = SsoBuf::new(bytes)?;
+        let wtf8 = unsafe { Wtf8::from_bytes_unchecked(buf.as_slice()) };
+        let kind = wtf8.str_kind();
+        let char_len = match kind {
+            StrKind::Ascii => bytes.len(),
+            _ => wtf8.code_points().count(),
+        };
+        Some(Self {
+            len: char_len.into(),
+            data: StrStorage::Sso(buf),
+            kind,
+            index: Wtf8IndexSlot::new(),
+        })
+    }
+
+    /// ASCII-only specialization of [`Self::try_sso`].
+    #[inline]
+    pub fn try_sso_ascii(bytes: &[u8]) -> Option<Self> {
+        if !bytes.is_ascii() {
+            return None;
+        }
+        Self::try_sso(bytes)
+    }
+
+    /// # Safety
+    ///
+    /// Given `bytes` must be valid data for given `kind`
+    #[must_use]
+    pub unsafe fn new_str_unchecked(data: Box<Wtf8>, kind: StrKind) -> Self {
+        let len = match kind {
+            StrKind::Ascii => data.len().into(),
+            _ => StrLen::uncomputed(),
+        };
+        Self {
+            data: StrStorage::Heap(data),
+            kind,
+            len,
+            index: Wtf8IndexSlot::new(),
+        }
+    }
+
+    /// # Safety
+    ///
+    /// `char_len` must be accurate.
+    #[must_use]
+    pub unsafe fn new_with_char_len(data: Box<Wtf8>, kind: StrKind, char_len: usize) -> Self {
+        Self {
+            data: StrStorage::Heap(data),
+            kind,
+            len: char_len.into(),
+            index: Wtf8IndexSlot::new(),
+        }
+    }
+
+    /// Build a StrData whose buffer is owned inline by StrStorage::Inline.
+    /// This backs the C-API string path (PyUnicode_New): the bytes must be valid
+    /// WTF-8 data for kind.
+    ///
+    /// # Safety
+    ///
+    /// data must be valid WTF-8 bytes for the given kind.
+    #[must_use]
+    pub unsafe fn new_inline_unchecked(data: Vec<u8>, kind: StrKind) -> Self {
+        let len = match kind {
+            StrKind::Ascii => data.len().into(),
+            _ => StrLen::uncomputed(),
+        };
+        Self {
+            data: StrStorage::Inline(data),
+            kind,
+            len,
+            index: Wtf8IndexSlot::new(),
+        }
+    }
+
+    /// If this StrData is backed by the inline C-API buffer, return a
+    /// shared slice of it.
+    #[inline]
+    pub fn inline_bytes(&self) -> Option<&[u8]> {
+        match &self.data {
+            StrStorage::Heap(_) | StrStorage::Sso(_) | StrStorage::Grow(_) => None,
+            StrStorage::Inline(bytes) => Some(bytes.as_slice()),
+        }
+    }
+
+    #[inline]
+    pub const fn as_wtf8(&self) -> &Wtf8 {
+        match &self.data {
+            StrStorage::Heap(b) => &**b,
+            StrStorage::Inline(bytes) => unsafe { Wtf8::from_bytes_unchecked(bytes.as_slice()) },
+            StrStorage::Sso(buf) => unsafe { Wtf8::from_bytes_unchecked(buf.as_slice()) },
+            StrStorage::Grow(buf) => buf.as_slice(),
+        }
+    }
+
+    /// In-place append for uniquely-owned strings.
+    ///
+    /// Appends `other` (any WTF-8) to the growable buffer, reallocating
+    /// geometrically. Returns `false` when the current storage is not yet
+    /// growable — the caller should convert via [`Self::to_growable`]
+    /// instead. The character count of the appended piece is computed over
+    /// the appended bytes only, so a run of appends stays O(total).
+    pub fn append_in_place(&mut self, other: &Wtf8) -> bool {
+        let old_char_len = self.char_len();
+        let buf = match &mut self.data {
+            StrStorage::Grow(buf) => buf,
+            _ => return false,
+        };
+        buf.reserve(other.len());
+        buf.push_wtf8(other);
+        let added = if other.is_ascii() {
+            other.len()
+        } else {
+            other.code_points().count()
+        };
+        self.len = (old_char_len + added).into();
+        true
+    }
+
+    /// Re-seed this storage as a growable buffer holding the current bytes
+    /// plus `other`, reserving spare capacity so a run of appends amortizes
+    /// to O(total). The kind is re-deduced (an ASCII string concatenated
+    /// with non-ASCII becomes Utf8/Wtf8).
+    pub fn to_growable(&mut self, other: &Wtf8) {
+        let mut buf = Wtf8Buf::with_capacity((self.as_wtf8().len() + other.len()) * 2 + 16);
+        if !self.as_wtf8().is_empty() {
+            buf.push_wtf8(self.as_wtf8());
+        }
+        buf.push_wtf8(other);
+        let kind = buf.str_kind();
+        let chars = match kind {
+            StrKind::Ascii => buf.len(),
+            _ => buf.as_slice().code_points().count(),
+        };
+        self.len = chars.into();
+        self.kind = kind;
+        self.data = StrStorage::Grow(buf);
+    }
+
+    // TODO: rename to to_str
+    #[inline]
+    pub fn as_str(&self) -> Option<&str> {
+        self.kind
+            .is_utf8()
+            .then(|| unsafe { core::str::from_utf8_unchecked(self.as_wtf8().as_bytes()) })
+    }
+
+    pub fn as_ascii(&self) -> Option<&AsciiStr> {
+        self.kind
+            .is_ascii()
+            .then(|| unsafe { AsciiStr::from_ascii_unchecked(self.as_wtf8().as_bytes()) })
+    }
+
+    pub const fn kind(&self) -> StrKind {
+        self.kind
+    }
+
+    #[inline]
+    pub fn as_str_kind(&self) -> PyKindStr<'_> {
+        match self.kind {
+            StrKind::Ascii => PyKindStr::Ascii(unsafe {
+                AsciiStr::from_ascii_unchecked(self.as_wtf8().as_bytes())
+            }),
+            StrKind::Utf8 => PyKindStr::Utf8(unsafe {
+                core::str::from_utf8_unchecked(self.as_wtf8().as_bytes())
+            }),
+            StrKind::Wtf8 => PyKindStr::Wtf8(self.as_wtf8()),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.as_wtf8().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.as_wtf8().is_empty()
+    }
+
+    #[inline]
+    pub fn char_len(&self) -> usize {
+        match self.len.0.load(Relaxed) {
+            usize::MAX => self._compute_char_len(),
+            len => len,
+        }
+    }
+
+    #[cold]
+    fn _compute_char_len(&self) -> usize {
+        let len = if let Some(s) = self.as_str() {
+            // utf8 chars().count() is optimized
+            s.chars().count()
+        } else {
+            self.as_wtf8().code_points().count()
+        };
+        // len cannot be usize::MAX, since vec.capacity() < sys.maxsize
+        self.len.0.store(len, Relaxed);
+        len
+    }
+
+    /// The byte offset the `index`-th code point starts at.
+    ///
+    /// An `index` at or past the end answers the buffer's byte length, so a
+    /// caller walking to a bound does not have to special-case it.
+    ///
+    /// O(1), but the first call on a non-ASCII string builds an index over the
+    /// whole buffer, so a caller that resolves a single index and stops is
+    /// better served by [`Self::nth_char`].
+    pub fn char_index_to_byte(&self, index: usize) -> usize {
+        // For ASCII the two units coincide, and the table would be a Nth entry
+        // saying N.
+        if self.kind.is_ascii() {
+            return index.min(self.as_wtf8().len());
+        }
+        let char_len = self.char_len();
+        if index >= char_len {
+            return self.as_wtf8().len();
+        }
+        self.index
+            .get_or_build(self.as_wtf8(), char_len)
+            .byte_offset(self.as_wtf8(), index)
+    }
+
+    /// The byte offset of code point `index`, for a caller that resolves one
+    /// index and stops.
+    ///
+    /// Building the table costs a pass over the whole buffer, so it is worth it
+    /// only for a caller that comes back; an index within
+    /// [`MAX_WALK_TO_INDEX`] steps of either end is cheaper to walk to, and
+    /// walking keeps `s[0]` on a long string from paying for a table it will
+    /// never use again. Anything further in builds, on the reasoning that a
+    /// string indexed once in the middle tends to be indexed again.
+    fn char_index_to_byte_once(&self, index: usize) -> usize {
+        if index <= MAX_WALK_TO_INDEX {
+            return self
+                .as_wtf8()
+                .code_point_indices()
+                .nth(index)
+                .map_or(self.as_wtf8().len(), |(byte, _)| byte);
+        }
+        let from_end = self.char_len() - index;
+        if from_end <= MAX_WALK_TO_INDEX {
+            return self
+                .as_wtf8()
+                .code_point_indices()
+                .nth_back(from_end - 1)
+                .map_or(self.as_wtf8().len(), |(byte, _)| byte);
+        }
+        self.char_index_to_byte(index)
+    }
+
+    /// The byte range spanned by the code points in `range`, whose end must not
+    /// exceed the string's code point count.
+    ///
+    /// A range that reaches within [`MAX_WALK_TO_INDEX`] of *both* ends is
+    /// walked to for the same reason a single index near one end is -- a slice
+    /// like `s[1:-1]` should not build a table over the whole string.
+    #[must_use]
+    pub fn char_range_to_bytes(&self, range: core::ops::Range<usize>) -> core::ops::Range<usize> {
+        if self.kind.is_ascii() {
+            return range;
+        }
+        let from_end = self.char_len() - range.end;
+        if range.start <= MAX_WALK_TO_INDEX && from_end <= MAX_WALK_TO_INDEX {
+            // Two walks over disjoint ends, each of at most MAX_WALK_TO_INDEX
+            // steps -- one iterator driven from both sides would have them meet
+            // on a short string.
+            let start = self
+                .as_wtf8()
+                .code_point_indices()
+                .nth(range.start)
+                .map_or(self.as_wtf8().len(), |(byte, _)| byte);
+            let end = match from_end {
+                0 => self.as_wtf8().len(),
+                n => self
+                    .as_wtf8()
+                    .code_point_indices()
+                    .nth_back(n - 1)
+                    .map_or(self.as_wtf8().len(), |(byte, _)| byte),
+            };
+            return start..end;
+        }
+        self.char_index_to_byte(range.start)..self.char_index_to_byte(range.end)
+    }
+
+    /// The character index of the character starting at byte offset `bytepos`,
+    /// the inverse of [`Self::char_index_to_byte`].
+    ///
+    /// `bytepos` must be a character boundary at or before the end.
+    ///
+    /// Logarithmic rather than constant, because the index is keyed the other
+    /// way -- but a search whose bounds came from `char_index_to_byte` has the
+    /// table already, and this is what turns a byte offset back into the answer
+    /// a caller asked for in characters.
+    pub fn byte_to_char_index(&self, bytepos: usize) -> usize {
+        if self.kind.is_ascii() {
+            return bytepos;
+        }
+        let char_len = self.char_len();
+        self.index
+            .get_or_build(self.as_wtf8(), char_len)
+            .char_index_at_byte(self.as_wtf8(), bytepos, char_len)
+    }
+
+    pub fn nth_char(&self, index: usize) -> CodePoint {
+        match self.as_str_kind() {
+            PyKindStr::Ascii(s) => s[index].into(),
+            _ => self.as_wtf8()[self.char_index_to_byte_once(index)..]
+                .code_points()
+                .next()
+                .unwrap(),
+        }
+    }
+}
+
+impl core::fmt::Display for StrData {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.as_wtf8().fmt(f)
+    }
+}
+
+impl CharLen for StrData {
+    fn char_len(&self) -> usize {
+        self.char_len()
+    }
+}
+
+pub fn try_get_chars(s: &str, range: impl RangeBounds<usize>) -> Option<&str> {
+    let mut chars = s.chars();
+    let start = match range.start_bound() {
+        Bound::Included(&i) => i,
+        Bound::Excluded(&i) => i + 1,
+        Bound::Unbounded => 0,
+    };
+    for _ in 0..start {
+        chars.next()?;
+    }
+    let s = chars.as_str();
+    let range_len = match range.end_bound() {
+        Bound::Included(&i) => i + 1 - start,
+        Bound::Excluded(&i) => i - start,
+        Bound::Unbounded => return Some(s),
+    };
+    char_range_end(s, range_len).map(|end| &s[..end])
+}
+
+pub fn get_chars(s: &str, range: impl RangeBounds<usize>) -> &str {
+    try_get_chars(s, range).unwrap()
+}
+
+#[inline]
+#[must_use]
+pub fn char_range_end(s: &str, n_chars: usize) -> Option<usize> {
+    let i = match n_chars.checked_sub(1) {
+        Some(last_char_index) => {
+            let (index, c) = s.char_indices().nth(last_char_index)?;
+            index + c.len_utf8()
+        }
+        None => 0,
+    };
+    Some(i)
+}
+
+pub fn try_get_codepoints(w: &Wtf8, range: impl RangeBounds<usize>) -> Option<&Wtf8> {
+    let mut chars = w.code_points();
+    let start = match range.start_bound() {
+        Bound::Included(&i) => i,
+        Bound::Excluded(&i) => i + 1,
+        Bound::Unbounded => 0,
+    };
+    for _ in 0..start {
+        chars.next()?;
+    }
+    let s = chars.as_wtf8();
+    let range_len = match range.end_bound() {
+        Bound::Included(&i) => i + 1 - start,
+        Bound::Excluded(&i) => i - start,
+        Bound::Unbounded => return Some(s),
+    };
+    codepoint_range_end(s, range_len).map(|end| &s[..end])
+}
+
+pub fn get_codepoints(w: &Wtf8, range: impl RangeBounds<usize>) -> &Wtf8 {
+    try_get_codepoints(w, range).unwrap()
+}
+
+#[inline]
+#[must_use]
+pub fn codepoint_range_end(s: &Wtf8, n_chars: usize) -> Option<usize> {
+    let i = match n_chars.checked_sub(1) {
+        Some(last_char_index) => {
+            let (index, c) = s.code_point_indices().nth(last_char_index)?;
+            index + c.len_wtf8()
+        }
+        None => 0,
+    };
+    Some(i)
+}
+
+#[must_use]
+pub fn zfill(bytes: &[u8], width: usize) -> Vec<u8> {
+    if width <= bytes.len() {
+        bytes.to_vec()
+    } else {
+        let (sign, s) = match bytes.first() {
+            Some(_sign @ (b'+' | b'-')) => (unsafe { bytes.get_unchecked(..1) }, &bytes[1..]),
+            _ => (&b""[..], bytes),
+        };
+        let mut filled = Vec::new();
+        filled.extend_from_slice(sign);
+        filled.extend(core::iter::repeat_n(b'0', width - bytes.len()));
+        filled.extend_from_slice(s);
+        filled
+    }
+}
+
+/// Convert a string to ascii compatible, escaping unicode-s into escape
+/// sequences.
+#[must_use]
+pub fn to_ascii(value: &Wtf8) -> AsciiString {
+    let mut ascii = Vec::new();
+    for cp in value.code_points() {
+        if cp.is_ascii() {
+            ascii.push(cp.to_u32() as u8);
+        } else {
+            let c = cp.to_u32();
+            let hex = if c < 0x100 {
+                format!("\\x{c:02x}")
+            } else if c < 0x10000 {
+                format!("\\u{c:04x}")
+            } else {
+                format!("\\U{c:08x}")
+            };
+            ascii.append(&mut hex.into_bytes());
+        }
+    }
+    unsafe { AsciiString::from_ascii_unchecked(ascii) }
+}
+
+#[derive(Clone, Copy)]
+pub struct UnicodeEscapeCodepoint(pub CodePoint);
+
+impl fmt::Display for UnicodeEscapeCodepoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let c = self.0.to_u32();
+        if c >= 0x10000 {
+            write!(f, "\\U{c:08x}")
+        } else if c >= 0x100 {
+            write!(f, "\\u{c:04x}")
+        } else {
+            write!(f, "\\x{c:02x}")
+        }
+    }
+}
+
+pub mod levenshtein {
+    pub const MOVE_COST: usize = 2;
+    const CASE_COST: usize = 1;
+    const MAX_STRING_SIZE: usize = 40;
+
+    const fn substitution_cost(mut a: u8, mut b: u8) -> usize {
+        if (a & 31) != (b & 31) {
+            return MOVE_COST;
+        }
+        if a == b {
+            return 0;
+        }
+        if a.is_ascii_uppercase() {
+            a += b'a' - b'A';
+        }
+        if b.is_ascii_uppercase() {
+            b += b'a' - b'A';
+        }
+        if a == b { CASE_COST } else { MOVE_COST }
+    }
+
+    #[must_use]
+    pub fn levenshtein_distance(a: &[u8], b: &[u8], max_cost: usize) -> usize {
+        if a == b {
+            return 0;
+        }
+
+        let (mut a_bytes, mut b_bytes) = (a, b);
+        let (mut a_begin, mut a_end) = (0usize, a.len());
+        let (mut b_begin, mut b_end) = (0usize, b.len());
+
+        while a_end > 0 && b_end > 0 && (a_bytes[a_begin] == b_bytes[b_begin]) {
+            a_begin += 1;
+            b_begin += 1;
+            a_end -= 1;
+            b_end -= 1;
+        }
+        while a_end > 0
+            && b_end > 0
+            && (a_bytes[a_begin + a_end - 1] == b_bytes[b_begin + b_end - 1])
+        {
+            a_end -= 1;
+            b_end -= 1;
+        }
+        if a_end == 0 || b_end == 0 {
+            return (a_end + b_end) * MOVE_COST;
+        }
+        if a_end > MAX_STRING_SIZE || b_end > MAX_STRING_SIZE {
+            return max_cost + 1;
+        }
+
+        if b_end < a_end {
+            core::mem::swap(&mut a_bytes, &mut b_bytes);
+            core::mem::swap(&mut a_begin, &mut b_begin);
+            core::mem::swap(&mut a_end, &mut b_end);
+        }
+
+        if (b_end - a_end) * MOVE_COST > max_cost {
+            return max_cost + 1;
+        }
+
+        let mut buffer = [0usize; MAX_STRING_SIZE];
+
+        for (i, x) in buffer.iter_mut().take(a_end).enumerate() {
+            *x = (i + 1) * MOVE_COST;
+        }
+
+        let mut result = 0usize;
+        for (b_index, b_code) in b_bytes[b_begin..(b_begin + b_end)].iter().enumerate() {
+            result = b_index * MOVE_COST;
+            let mut distance = result;
+            let mut minimum = usize::MAX;
+            for (a_index, a_code) in a_bytes[a_begin..(a_begin + a_end)].iter().enumerate() {
+                let substitute = distance + substitution_cost(*b_code, *a_code);
+                distance = buffer[a_index];
+                let insert_delete = usize::min(result, distance) + MOVE_COST;
+                result = usize::min(insert_delete, substitute);
+
+                buffer[a_index] = result;
+                if result < minimum {
+                    minimum = result;
+                }
+            }
+            if minimum > max_cost {
+                return max_cost + 1;
+            }
+        }
+        result
+    }
+}
+
+/// Replace all tabs in a string with spaces, using the given tab size.
+#[must_use]
+pub fn expandtabs(input: &str, tab_size: usize) -> String {
+    let tab_stop = tab_size;
+    let mut expanded_str = String::with_capacity(input.len());
+    let mut tab_size = tab_stop;
+    let mut col_count = 0usize;
+    for ch in input.chars() {
+        match ch {
+            '\t' => {
+                let num_spaces = tab_size - col_count;
+                col_count += num_spaces;
+                let expand = " ".repeat(num_spaces);
+                expanded_str.push_str(&expand);
+            }
+            '\r' | '\n' => {
+                expanded_str.push(ch);
+                col_count = 0;
+                tab_size = 0;
+            }
+            _ => {
+                expanded_str.push(ch);
+                col_count += 1;
+            }
+        }
+        if col_count >= tab_size {
+            tab_size += tab_stop;
+        }
+    }
+    expanded_str
+}
+
+/// Creates an [`AsciiStr`][ascii::AsciiStr] from a string literal, throwing a compile error if the
+/// literal isn't actually ascii.
+///
+/// ```compile_fail
+/// # use rustpython_common::str::ascii;
+/// ascii!("I ❤️ Rust & Python");
+/// ```
+#[macro_export]
+macro_rules! ascii {
+    ($x:expr $(,)?) => {{
+        let s = const {
+            let s: &str = $x;
+            assert!(s.is_ascii(), "ascii!() argument is not an ascii string");
+            s
+        };
+        unsafe { $crate::vendored::ascii::AsciiStr::from_ascii_unchecked(s.as_bytes()) }
+    }};
+}
+pub use ascii;
+
+// TODO: this should probably live in a crate like unic or unicode-properties
+const UNICODE_DECIMAL_VALUES: &[char] = &[
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨',
+    '٩', '۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹', '߀', '߁', '߂', '߃', '߄', '߅', '߆', '߇',
+    '߈', '߉', '०', '१', '२', '३', '४', '५', '६', '७', '८', '९', '০', '১', '২', '৩', '৪', '৫', '৬',
+    '৭', '৮', '৯', '੦', '੧', '੨', '੩', '੪', '੫', '੬', '੭', '੮', '੯', '૦', '૧', '૨', '૩', '૪', '૫',
+    '૬', '૭', '૮', '૯', '୦', '୧', '୨', '୩', '୪', '୫', '୬', '୭', '୮', '୯', '௦', '௧', '௨', '௩', '௪',
+    '௫', '௬', '௭', '௮', '௯', '౦', '౧', '౨', '౩', '౪', '౫', '౬', '౭', '౮', '౯', '೦', '೧', '೨', '೩',
+    '೪', '೫', '೬', '೭', '೮', '೯', '൦', '൧', '൨', '൩', '൪', '൫', '൬', '൭', '൮', '൯', '෦', '෧', '෨',
+    '෩', '෪', '෫', '෬', '෭', '෮', '෯', '๐', '๑', '๒', '๓', '๔', '๕', '๖', '๗', '๘', '๙', '໐', '໑',
+    '໒', '໓', '໔', '໕', '໖', '໗', '໘', '໙', '༠', '༡', '༢', '༣', '༤', '༥', '༦', '༧', '༨', '༩', '၀',
+    '၁', '၂', '၃', '၄', '၅', '၆', '၇', '၈', '၉', '႐', '႑', '႒', '႓', '႔', '႕', '႖', '႗', '႘', '႙',
+    '០', '១', '២', '៣', '៤', '៥', '៦', '៧', '៨', '៩', '᠐', '᠑', '᠒', '᠓', '᠔', '᠕', '᠖', '᠗', '᠘',
+    '᠙', '᥆', '᥇', '᥈', '᥉', '᥊', '᥋', '᥌', '᥍', '᥎', '᥏', '᧐', '᧑', '᧒', '᧓', '᧔', '᧕', '᧖', '᧗',
+    '᧘', '᧙', '᪀', '᪁', '᪂', '᪃', '᪄', '᪅', '᪆', '᪇', '᪈', '᪉', '᪐', '᪑', '᪒', '᪓', '᪔', '᪕', '᪖',
+    '᪗', '᪘', '᪙', '᭐', '᭑', '᭒', '᭓', '᭔', '᭕', '᭖', '᭗', '᭘', '᭙', '᮰', '᮱', '᮲', '᮳', '᮴', '᮵',
+    '᮶', '᮷', '᮸', '᮹', '᱀', '᱁', '᱂', '᱃', '᱄', '᱅', '᱆', '᱇', '᱈', '᱉', '᱐', '᱑', '᱒', '᱓', '᱔',
+    '᱕', '᱖', '᱗', '᱘', '᱙', '꘠', '꘡', '꘢', '꘣', '꘤', '꘥', '꘦', '꘧', '꘨', '꘩', '꣐', '꣑', '꣒', '꣓',
+    '꣔', '꣕', '꣖', '꣗', '꣘', '꣙', '꤀', '꤁', '꤂', '꤃', '꤄', '꤅', '꤆', '꤇', '꤈', '꤉', '꧐', '꧑', '꧒',
+    '꧓', '꧔', '꧕', '꧖', '꧗', '꧘', '꧙', '꧰', '꧱', '꧲', '꧳', '꧴', '꧵', '꧶', '꧷', '꧸', '꧹', '꩐', '꩑',
+    '꩒', '꩓', '꩔', '꩕', '꩖', '꩗', '꩘', '꩙', '꯰', '꯱', '꯲', '꯳', '꯴', '꯵', '꯶', '꯷', '꯸', '꯹', '０',
+    '１', '２', '３', '４', '５', '６', '７', '８', '９', '𐒠', '𐒡', '𐒢', '𐒣', '𐒤', '𐒥', '𐒦', '𐒧',
+    '𐒨', '𐒩', '𑁦', '𑁧', '𑁨', '𑁩', '𑁪', '𑁫', '𑁬', '𑁭', '𑁮', '𑁯', '𑃰', '𑃱', '𑃲', '𑃳', '𑃴', '𑃵', '𑃶',
+    '𑃷', '𑃸', '𑃹', '𑄶', '𑄷', '𑄸', '𑄹', '𑄺', '𑄻', '𑄼', '𑄽', '𑄾', '𑄿', '𑇐', '𑇑', '𑇒', '𑇓', '𑇔', '𑇕',
+    '𑇖', '𑇗', '𑇘', '𑇙', '𑋰', '𑋱', '𑋲', '𑋳', '𑋴', '𑋵', '𑋶', '𑋷', '𑋸', '𑋹', '𑑐', '𑑑', '𑑒', '𑑓', '𑑔',
+    '𑑕', '𑑖', '𑑗', '𑑘', '𑑙', '𑓐', '𑓑', '𑓒', '𑓓', '𑓔', '𑓕', '𑓖', '𑓗', '𑓘', '𑓙', '𑙐', '𑙑', '𑙒', '𑙓',
+    '𑙔', '𑙕', '𑙖', '𑙗', '𑙘', '𑙙', '𑛀', '𑛁', '𑛂', '𑛃', '𑛄', '𑛅', '𑛆', '𑛇', '𑛈', '𑛉', '𑜰', '𑜱', '𑜲',
+    '𑜳', '𑜴', '𑜵', '𑜶', '𑜷', '𑜸', '𑜹', '𑣠', '𑣡', '𑣢', '𑣣', '𑣤', '𑣥', '𑣦', '𑣧', '𑣨', '𑣩', '𑱐', '𑱑',
+    '𑱒', '𑱓', '𑱔', '𑱕', '𑱖', '𑱗', '𑱘', '𑱙', '𑵐', '𑵑', '𑵒', '𑵓', '𑵔', '𑵕', '𑵖', '𑵗', '𑵘', '𑵙', '𖩠',
+    '𖩡', '𖩢', '𖩣', '𖩤', '𖩥', '𖩦', '𖩧', '𖩨', '𖩩', '𖭐', '𖭑', '𖭒', '𖭓', '𖭔', '𖭕', '𖭖', '𖭗', '𖭘', '𖭙',
+    '𝟎', '𝟏', '𝟐', '𝟑', '𝟒', '𝟓', '𝟔', '𝟕', '𝟖', '𝟗', '𝟘', '𝟙', '𝟚', '𝟛', '𝟜', '𝟝', '𝟞', '𝟟', '𝟠',
+    '𝟡', '𝟢', '𝟣', '𝟤', '𝟥', '𝟦', '𝟧', '𝟨', '𝟩', '𝟪', '𝟫', '𝟬', '𝟭', '𝟮', '𝟯', '𝟰', '𝟱', '𝟲', '𝟳',
+    '𝟴', '𝟵', '𝟶', '𝟷', '𝟸', '𝟹', '𝟺', '𝟻', '𝟼', '𝟽', '𝟾', '𝟿', '𞥐', '𞥑', '𞥒', '𞥓', '𞥔', '𞥕', '𞥖',
+    '𞥗', '𞥘', '𞥙',
+];
+
+#[must_use]
+pub fn char_to_decimal(ch: char) -> Option<u8> {
+    UNICODE_DECIMAL_VALUES
+        .binary_search(&ch)
+        .ok()
+        .map(|i| (i % 10) as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_chars_basic() {
+        let s = "0123456789";
+        assert_eq!(get_chars(s, 3..7), "3456");
+        assert_eq!(get_chars(s, 3..7), &s[3..7]);
+
+        let s = "0유니코드 문자열9";
+        assert_eq!(get_chars(s, 3..7), "코드 문");
+
+        let s = "0😀😃😄😁😆😅😂🤣9";
+        assert_eq!(get_chars(s, 3..7), "😄😁😆😅");
+    }
+
+    #[test]
+    fn sso_roundtrip_accessors() {
+        let d = StrData::try_sso_ascii(b"hello").expect("fits");
+        assert_eq!(d.as_str(), Some("hello"));
+        assert_eq!(d.as_wtf8(), "hello");
+        assert_eq!(d.kind(), StrKind::Ascii);
+        assert_eq!(d.len(), 5);
+        assert_eq!(d.char_len(), 5);
+        assert!(!d.is_empty());
+        // SSO is not the C-API inline-buffer path.
+        assert!(d.inline_bytes().is_none());
+        match d.as_str_kind() {
+            PyKindStr::Ascii(a) => assert_eq!(a.as_str(), "hello"),
+            _ => panic!("expected ascii kind"),
+        }
+    }
+
+    #[test]
+    fn sso_empty_string() {
+        let d = StrData::try_sso_ascii(b"").expect("empty fits");
+        assert_eq!(d.len(), 0);
+        assert!(d.is_empty());
+        assert_eq!(d.as_str(), Some(""));
+    }
+
+    #[test]
+    fn sso_boundary_lengths() {
+        let max = "x".repeat(SSO_CAP);
+        let d = StrData::try_sso_ascii(max.as_bytes()).expect("cap-length fits");
+        assert_eq!(d.len(), SSO_CAP);
+        let over = "y".repeat(SSO_CAP + 1);
+        assert!(StrData::try_sso_ascii(over.as_bytes()).is_none());
+        // An SSO buffer never grows StrStorage past the Vec variant's slot.
+        assert!(size_of::<SsoBuf>() <= size_of::<Vec<u8>>());
+    }
+
+    #[test]
+    fn sso_ascii_wrapper_still_requires_ascii() {
+        assert!(StrData::try_sso_ascii("héllo".as_bytes()).is_none());
+    }
+
+    #[test]
+    fn sso_accepts_short_non_ascii() {
+        // UTF-8: é is two bytes; char_len counts code points.
+        let d = StrData::try_sso("héllo".as_bytes()).expect("6 bytes fit");
+        assert_eq!(d.kind(), StrKind::Utf8);
+        assert_eq!(d.char_len(), 5, "char length, not byte length");
+        assert_eq!(d.len(), 6, "byte length");
+        assert_eq!(d.as_str(), Some("héllo"));
+
+        // WTF-8 with a lone surrogate (ED A0 80).
+        let mut wtf8_bytes = b"a".to_vec();
+        wtf8_bytes.extend_from_slice(&[0xED, 0xA0, 0x80]);
+        let d = StrData::try_sso(&wtf8_bytes).expect("3 bytes fit");
+        assert_eq!(d.kind(), StrKind::Wtf8);
+        assert_eq!(d.char_len(), 2);
+
+        // 22-byte UTF-8 string fits; 23 does not.
+        let max = "é".repeat(11); // 22 bytes, 11 chars
+        let d = StrData::try_sso(max.as_bytes()).expect("22-byte utf8 fits");
+        assert_eq!(d.char_len(), 11);
+        assert!(StrData::try_sso("é".repeat(12).as_bytes()).is_none());
+
+        // Round-trip through the boxed path keeps SSO for short non-ASCII.
+        let from_box = StrData::from("中文".to_owned().into_boxed_str());
+        assert!(matches!(from_box.data, StrStorage::Sso(_)));
+        assert_eq!(from_box.char_len(), 2);
+    }
+
+    #[test]
+    fn sso_from_boxed_uses_header_for_short() {
+        let short = StrData::from("abcdef".to_owned().into_boxed_str());
+        assert!(matches!(short.data, StrStorage::Sso(_)));
+        assert_eq!(short.as_str(), Some("abcdef"));
+
+        let long = StrData::from("z".repeat(SSO_CAP + 1).into_boxed_str());
+        assert!(matches!(long.data, StrStorage::Heap(_)));
+        assert_eq!(long.len(), SSO_CAP + 1);
+
+        let boxed_ascii = StrData::from(
+            ascii::AsciiString::from_ascii("abc")
+                .expect("ascii")
+                .into_boxed_ascii_str(),
+        );
+        assert!(matches!(boxed_ascii.data, StrStorage::Sso(_)));
+
+        let one_char = StrData::from(ascii::AsciiChar::from_ascii(b'q').expect("ascii"));
+        assert!(matches!(one_char.data, StrStorage::Sso(_)));
+        assert_eq!(one_char.as_str(), Some("q"));
+    }
+}

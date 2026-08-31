@@ -1,0 +1,21 @@
+fix(str): 16.0.0 case-mapping corrections for 6 characters (lower/upper/title)
+
+Characters A7CE/A7CF/A7D2/A7D3/A7D4/A7D5 are unassigned in UCD 16.0.0
+but have case mappings in 17.0.0. In CPython 3.14 (UCD 16.0.0), their
+case mappings are identity. Rust std's ICU-based case mapping (17.0.0)
+incorrectly assigns them case mappings. Fixed by adding:
+
+- case::to_lowercase_16(s) / to_uppercase_16(s): per-char lower/upper
+  using Rust std's full case mapping except for the 6 chars, which are
+  passed through unchanged.
+- case::to_lowercase_wtf8_16 / to_uppercase_wtf8_16: same for WTF-8.
+- titlecase_segment in case.rs: returns identity for the 6 chars
+  instead of calling ICU's TitlecaseMapper.
+- VM str.lower()/str.upper(): use the 16.0.0-aware functions.
+
+Note: test_method_checksum remains expectedFailure because the expected
+checksum in test_unicodedata.py was generated from a different CPython
+build (Linux) and even real CPython 3.14.7 on Windows gives a different
+hash. The case-mapping and predicate fixes are correct per UCD 16.0.0.
+
+Assisted-by: deepseek-v4-flash
