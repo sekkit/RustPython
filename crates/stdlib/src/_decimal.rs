@@ -627,7 +627,13 @@ mod _decimal {
                         special: Special::Finite,
                     });
                 }
-                return Ok(d.clone());
+                // next_plus of a value above Emax -> Infinity (CPython).
+                return Ok(Dec {
+                    sign: d.sign,
+                    coeff: BigInt::from(0),
+                    exp: 0,
+                    special: Special::Infinity,
+                });
             }
             let dir_rounding = if dir < 0 { Rounding::Floor } else { Rounding::Ceiling };
             // Clone the context with the directional rounding.
