@@ -2548,15 +2548,6 @@ mod _decimal {
         }
 
         #[pymethod]
-        fn floor_div(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec_ctx(&x, vm)?;
-            let yd = to_dec_ctx(&y, vm)?;
-            let ctx = self.ctx();
-            let r = _decimal_core::dec_floordiv(&ctx, vm, &xd, &yd)?;
-            Ok(PyDecimal::to_py(vm, r))
-        }
-
-        #[pymethod]
         fn remainder(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
