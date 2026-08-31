@@ -1042,8 +1042,16 @@ pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
     }
     let zero = Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite };
     if b.is_zero() {
-        // b == 0 -> (NaN, NaN)
-        return (nan.clone(), nan.clone());
+        // b == 0:
+        //   a == 0 -> (NaN, NaN) [InvalidOperation]
+        //   a != 0 -> (Infinity, NaN) [InvalidOperation + DivisionByZero]
+        if a.is_zero() {
+            return (nan.clone(), nan.clone());
+        }
+        return (
+            Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity },
+            nan.clone(),
+        );
     }
     if a.is_special() {
         // a == Infinity

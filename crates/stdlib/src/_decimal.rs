@@ -1916,9 +1916,15 @@ mod _decimal {
                     };
                     let (floor, m) = _decimal_core::floor_div_mod(&ad, &bd);
                     // Set InvalidOperation flag if either operand was NaN.
-                    if ad.is_special() || bd.is_special() {
-                        let ctx = current_ctx(vm)?;
+                    // Set flags per CPython divmod semantics:
+                    //   NaN/Inf operand or 0/0   -> InvalidOperation
+                    //   nonzero / 0              -> InvalidOperation + DivisionByZero
+                    let ctx = current_ctx(vm)?;
+                    if ad.is_special() || bd.is_special() || bd.is_zero() {
                         ctx.set_flag(vm, "InvalidOperation")?;
+                    }
+                    if !ad.is_special() && !bd.is_special() && !ad.is_zero() && bd.is_zero() {
+                        ctx.set_flag(vm, "DivisionByZero")?;
                     }
                     Ok(vm.ctx.new_tuple(vec![
                         PyDecimal::to_py(vm, floor),
@@ -2684,6 +2690,13 @@ mod _decimal {
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
+            // CPython divmod flag semantics (see AsNumber divmod slot).
+            if xd.is_special() || yd.is_special() || yd.is_zero() {
+                ctx.set_flag(vm, "InvalidOperation")?;
+            }
+            if !xd.is_special() && !yd.is_special() && !xd.is_zero() && yd.is_zero() {
+                ctx.set_flag(vm, "DivisionByZero")?;
+            }
             let (floor, m) = _decimal_core::floor_div_mod(&xd, &yd);
             let f = _decimal_core::apply_context(vm, &ctx, floor)?;
             let r = _decimal_core::apply_context(vm, &ctx, m)?;
