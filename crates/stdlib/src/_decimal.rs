@@ -3288,9 +3288,10 @@ mod _decimal {
                 "flags", "traps",
             ];
             for k in args.kwargs.keys() {
-                if !VALID_KEYS.contains(&k.as_str()) {
+                let k_str = k.to_string();
+                if !VALID_KEYS.contains(&k_str.as_str()) {
                     return Err(vm.new_type_error(
-                        format!("Context() got an unexpected keyword argument '{}'", k),
+                        format!("Context() got an unexpected keyword argument '{}'", k_str),
                     ));
                 }
             }
@@ -3303,7 +3304,11 @@ mod _decimal {
                     .filter(|v| !downcast_ref_none(v, vm))
             };
             if let Some(v) = get_field("prec") {
-                c.prec = PyMutex::new(v.try_to_value::<isize>(vm)?);
+                let pv: isize = v.try_to_value(vm)?;
+                if pv < 1 {
+                    return Err(vm.new_value_error("prec must be >= 1".to_string()));
+                }
+                c.prec = PyMutex::new(pv);
             }
             if let Some(v) = get_field("rounding") {
                 let s = v
@@ -3315,10 +3320,18 @@ mod _decimal {
                 );
             }
             if let Some(v) = get_field("Emin") {
-                c.emin = PyMutex::new(v.try_to_value::<isize>(vm)?);
+                let ev: isize = v.try_to_value(vm)?;
+                if ev > 0 {
+                    return Err(vm.new_value_error("Emin must be <= 0".to_string()));
+                }
+                c.emin = PyMutex::new(ev);
             }
             if let Some(v) = get_field("Emax") {
-                c.emax = PyMutex::new(v.try_to_value::<isize>(vm)?);
+                let ev: isize = v.try_to_value(vm)?;
+                if ev < 0 {
+                    return Err(vm.new_value_error("Emax must be >= 0".to_string()));
+                }
+                c.emax = PyMutex::new(ev);
             }
             if let Some(v) = get_field("capitals") {
                 let cv: isize = v.try_to_value(vm)?;
