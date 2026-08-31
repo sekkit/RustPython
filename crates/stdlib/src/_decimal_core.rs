@@ -813,20 +813,20 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
     if d.is_special() {
         return Ok(d.clone());
     }
-    // CPython quantize raises InvalidOperation if the result's adjusted
-    // exponent would fall outside [Emin, Emax]. The quantized value keeps
-    // its digits; exponent is fixed to `exp` after rounding/carry.
-    // Estimate adjusted exponent pre-rounding (may carry one more digit).
+    // CPython quantize checks (in order):
+    //  1. target exponent within [Etiny, Emax]
+    //  2. self_adjusted <= Emax
+    //  3. self_adjusted - exp + 1 <= prec  ("too many digits")
+    let etiny = ctx.emin - (ctx.prec as isize - 1);
     let digits_now = coeff_digits_of(&d.coeff) as isize;
     let adj_before = d.exp + digits_now - 1;
-    // After quantizing to `exp`, the significand may shrink (rounding away
-    // digits) or grow by one via carry. Worst-case adjusted exponent:
-    // if no digits are dropped, adj = exp + digits_now - 1.
-    let adj_est = exp + digits_now - 1;
-    if adj_est > ctx.emax || adj_before < ctx.emin {
+    let invalid = exp < etiny || exp > ctx.emax
+        || adj_before > ctx.emax
+        || (adj_before - exp + 1) > ctx.prec;
+    if invalid {
         ctx.set_flag(vm, "InvalidOperation")?;
         if ctx.trap(vm, "InvalidOperation")? {
-            return Err(new_decimal_error(vm, "InvalidOperation", "quantize exponent out of range"));
+            return Err(new_decimal_error(vm, "InvalidOperation", "quantize result out of range"));
         }
         return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
