@@ -1229,6 +1229,7 @@ pub(crate) fn format_decimal(
     spec: &str,
     vm: &VirtualMachine,
     ctx: &Ctx,
+    capitals: isize,
 ) -> Result<String, String> {
     // Parse the format spec.
     let mut spec = spec.to_string();
@@ -1344,10 +1345,9 @@ pub(crate) fn format_decimal(
         }
     }
     // No type char defaults to 'g' or 'G' depending on context.capitals.
-    // Ctx does not carry capitals; default (and the test contexts) use 1 -> 'G'.
     let ty = match type_char {
         Some(c) => c,
-        None => 'G',
+        None => if capitals == 1 { 'G' } else { 'g' },
     };
     // Sign prefix from spec's sign flag + value sign.
     // `+`: always show sign; `-`: only negatives; ` `: space for positive.
@@ -1413,24 +1413,30 @@ pub(crate) fn format_decimal(
     };
 
     let no_type = type_char.is_none();
+    let rounding = ctx.rounding;
     let value_str = match ty.to_ascii_lowercase() {
-        'f' => format_fixed(&dec, precision, vm),
-        'e' => format_sci(&dec, precision, ty == 'E', vm),
+        'f' => format_fixed(&dec, precision, rounding, vm),
+        'e' => format_sci(&dec, precision, ty == 'E', rounding, vm),
         'g' | 'n' => {
             if no_type && precision.is_none() {
                 // No type char: Decimal keeps its exact str representation
                 // (trailing zeros preserved), like format(d, '') == str(d).
                 // Strip the sign (sign_str is applied separately below).
-                let s = dec.to_string();
-                s.trim_start_matches(['-', '+']).to_string()
+                // Honour context.capitals for the 'E'/'e' exponent marker.
+                let mut s = dec.to_string();
+                s = s.trim_start_matches(['-', '+']).to_string();
+                if capitals == 0 {
+                    s = s.replace('E', "e");
+                }
+                s
             } else {
-                format_general(&dec, precision, ty == 'G' || ty == 'N', vm)
+                format_general(&dec, precision, ty == 'G' || ty == 'N', rounding, vm)
             }
         }
         '%' => {
             // Multiply by 100 was done above; format as f with given
             // precision (or exact value when no precision given).
-            let f = format_fixed(&dec, precision, vm);
+            let f = format_fixed(&dec, precision, rounding, vm);
             f + "%"
         }
         _ => dec.to_string(),
@@ -1570,10 +1576,10 @@ fn digits_of(d: &Dec) -> String {
     d.coeff_str()
 }
 
-fn round_to_exp(d: &Dec, exp: isize, vm: &VirtualMachine) -> Dec {
-    // Round d to the given exponent using the default context rounding
-    // (round-half-even). Returns a Dec with coeff/exp reflecting rounding.
-    let ctx = Ctx::from_parts(28, Rounding::HalfEven, 999999, -999999, 0, vm.ctx.new_dict(), vm.ctx.new_dict());
+fn round_to_exp(d: &Dec, exp: isize, rounding: Rounding, vm: &VirtualMachine) -> Dec {
+    // Round d to the given exponent using the given rounding mode
+    // (defaults to the context's, callers pass ctx.rounding).
+    let ctx = Ctx::from_parts(28, rounding, 999999, -999999, 0, vm.ctx.new_dict(), vm.ctx.new_dict());
     let r = quantize(vm, &ctx, d, exp);
     match r {
         Ok(dec) => dec,
@@ -1581,7 +1587,7 @@ fn round_to_exp(d: &Dec, exp: isize, vm: &VirtualMachine) -> Dec {
     }
 }
 
-fn format_fixed(d: &Dec, precision: Option<usize>, _vm: &VirtualMachine) -> String {
+fn format_fixed(d: &Dec, precision: Option<usize>, rounding: Rounding, vm: &VirtualMachine) -> String {
     // Fixed point: value = coeff * 10^exp, show `precision` digits after point.
     let digits = digits_of(d);
     let ndigits = digits.len() as isize;
@@ -1593,7 +1599,7 @@ fn format_fixed(d: &Dec, precision: Option<usize>, _vm: &VirtualMachine) -> Stri
         None => d.exp.min(0),
     };
     let frac_digits = precision.unwrap_or(0) as isize;
-    let rounded = round_to_exp(d, target_exp, _vm);
+    let rounded = round_to_exp(d, target_exp, rounding, vm);
     let rd = digits_of(&rounded);
     // Place the decimal point.
     let rn = rd.len() as isize;
@@ -1637,7 +1643,7 @@ fn format_fixed(d: &Dec, precision: Option<usize>, _vm: &VirtualMachine) -> Stri
     }
 }
 
-fn format_sci(d: &Dec, precision: Option<usize>, upper: bool, vm: &VirtualMachine) -> String {
+fn format_sci(d: &Dec, precision: Option<usize>, upper: bool, rounding: Rounding, vm: &VirtualMachine) -> String {
     let digits = digits_of(d);
     if digits == "0" {
         // Zero: exponent for 'e' format is stored_exp + precision
@@ -1669,10 +1675,30 @@ fn format_sci(d: &Dec, precision: Option<usize>, upper: bool, vm: &VirtualMachin
                 let pow = BigInt::from(10).pow(drop as u32);
                 let coeff: BigInt = digits.parse().unwrap_or_else(|_| BigInt::from(0));
                 let (q, r) = (&coeff / &pow, &coeff % &pow);
-                let half = &pow / BigInt::from(2);
-                let round_up = if &r * BigInt::from(2) > pow { true }
-                    else if &r * BigInt::from(2) < pow { false }
-                    else { (&q % BigInt::from(2)) == BigInt::from(1) };
+                // Respect the context rounding mode (fixes
+                // test_format_fallback_rounding with ROUND_DOWN).
+                let two = BigInt::from(2);
+                let round_up = match rounding {
+                    Rounding::Down => false,
+                    Rounding::Up => true,
+                    Rounding::Ceiling => !d.sign,
+                    Rounding::Floor => d.sign,
+                    Rounding::HalfDown => (&r * &two) > pow,
+                    Rounding::HalfUp => (&r * &two) >= pow,
+                    Rounding::HalfEven => {
+                        if (&r * &two) > pow { true }
+                        else if (&r * &two) < pow { false }
+                        else { (&q % &two) == BigInt::from(1) }
+                    }
+                    Rounding::Half05Up => {
+                        if (&r * &two) >= pow { true }
+                        else { (&q % BigInt::from(10)) == BigInt::from(0) || (&q % BigInt::from(10)) == BigInt::from(5) }
+                    }
+                    Rounding::Half01Up => {
+                        if (&r * &two) >= pow { true }
+                        else { (&q % BigInt::from(10)) == BigInt::from(0) || (&q % BigInt::from(10)) == BigInt::from(1) }
+                    }
+                };
                 let new_q = if round_up { q + BigInt::from(1) } else { q };
                 sig = new_q.to_string();
                 new_adj = adj + (sig.len() as isize - keep);
@@ -1714,7 +1740,7 @@ fn format_mantissa(sig: &str, precision: isize, upper: bool, adj: isize) -> Stri
     s
 }
 
-fn format_general(d: &Dec, precision: Option<usize>, _upper: bool, _vm: &VirtualMachine) -> String {
+fn format_general(d: &Dec, precision: Option<usize>, _upper: bool, rounding: Rounding, vm: &VirtualMachine) -> String {
     // General format: like 'g'. Uses precision sig figs (default 6).
     let p = precision.unwrap_or(6).max(1);
     let digits = digits_of(d);
@@ -1743,7 +1769,7 @@ fn format_general(d: &Dec, precision: Option<usize>, _upper: bool, _vm: &Virtual
     // g switches to scientific if adj < -4 or adj >= p
     if adj < -4 || adj >= p as isize {
         // scientific, strip trailing zeros from the significant digits
-        let s = format_sci(d, Some((p - 1) as usize), _upper, _vm);
+        let s = format_sci(d, Some((p - 1) as usize), _upper, rounding, vm);
         if _upper {
             s.replace('e', "E")
         } else {
@@ -1752,7 +1778,7 @@ fn format_general(d: &Dec, precision: Option<usize>, _upper: bool, _vm: &Virtual
     } else {
         // fixed with p - (adj+1) digits after point, strip trailing zeros
         let frac = p as isize - (adj + 1);
-        let s = format_fixed(d, Some(frac.max(0) as usize), _vm);
+        let s = format_fixed(d, Some(frac.max(0) as usize), rounding, vm);
         strip_fixed_trailing_zeros(&s)
     }
 }

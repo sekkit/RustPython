@@ -69,6 +69,16 @@ mod _decimal {
         Ok(pc.ctx())
     }
 
+    /// Read the current context's `capitals` (whether 'E' is shown for
+    /// scientific exponents). Defaults to 1.
+    fn current_capitals(vm: &VirtualMachine) -> PyResult<isize> {
+        let obj = get_current_context(vm);
+        let pc = obj
+            .downcast_ref::<PyContext>()
+            .ok_or_else(|| vm.new_type_error("context must be a Context object".to_string()))?;
+        Ok(pc.capitals())
+    }
+
     /// compare two decimals (sign*coeff*10^exp). NaN sorts before everything.
     fn dec_cmp(a: &Dec, b: &Dec) -> i8 {
         use Special::*;
@@ -1031,7 +1041,8 @@ mod _decimal {
                 }
             }
             let ctx = current_ctx(vm)?;
-            _decimal_core::format_decimal(&self.d, &spec, vm, &ctx)
+            let capitals = current_capitals(vm)?;
+            _decimal_core::format_decimal(&self.d, &spec, vm, &ctx, capitals)
                 .map_err(|e| vm.new_value_error(e))
         }
 
