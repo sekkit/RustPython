@@ -230,7 +230,7 @@ mod _decimal {
                 let name = item
                     .downcast_ref::<PyStr>()
                     .map(|s| s.as_wtf8().to_string())
-                    .unwrap_or_else(|| item.repr(vm).map(|r| r.as_str().to_string()).unwrap_or_default());
+                    .unwrap_or_else(|| item.repr(vm).map(|r| r.as_wtf8().to_string()).unwrap_or_default());
                 return Err(vm.new_key_error(vm.ctx.new_str(name).into()));
             }
         }
