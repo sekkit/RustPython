@@ -3311,6 +3311,14 @@ mod _decimal {
         }
 
         #[pymethod]
+        fn is_canonical(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult<bool> {
+            if x.downcast_ref::<PyDecimal>().is_none() {
+                return Err(vm.new_type_error("argument must be a Decimal".to_string()));
+            }
+            Ok(true)
+        }
+
+        #[pymethod]
         fn clear_traps(&self, vm: &VirtualMachine) {
             let keys: Vec<_> = self.traps.lock().items_vec().into_iter().map(|(k, _)| k).collect();
             for k in keys {
