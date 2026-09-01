@@ -1598,7 +1598,10 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 return Ok(PyDecimal::to_py(vm, _decimal_core::Dec::zero()));
             }
             let nshift = ((n % len) + len) % len;
-            let cut = (len - nshift) as usize;
+            // CPython rotate: positive n is a LEFT rotation
+            // (rotdig[n:] + rotdig[:n]); negative n becomes nshift which the
+            // modulo handles as the equivalent left rotation.
+            let cut = nshift as usize;
             let rotated = format!("{}{}", &digits[cut..], &digits[..cut]);
             let cleaned = rotated.trim_start_matches('0');
             let coeff: BigInt = if cleaned.is_empty() {
