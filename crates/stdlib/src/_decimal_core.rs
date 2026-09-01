@@ -740,6 +740,12 @@ pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
         Some(e) => e.trim().parse::<isize>().map_err(|_| "invalid exponent".to_string())?,
         None => 0,
     };
+    // CPython raises InvalidOperation when the exponent exceeds the
+    // representable range (MAX_EMAX / MIN_EMIN magnitude ~1e18); clamping
+    // such an exponent is impossible.
+    if exp.unsigned_abs() > 999_999_999_999_999_999u64 {
+        return Err("exponent out of range".to_string());
+    }
     // split mantissa on '.'
     let (int_part, frac_part) = match mantissa.find('.') {
         Some(idx) => (&mantissa[..idx], &mantissa[idx + 1..]),
