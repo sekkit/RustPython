@@ -3303,6 +3303,9 @@ mod _decimal {
 
         #[pymethod]
         fn canonical(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            if x.downcast_ref::<PyDecimal>().is_none() {
+                return Err(vm.new_type_error("argument must be a Decimal".to_string()));
+            }
             let d = to_dec(&x, vm)?;
             Ok(PyDecimal::to_py(vm, d))
         }
