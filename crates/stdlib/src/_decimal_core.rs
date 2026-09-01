@@ -393,6 +393,16 @@ impl Ctx {
             "FloatOperation" => &exc().float_operation,
             _ => &exc().decimal_exception,
         };
+        // A trap only fires when the signal has been raised (flag set) AND
+        // the trap for it is enabled.
+        let flag_on = self
+            .flags
+            .get_item_opt(ty.as_object(), vm)?
+            .map(|v| v.try_to_bool(vm))
+            .unwrap_or(Ok(false))?;
+        if !flag_on {
+            return Ok(false);
+        }
         self.traps
             .get_item_opt(ty.as_object(), vm)?
             .map(|v| v.try_to_bool(vm))
