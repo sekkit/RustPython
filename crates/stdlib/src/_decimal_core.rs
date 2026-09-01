@@ -970,9 +970,17 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
         coeff *= BigInt::from(10).pow((-shift) as u32);
     }
     let mut result = Dec { sign: d.sign, coeff, exp, special: Special::Finite };
-    // precision check on result digits
-    if coeff_digits_of(&result.coeff) as isize > ctx.prec {
-        result = apply_context(vm, ctx, result)?;
+    // CPython: quantize raises InvalidOperation when the result would have
+    // more digits than the context precision ('quantize result has too many
+    // digits for current context'); with the trap disabled it returns NaN.
+    if coeff_digits_of(&result.coeff) as isize > ctx.prec
+        || result.exp + coeff_digits_of(&result.coeff) as isize - 1 > ctx.emax
+    {
+        ctx.set_flag(vm, "InvalidOperation")?;
+        if ctx.trap(vm, "InvalidOperation")? {
+            return Err(new_decimal_error(vm, "InvalidOperation", "quantize result has too many digits for current context"));
+        }
+        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
     if inexact {
         ctx.set_flag(vm, "Inexact")?;
