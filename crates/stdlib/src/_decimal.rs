@@ -3851,6 +3851,32 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 }
                 c.clamp = PyMutex::new(cv);
             }
+            if let Some(v) = get_field("flags") {
+                let flags_guard = c.flags.lock();
+                for ty in signal_types() {
+                    let _ = flags_guard.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
+                }
+                if let Some(d) = v.downcast_ref::<PyDict>() {
+                    for (k, val) in d.items_vec() {
+                        let on = val.try_to_value::<bool>(vm)?;
+                        let _ = flags_guard.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
+                    }
+                } else if let Some(t) = v.downcast_ref::<PyTuple>() {
+                    let items: Vec<PyObjectRef> = t.as_slice().to_vec();
+                    validate_signal_names(&items, vm)?;
+                    for item in items {
+                        let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
+                    }
+                } else if let Some(lst) = v.downcast_ref::<crate::vm::builtins::PyList>() {
+                    let items: Vec<PyObjectRef> = lst.borrow_vec().to_vec();
+                    validate_signal_names(&items, vm)?;
+                    for item in items {
+                        let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
+                    }
+                } else {
+                    return Err(vm.new_type_error("flags must be a dict, list, or tuple".to_string()));
+                }
+            }
             if let Some(v) = get_field("traps") {
                 let traps_guard = c.traps.lock();
                 // Ensure all known signals present (default False).
@@ -3881,32 +3907,6 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     }
                 } else {
                     return Err(vm.new_type_error("traps must be a dict, list, or tuple".to_string()));
-                }
-            }
-            if let Some(v) = get_field("flags") {
-                let flags_guard = c.flags.lock();
-                for ty in signal_types() {
-                    let _ = flags_guard.set_item(ty.as_object(), vm.ctx.new_bool(false).into(), vm);
-                }
-                if let Some(d) = v.downcast_ref::<PyDict>() {
-                    for (k, val) in d.items_vec() {
-                        let on = val.try_to_value::<bool>(vm)?;
-                        let _ = flags_guard.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
-                    }
-                } else if let Some(t) = v.downcast_ref::<PyTuple>() {
-                    let items: Vec<PyObjectRef> = t.as_slice().to_vec();
-                    validate_signal_names(&items, vm)?;
-                    for item in items {
-                        let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
-                    }
-                } else if let Some(lst) = v.downcast_ref::<crate::vm::builtins::PyList>() {
-                    let items: Vec<PyObjectRef> = lst.borrow_vec().to_vec();
-                    validate_signal_names(&items, vm)?;
-                    for item in items {
-                        let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
-                    }
-                } else {
-                    return Err(vm.new_type_error("flags must be a dict, list, or tuple".to_string()));
                 }
             }
             Ok(c)
