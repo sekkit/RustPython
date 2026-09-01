@@ -2997,6 +2997,12 @@ mod _decimal {
             if !xd.is_special() && !yd.is_special() && !xd.is_zero() && yd.is_zero() {
                 ctx.set_flag(vm, "DivisionByZero")?;
             }
+            if ctx.trap(vm, "DivisionByZero")? {
+                return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
+            }
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "invalid operation"));
+            }
             let (floor, m) = _decimal_core::floor_div_mod(&xd, &yd);
             let f = _decimal_core::apply_context(vm, &ctx, floor)?;
             let r = _decimal_core::apply_context(vm, &ctx, m)?;
