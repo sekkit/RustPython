@@ -212,6 +212,31 @@ mod _decimal {
         ctx_from_funcargs(args, vm)
     }
 
+    /// Validate a list/tuple of signals (used for Context(flags=...) and
+    /// traps=... list/tuple forms). Elements may be signal-name strings or
+    /// signal exception types. Unknown names raise KeyError (CPython).
+    fn validate_signal_names(items: &[PyObjectRef], vm: &VirtualMachine) -> PyResult<()> {
+        for item in items {
+            let valid = if let Some(s) = item.downcast_ref::<PyStr>() {
+                _decimal_core::exc().by_name(&s.as_wtf8().to_string()).is_some()
+            } else {
+                // Accept the signal exception types themselves.
+                _decimal_core::exc()
+                    .all()
+                    .iter()
+                    .any(|ty| item.is(ty.as_object()))
+            };
+            if !valid {
+                let name = item
+                    .downcast_ref::<PyStr>()
+                    .map(|s| s.as_wtf8().to_string())
+                    .unwrap_or_else(|| item.repr(vm).map(|r| r.as_str().to_string()).unwrap_or_default());
+                return Err(vm.new_key_error(vm.ctx.new_str(name).into()));
+            }
+        }
+        Ok(())
+    }
+
     /// Digit-wise logical operation on decimal coefficients. The result keeps
     /// the LOW `prec` digits (CPython: result length = context precision).
     fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
@@ -3708,12 +3733,19 @@ mod _decimal {
                         let _ = traps_guard.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
                     }
                 } else if let Some(t) = v.downcast_ref::<PyTuple>() {
+                    let items: Vec<PyObjectRef> = t.as_slice().to_vec();
                     // __reduce__ form: tuple of exception objects to enable.
-                    for item in t.as_slice() {
+                    if !items.is_empty() && items[0].downcast_ref::<PyDecimal>().is_some() {
+                        // tuple like (Decimal, ...) isn't valid here
+                        return Err(vm.new_type_error("traps must be a dict, list, or tuple".to_string()));
+                    }
+                    validate_signal_names(&items, vm)?;
+                    for item in items {
                         let _ = traps_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
                     }
                 } else if let Some(lst) = v.downcast_ref::<crate::vm::builtins::PyList>() {
                     let items: Vec<PyObjectRef> = lst.borrow_vec().to_vec();
+                    validate_signal_names(&items, vm)?;
                     for item in items {
                         let _ = traps_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
                     }
@@ -3732,11 +3764,14 @@ mod _decimal {
                         let _ = flags_guard.set_item(k.as_object(), vm.ctx.new_bool(on).into(), vm);
                     }
                 } else if let Some(t) = v.downcast_ref::<PyTuple>() {
-                    for item in t.as_slice() {
+                    let items: Vec<PyObjectRef> = t.as_slice().to_vec();
+                    validate_signal_names(&items, vm)?;
+                    for item in items {
                         let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
                     }
                 } else if let Some(lst) = v.downcast_ref::<crate::vm::builtins::PyList>() {
                     let items: Vec<PyObjectRef> = lst.borrow_vec().to_vec();
+                    validate_signal_names(&items, vm)?;
                     for item in items {
                         let _ = flags_guard.set_item(item.as_object(), vm.ctx.new_bool(true).into(), vm);
                     }
