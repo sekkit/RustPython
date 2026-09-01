@@ -1,4 +1,4 @@
-#[path = "_decimal_core.rs"]
+﻿#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -106,7 +106,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float/str) to Dec.
-    /// Used by Decimal constructor ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â accepts str.
+    /// Used by Decimal constructor ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -137,7 +137,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float) to Dec.
-    /// Used by Context methods ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â rejects str (CPython behavior).
+    /// Used by Context methods ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â rejects str (CPython behavior).
     fn to_dec_ctx(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -409,7 +409,7 @@ mod _decimal {
             };
             // Wrap in the DecimalTuple namedtuple (sign, digits, exponent).
             // A process-level shared class so all _decimal module instances
-            // (fresh re-imports) use the same type ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â matches the pickle
+            // (fresh re-imports) use the same type ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â matches the pickle
             // interchange test's identity expectations.
             let dt_cls = DECIMAL_TUPLE
                 .lock()
@@ -1256,7 +1256,7 @@ mod _decimal {
             if let Some(r) = rounding_str {
                 ctx2.rounding = Rounding::from_str(&r).unwrap();
             }
-            let r = _decimal_core::to_integral(vm, &ctx2, &self.d)?;
+            let r = _decimal_core::to_integral(vm, &ctx2, &self.d, false)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -1291,7 +1291,7 @@ mod _decimal {
             if let Some(r) = rounding_str {
                 ctx2.rounding = Rounding::from_str(&r).unwrap();
             }
-            let r = _decimal_core::to_integral(vm, &ctx2, &self.d)?;
+            let r = _decimal_core::to_integral(vm, &ctx2, &self.d, false)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -1321,7 +1321,7 @@ mod _decimal {
             if let Some(r) = rounding_str {
                 ctx2.rounding = Rounding::from_str(&r).unwrap();
             }
-            let r = _decimal_core::to_integral(vm, &ctx2, &self.d)?;
+            let r = _decimal_core::to_integral(vm, &ctx2, &self.d, true)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -1670,7 +1670,7 @@ mod _decimal {
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            // CPython: Decimal(value[, context]) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the second positional may be
+            // CPython: Decimal(value[, context]) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the second positional may be
             // a Context; anything more or a non-Context second arg -> TypeError.
             if args.args.len() > 2 {
                 return Err(vm.new_type_error(
@@ -1782,7 +1782,7 @@ mod _decimal {
                 Ok(b) => b,
                 Err(_) => {
                     // Fraction comparison: exact via numerator/denominator.
-                    // self (Decimal) vs other (Fraction) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compare the exact
+                    // self (Decimal) vs other (Fraction) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â compare the exact
                     // rational self.d against num/den.
                     // Specials first: Infinity/NaN never convert to Dec here
                     // (Fraction is not a Decimal), but compare naturally.
@@ -1821,7 +1821,7 @@ mod _decimal {
                                     let result = matches!(op, PyComparisonOp::Ne);
                                     return Ok(PyComparisonValue::Implemented(result));
                                 }
-                                // Infinity Ãƒâ€šÃ‚Â±: always greater/less than any
+                                // Infinity ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±: always greater/less than any
                                 // finite rational.
                                 let self_pos = !zelf.d.sign;
                                 let result = match op {
@@ -2014,7 +2014,7 @@ mod _decimal {
                         "unhashable type: 'decimal.Decimal'".to_string(),
                     )),
                     Special::NaN => Ok(zelf.as_object().get_id() as hash::PyHash),
-                    // CPython: hash matches the float hash (Ãƒâ€šÃ‚Â±inf).
+                    // CPython: hash matches the float hash (ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±inf).
                     Special::Infinity => {
                         let f: f64 = if d.sign { f64::NEG_INFINITY } else { f64::INFINITY };
                         let float_obj: PyObjectRef = vm.ctx.new_float(f).into();
@@ -3533,7 +3533,7 @@ mod _decimal {
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             let mut c = Self::new_ctx(vm, 28);
-            // Context(prec, rounding, Emin, Emax, capitals, clamp) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â accept
+            // Context(prec, rounding, Emin, Emax, capitals, clamp) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â accept
             // both positional and keyword forms (the test suite uses keyword
             // args like Context(prec=9, rounding=..., traps=...)).
             let mut pos_iter = args.args.iter();

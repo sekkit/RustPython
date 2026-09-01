@@ -887,8 +887,10 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
 
 /// Round to integer (exp 0) using the context rounding mode, WITHOUT the
 /// Emax/Emin range check (CPython's Decimal.to_integral* returns the rounded
-/// integer even if its adjusted exponent exceeds Emax).
-pub(crate) fn to_integral(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec> {
+/// integer even if its adjusted exponent exceeds Emax). `exact` controls
+/// whether Inexact/Rounded are signaled+trapped (to_integral_exact does,
+/// to_integral/to_integral_value do not).
+pub(crate) fn to_integral(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exact: bool) -> PyResult<Dec> {
     if d.is_special() {
         if d.special == Special::Infinity || d.special == Special::NaN || d.special == Special::SignalingNaN {
             ctx.set_flag(vm, "InvalidOperation")?;
@@ -899,12 +901,12 @@ pub(crate) fn to_integral(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<D
         }
         return Ok(d.clone());
     }
-    quantize_inner(vm, ctx, d, 0)
+    quantize_inner(vm, ctx, d, 0, exact)
 }
 
 /// quantize to `exp` using context rounding — shared core without the
 /// Emax/Emin InvalidOperation check (used by to_integral).
-fn quantize_inner(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> PyResult<Dec> {
+fn quantize_inner(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize, exact: bool) -> PyResult<Dec> {
     let shift = exp - d.exp;
     let mut coeff = d.coeff.clone();
     let mut inexact = false;
@@ -939,10 +941,19 @@ fn quantize_inner(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> PyResu
         coeff *= BigInt::from(10).pow((-shift) as u32);
     }
     let result = Dec { sign: d.sign, coeff, exp, special: Special::Finite };
-    // to_integral keeps all digits (does not apply context precision).
+    // Maintain Inexact/Rounded flags; to_integral_exact (exact=true) also
+    // traps them, to_integral/to_integral_value (exact=false) do not.
     if inexact {
         ctx.set_flag(vm, "Inexact")?;
         ctx.set_flag(vm, "Rounded")?;
+        if exact {
+            if ctx.trap(vm, "Inexact")? {
+                return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+            }
+            if ctx.trap(vm, "Rounded")? {
+                return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+            }
+        }
     }
     Ok(result)
 }
