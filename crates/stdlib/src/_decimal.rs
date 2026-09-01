@@ -2880,6 +2880,8 @@ mod _decimal {
                 .collect();
             let trap_list = vm.ctx.new_list(trap_names);
             let flag_list = vm.ctx.new_list(flag_names);
+            // CPython order: (prec, rounding, Emin, Emax, capitals, clamp,
+            // flags, traps) — flags is the 7th positional arg, traps the 8th.
             let args: PyObjectRef = vm.ctx.new_tuple(vec![
                 vm.ctx.new_int(prec).into(),
                 vm.ctx.new_str(rounding_str).into(),
@@ -2887,8 +2889,8 @@ mod _decimal {
                 vm.ctx.new_int(emax).into(),
                 vm.ctx.new_int(capitals).into(),
                 vm.ctx.new_int(clamp).into(),
-                trap_list.into(),
                 flag_list.into(),
+                trap_list.into(),
             ]).into();
             let cls: PyObjectRef = zelf.class().to_owned().into();
             Ok(vm.ctx.new_tuple(vec![cls, args]).into())
