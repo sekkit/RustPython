@@ -3327,7 +3327,12 @@ mod _decimal {
         fn to_sci_string(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             // CPython: str input raises TypeError (exact object conversion).
             let d = to_dec_ctx(&x, vm)?;
-            Ok(vm.ctx.new_str(d.to_string()).into())
+            let mut s = d.to_string();
+            // capitals=0 renders exponents with lowercase 'e'.
+            if *self.capitals.lock() == 0 {
+                s = s.replace('E', "e");
+            }
+            Ok(vm.ctx.new_str(s).into())
         }
 
         #[pymethod]
