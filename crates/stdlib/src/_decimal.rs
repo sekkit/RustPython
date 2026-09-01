@@ -604,7 +604,39 @@ mod _decimal {
                 .or_else(|| args.args.get(0).cloned())
                 .ok_or_else(|| vm.new_type_error("compare requires an argument".to_string()))?;
             let b = to_dec_ctx(&other, vm)?;
-            let _ = ctx_from_funcargs(&args, vm)?; // accept context arg
+            let ctx = ctx_from_funcargs(&args, vm)?; // accept context arg
+            // CPython: if either operand is a quiet NaN, the result is the
+            // NaN (payload preserved); a signaling NaN raises InvalidOperation.
+            if self.d.special == Special::SignalingNaN || b.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "compare with sNaN"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
+            if self.d.special == Special::NaN {
+                let mut n = self.d.clone();
+                // payload truncated to context precision
+                let digits = n.coeff_str();
+                let keep = ctx.prec as usize;
+                if digits.len() > keep {
+                    let keep = keep.max(1);
+                    n.coeff = digits[digits.len() - keep..].parse::<BigInt>().unwrap_or_else(|_| BigInt::from(0));
+                }
+                return Ok(PyDecimal::to_py(vm, n));
+            }
+            if b.special == Special::NaN {
+                let mut n = b;
+                let digits = n.coeff_str();
+                let keep = ctx.prec as usize;
+                if digits.len() > keep {
+                    let keep = keep.max(1);
+                    n.coeff = digits[digits.len() - keep..].parse::<BigInt>().unwrap_or_else(|_| BigInt::from(0));
+                }
+                return Ok(PyDecimal::to_py(vm, n));
+            }
             Ok(vm.ctx.new_int(BigInt::from(dec_cmp(&self.d, &b))).into())
         }
 
