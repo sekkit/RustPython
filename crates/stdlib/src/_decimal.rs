@@ -1665,12 +1665,24 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let ctx = ctx_from_funcargs(&args, vm)?;
             let n_obj = to_dec_ctx(&n_argv, vm)?;
             if self.d.exp < 0 || n_obj.exp != 0 {
-                return Err(new_decimal_error(vm, "InvalidOperation", "shift requires integer"));
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "shift requires integer"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
             let n: i64 = n_obj.coeff.to_string().parse().unwrap_or(0);
             let n = if n_obj.sign { -n } else { n };
             if !(-(ctx.prec as i64) <= n && n <= ctx.prec as i64) {
-                return Err(new_decimal_error(vm, "InvalidOperation", "shift amount out of range"));
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "shift amount out of range"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
             if self.d.special == Special::Infinity {
                 return Ok(PyDecimal::to_py(vm, self.d.clone()));
