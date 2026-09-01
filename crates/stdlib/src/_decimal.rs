@@ -243,9 +243,23 @@ mod _decimal {
         Ok(())
     }
 
-    /// Digit-wise logical operation on decimal coefficients. The result keeps
-    /// the LOW `prec` digits (CPython: result length = context precision).
-    fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
+    /// Validate that a coefficient consists only of 0/1 digits (logical ops);
+/// raises InvalidOperation (with flag) otherwise, matching CPython.
+fn logical_valid(vm: &VirtualMachine, ctx: &Ctx, coeff: &BigInt) -> PyResult<bool> {
+    let s = coeff.to_string();
+    if s.chars().all(|c| c == '0' || c == '1') {
+        return Ok(true);
+    }
+    ctx.set_flag(vm, "InvalidOperation")?;
+    if ctx.trap(vm, "InvalidOperation")? {
+        return Err(new_decimal_error(vm, "InvalidOperation", "logical operation requires 0/1 digits"));
+    }
+    Ok(false)
+}
+
+/// Digit-wise logical operation on decimal coefficients. The result keeps
+/// the LOW `prec` digits (CPython: result length = context precision).
+fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
     where
         F: Fn(u32, u32) -> u32,
     {
@@ -1427,6 +1441,11 @@ mod _decimal {
             if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
                 return Err(new_decimal_error(vm, "InvalidOperation", "logical_and requires non-negative integers"));
             }
+            if !logical_valid(vm, &ctx, &self.d.coeff)? || !logical_valid(vm, &ctx, &b.coeff)? {
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let coeff = logical_digit_op(&self.d.coeff, &b.coeff, ctx.prec, |x, y| x & y);
             Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
                 sign: false, coeff, exp: 0, special: Special::Finite,
@@ -1442,6 +1461,11 @@ mod _decimal {
             if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
                 return Err(new_decimal_error(vm, "InvalidOperation", "logical_or requires non-negative integers"));
             }
+            if !logical_valid(vm, &ctx, &self.d.coeff)? || !logical_valid(vm, &ctx, &b.coeff)? {
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let coeff = logical_digit_op(&self.d.coeff, &b.coeff, ctx.prec, |x, y| x | y);
             Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
                 sign: false, coeff, exp: 0, special: Special::Finite,
@@ -1456,6 +1480,11 @@ mod _decimal {
             let b = to_dec(&other, vm)?;
             if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
                 return Err(new_decimal_error(vm, "InvalidOperation", "logical_xor requires non-negative integers"));
+            }
+            if !logical_valid(vm, &ctx, &self.d.coeff)? || !logical_valid(vm, &ctx, &b.coeff)? {
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
             let coeff = logical_digit_op(&self.d.coeff, &b.coeff, ctx.prec, |x, y| x ^ y);
             Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
