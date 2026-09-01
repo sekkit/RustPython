@@ -280,6 +280,23 @@ pub(crate) fn exc() -> &'static DecExc {
     EXC.get().expect("_decimal exceptions not initialized")
 }
 
+/// Whether an exception type is one of the 9 signals that may appear in a
+/// Context's flags/traps dict (CPython SignalDict keys). DecimalException and
+/// its non-signal subclasses (ConversionSyntax, DivisionImpossible, etc.) are
+/// not signals.
+pub(crate) fn is_signal(ty: &PyTypeRef) -> bool {
+    let e = exc();
+    ty.is(&e.clamped)
+        || ty.is(&e.invalid_operation)
+        || ty.is(&e.division_by_zero)
+        || ty.is(&e.inexact)
+        || ty.is(&e.float_operation)
+        || ty.is(&e.overflow)
+        || ty.is(&e.rounded)
+        || ty.is(&e.subnormal)
+        || ty.is(&e.underflow)
+}
+
 /// Build the exception hierarchy once per process.
 pub(crate) fn init_exceptions(vm: &VirtualMachine) {
     let _ = EXC.get_or_init(|| {
