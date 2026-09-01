@@ -843,6 +843,17 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("max requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec_ctx(&other, vm)?;
+            // sNaN raises InvalidOperation; quiet NaN is ignored (returns the
+            // other operand, CPython).
+            if self.d.special == Special::SignalingNaN || b.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "max with sNaN"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let chosen = if dec_cmp(&self.d, &b) >= 0 { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -857,6 +868,15 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("min requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec_ctx(&other, vm)?;
+            if self.d.special == Special::SignalingNaN || b.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "min with sNaN"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let chosen = if dec_cmp(&self.d, &b) <= 0 { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -871,6 +891,15 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("max_mag requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec_ctx(&other, vm)?;
+            if self.d.special == Special::SignalingNaN || b.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "max_mag with sNaN"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
             let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
             let chosen = if dec_cmp(&xa, &ya) >= 0 { self.d.clone() } else { b };
@@ -887,6 +916,15 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("min_mag requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec_ctx(&other, vm)?;
+            if self.d.special == Special::SignalingNaN || b.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "min_mag with sNaN"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
             let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
             let chosen = if dec_cmp(&xa, &ya) <= 0 { self.d.clone() } else { b };
