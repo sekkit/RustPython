@@ -1639,9 +1639,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let n = if n_obj.sign { -n } else { n };
             // CPython: liminf/limsup = +/-2*(Emax+prec); out of range is
             // InvalidOperation (the exponent isn't even representable).
-            let limsup = 2 * (ctx.emax + ctx.prec);
-            let liminf = -2 * (ctx.emax + ctx.prec);
-            if !(liminf <= n as i64 && n as i64 <= limsup) {
+            let limsup = 2isize.checked_mul(ctx.emax + ctx.prec).unwrap_or(isize::MAX);
+            let liminf = -2isize.checked_mul(ctx.emax + ctx.prec).unwrap_or(isize::MIN);
+            if !(liminf <= n && n <= limsup) {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "scaleb exponent out of range"));
