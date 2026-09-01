@@ -444,6 +444,13 @@ pub(crate) fn apply_context(
                 return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
             }
             dec.exp = etiny;
+        } else if dec.exp > ctx.emax {
+            // Clamp huge positive exponent of a zero to Emax (CPython).
+            ctx.set_flag(vm, "Clamped")?;
+            if ctx.trap(vm, "Clamped")? {
+                return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+            }
+            dec.exp = ctx.emax;
         }
         return Ok(dec);
     }
