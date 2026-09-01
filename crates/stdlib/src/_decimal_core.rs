@@ -743,7 +743,7 @@ pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
     // CPython raises InvalidOperation when the exponent exceeds the
     // representable range (MAX_EMAX / MIN_EMIN magnitude ~1e18); clamping
     // such an exponent is impossible.
-    if (exp as i128).unsigned_abs() > 999_999_999_999_999_999i128 {
+    if (exp as i128).unsigned_abs() > 999_999_999_999_999_999u128 {
         return Err("exponent out of range".to_string());
     }
     // split mantissa on '.'
