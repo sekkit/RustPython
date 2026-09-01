@@ -248,6 +248,28 @@ impl DecExc {
             &self.float_operation,
         ]
     }
+
+    /// Look up a signal exception type by its class name (e.g. "Clamped").
+    /// Returns None for names that are not decimal signals.
+    pub(crate) fn by_name(&self, name: &str) -> Option<&PyTypeRef> {
+        match name {
+            "DecimalException" => Some(&self.decimal_exception),
+            "Clamped" => Some(&self.clamped),
+            "InvalidOperation" => Some(&self.invalid_operation),
+            "ConversionSyntax" => Some(&self.conversion_syntax),
+            "DivisionImpossible" => Some(&self.division_impossible),
+            "DivisionUndefined" => Some(&self.division_undefined),
+            "InvalidContext" => Some(&self.invalid_context),
+            "DivisionByZero" => Some(&self.division_by_zero),
+            "Inexact" => Some(&self.inexact),
+            "Overflow" => Some(&self.overflow),
+            "Underflow" => Some(&self.underflow),
+            "Rounded" => Some(&self.rounded),
+            "Subnormal" => Some(&self.subnormal),
+            "FloatOperation" => Some(&self.float_operation),
+            _ => None,
+        }
+    }
 }
 
 static_cell! {
@@ -515,6 +537,21 @@ pub(crate) fn apply_context(
     }
     dec.coeff = new_coeff;
     dec.exp = new_exp;
+    // clamp=1: when the exponent exceeds etop (Emax - prec + 1), the
+    // coefficient is padded with zeros down to etop (Clamped signal).
+    // e.g. plus(1E+99) with clamp=1, Emax=99, prec=28 ->
+    // 1.000000000000000000000000000E+99.
+    if ctx.clamp == 1 && new_exp > ctx.emax - ctx.prec + 1 {
+        let etop = ctx.emax - ctx.prec + 1;
+        let shift = new_exp - etop;
+        let pow = BigInt::from(10).pow(shift as u32);
+        dec.coeff = &dec.coeff * &pow;
+        dec.exp = etop;
+        ctx.set_flag(vm, "Clamped")?;
+        if ctx.trap(vm, "Clamped")? {
+            return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+        }
+    }
     // exponent range check
     let etiny = ctx.emin - (ctx.prec as isize - 1);
     if new_exp < etiny {
