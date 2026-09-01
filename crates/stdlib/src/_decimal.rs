@@ -214,24 +214,23 @@ mod _decimal {
 
     /// Validate a list/tuple of signals (used for Context(flags=...) and
     /// traps=... list/tuple forms). Elements may be signal-name strings or
-    /// signal exception types. Unknown names raise KeyError (CPython).
+    /// signal exception types. Non-string non-signal elements raise
+    /// TypeError; unknown names raise KeyError (CPython).
     fn validate_signal_names(items: &[PyObjectRef], vm: &VirtualMachine) -> PyResult<()> {
         for item in items {
-            let valid = if let Some(s) = item.downcast_ref::<PyStr>() {
-                _decimal_core::exc().by_name(&s.as_wtf8().to_string()).is_some()
-            } else {
-                // Accept the signal exception types themselves.
-                _decimal_core::exc()
-                    .all()
-                    .iter()
-                    .any(|ty| item.is(ty.as_object()))
-            };
-            if !valid {
-                let name = item
-                    .downcast_ref::<PyStr>()
-                    .map(|s| s.as_wtf8().to_string())
-                    .unwrap_or_else(|| item.repr(vm).map(|r| r.as_wtf8().to_string()).unwrap_or_default());
-                return Err(vm.new_key_error(vm.ctx.new_str(name).into()));
+            if let Some(s) = item.downcast_ref::<PyStr>() {
+                if _decimal_core::exc().by_name(&s.as_wtf8().to_string()).is_none() {
+                    let name = s.as_wtf8().to_string();
+                    return Err(vm.new_key_error(vm.ctx.new_str(name).into()));
+                }
+            } else if !_decimal_core::exc()
+                .all()
+                .iter()
+                .any(|ty| item.is(ty.as_object()))
+            {
+                return Err(vm.new_type_error(
+                    "flags/traps must contain signal names or signal classes".to_string(),
+                ));
             }
         }
         Ok(())
