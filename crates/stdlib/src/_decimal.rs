@@ -1011,6 +1011,15 @@ mod _decimal {
         }
 
         #[pymethod]
+        fn __sizeof__(&self, vm: &VirtualMachine) -> PyResult<usize> {
+            // CPython: sizeof = base + 8 bytes per 19-digit limb of the
+            // coefficient (0 coefficient has no limbs).
+            let digits = _decimal_core::coeff_digits_of(&self.d.coeff) as usize;
+            let limbs = if digits == 0 { 0 } else { (digits + 18) / 19 };
+            Ok(104 + 8 * limbs)
+        }
+
+        #[pymethod]
         fn __format__(
             &self,
             spec: PyStrRef,
@@ -2174,7 +2183,7 @@ mod _decimal {
                                 Err(_) => return Ok(vm.ctx.not_implemented()),
                             })
                         };
-                        let md = to_dec(&c_obj, vm)?;
+                        let md = to_dec_ctx(&c_obj, vm)?;
                         let ctx = current_ctx(vm)?;
                         let r = _decimal_core::dec_pow_mod(&ctx, vm, &ad, &bd, &md)?;
                         return Ok(PyDecimal::to_py(vm, r));
