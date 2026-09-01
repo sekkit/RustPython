@@ -1191,10 +1191,12 @@ mod _decimal {
                 ));
             };
             // Build through the (possibly subclassed) cls so MyDecimal.from_float
-            // returns a MyDecimal instance.
-            let s: PyObjectRef = vm.ctx.new_str(d.to_string()).into();
+            // returns a MyDecimal instance. CPython passes the resulting
+            // Decimal object to the constructor (subclass __init__ sees a
+            // Decimal, not a str).
+            let dec_obj: PyObjectRef = PyDecimal::to_py(vm, d);
             let cls_obj: PyObjectRef = cls.to_owned().into();
-            let inst = vm.invoke(&cls_obj, (s,))?;
+            let inst = vm.invoke(&cls_obj, (dec_obj,))?;
             Ok(inst)
         }
 
