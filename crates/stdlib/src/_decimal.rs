@@ -1737,8 +1737,9 @@ mod _decimal {
             if !triple.is_empty() {
                 let d = Self::from_tuple(&triple, vm)?;
                 // CPython: Decimal(tuple) raises InvalidOperation when the
-                // exponent exceeds the representable range (~1e18).
-                if (d.exp as i128).unsigned_abs() > 999_999_999_999_999_999u128 {
+                // exponent exceeds the representable range (MAX_EMAX /
+                // MIN_ETINY).
+                if d.exp > 999_999_999_999_999_999 || d.exp < -1_999_999_999_999_999_997 {
                     let ctx = match &context_kw {
                         Some(c) if c.downcast_ref::<PyContext>().is_some() => c
                             .downcast_ref::<PyContext>()
