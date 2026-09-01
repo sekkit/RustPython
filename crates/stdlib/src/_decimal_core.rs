@@ -1114,7 +1114,16 @@ pub(crate) fn dec_pow_mod(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec, m: &
     }
     // result sign: a^b % m follows the sign of m in the common case; CPython
     // returns a non-negative result when m is positive.
-    let _ = ctx;
+    // CPython: the modulo-power result must fit in the context precision;
+    // otherwise InvalidOperation is raised (e.g. pow(1000,1,501) with
+    // prec=2 -> 499 has 3 digits).
+    if coeff_digits_of(&result) > ctx.prec as usize {
+        ctx.set_flag(vm, "InvalidOperation")?;
+        if ctx.trap(vm, "InvalidOperation")? {
+            return Err(new_decimal_error(vm, "InvalidOperation", "result too many digits in modulo power"));
+        }
+        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+    }
     Ok(Dec { sign: false, coeff: result, exp: 0, special: Special::Finite })
 }
 
