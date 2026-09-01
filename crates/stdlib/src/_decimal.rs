@@ -2596,7 +2596,16 @@ mod _decimal {
         #[pymethod]
         fn power(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
             // Context.power(a, b, modulo=None); supports positional and
-            // keyword forms (a=, b=, modulo=).
+            // keyword forms (a=, b=, modulo=). Unknown keywords (like 'mod')
+            // are a TypeError (CPython).
+            for key in args.kwargs.keys() {
+                let k = String::from_utf8_lossy(key.as_bytes());
+                if k != "a" && k != "b" && k != "modulo" {
+                    return Err(vm.new_type_error(format!(
+                        "'{k}' is an invalid keyword argument for this function"
+                    )));
+                }
+            }
             let mut pos = args.args.iter();
             let mut get = |key: &str| -> Option<PyObjectRef> {
                 args.get_optional_kwarg(key).or_else(|| pos.next().cloned())
