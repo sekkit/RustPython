@@ -1,4 +1,4 @@
-﻿#[path = "_decimal_core.rs"]
+#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -558,7 +558,7 @@ mod _decimal {
                 .get_optional_kwarg("other")
                 .or_else(|| args.args.get(0).cloned())
                 .ok_or_else(|| vm.new_type_error("compare requires an argument".to_string()))?;
-            let b = to_dec(&other, vm)?;
+            let b = to_dec_ctx(&other, vm)?;
             let _ = ctx_from_funcargs(&args, vm)?; // accept context arg
             Ok(vm.ctx.new_int(BigInt::from(dec_cmp(&self.d, &b))).into())
         }
