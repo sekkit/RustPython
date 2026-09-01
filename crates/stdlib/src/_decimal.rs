@@ -1,4 +1,4 @@
-﻿#[path = "_decimal_core.rs"]
+#[path = "_decimal_core.rs"]
 mod _decimal_core;
 
 pub(crate) use _decimal::module_def;
@@ -3495,17 +3495,31 @@ mod _decimal {
         vm: &VirtualMachine,
     ) -> String {
         let rounding_str = rounding.to_str();
-        let flag_names: Vec<String> = flags
-            .items_vec()
-            .into_iter()
-            .filter(|(_, v)| v.try_to_value::<bool>(vm).unwrap_or(false))
-            .map(|(k, _)| exception_name(&k, vm))
+        // CPython repr lists signals in canonical order
+        // (Clamped, InvalidOperation, DivisionByZero, Inexact,
+        // FloatOperation, Overflow, Rounded, Subnormal, Underflow).
+        let names: Vec<(&str, &PyTypeRef)> = vec![
+            ("Clamped", &exc().clamped),
+            ("InvalidOperation", &exc().invalid_operation),
+            ("DivisionByZero", &exc().division_by_zero),
+            ("Inexact", &exc().inexact),
+            ("FloatOperation", &exc().float_operation),
+            ("Overflow", &exc().overflow),
+            ("Rounded", &exc().rounded),
+            ("Subnormal", &exc().subnormal),
+            ("Underflow", &exc().underflow),
+        ];
+        let is_set = |d: &PyDictRef, ty: &PyTypeRef| -> bool {
+            let v = d.get_item_opt(ty.as_object(), vm).ok().flatten();
+            v.and_then(|x| x.try_to_value::<bool>(vm).ok()).unwrap_or(false)
+        };
+        let flag_names: Vec<&str> = names
+            .iter()
+            .filter_map(|(n, ty)| if is_set(flags, ty) { Some(*n) } else { None })
             .collect();
-        let trap_names: Vec<String> = traps
-            .items_vec()
-            .into_iter()
-            .filter(|(_, v)| v.try_to_value::<bool>(vm).unwrap_or(false))
-            .map(|(k, _)| exception_name(&k, vm))
+        let trap_names: Vec<&str> = names
+            .iter()
+            .filter_map(|(n, ty)| if is_set(traps, ty) { Some(*n) } else { None })
             .collect();
         format!(
             "Context(prec={prec}, rounding={rounding_str}, Emin={emin}, Emax={emax}, capitals={capitals}, clamp={clamp}, flags=[{}], traps=[{}])",
@@ -3789,7 +3803,6 @@ mod _decimal {
             "ROUND_HALF_UP",
             "ROUND_UP",
             "ROUND_05UP",
-            "ROUND_01UP",
         ] {
             set(r, vm.ctx.new_str(r).into())?;
         }
