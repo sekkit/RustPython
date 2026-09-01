@@ -593,6 +593,90 @@ pub(crate) fn apply_context(
     Ok(dec)
 }
 
+/// Exact decimal square root (CPython _pydecimal algorithm):
+/// express self = c * 100**e with 100**(l-1) <= c < 100**l, rescale c to
+/// prec base-100 digits, Newton's method for floor(sqrt(c)), fix the last
+/// digit, then round half-even into the context.
+pub(crate) fn dec_sqrt(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec> {
+    if d.is_special() {
+        return Ok(d.clone());
+    }
+    if d.is_zero() {
+        // sqrt(-0) = -0; ideal exponent exp // 2
+        let mut r = d.clone();
+        r.exp = d.exp / 2;
+        return apply_context(vm, ctx, r);
+    }
+    if d.sign {
+        ctx.set_flag(vm, "InvalidOperation")?;
+        if ctx.trap(vm, "InvalidOperation")? {
+            return Err(new_decimal_error(vm, "InvalidOperation", "sqrt(-x), x > 0"));
+        }
+        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+    }
+
+    let prec = ctx.prec + 1;
+    // write argument as c * 100**e
+    let int_digits = coeff_digits_of(&d.coeff) as isize;
+    let e0 = d.exp >> 1;
+    let hundred: BigInt = BigInt::from(100);
+    let (c, l) = if d.exp & 1 == 1 {
+        (d.coeff.clone() * BigInt::from(10), (int_digits >> 1) + 1)
+    } else {
+        (d.coeff.clone(), (int_digits + 1) >> 1)
+    };
+
+    // rescale so that c has exactly prec base-100 digits
+    let shift = prec - l;
+    let mut exact;
+    let c = if shift >= 0 {
+        exact = true;
+        c * hundred.pow(shift as u32)
+    } else {
+        let div = hundred.pow((-shift) as u32);
+        let (q, r) = (&c / &div, &c % &div);
+        exact = r == BigInt::from(0);
+        q
+    };
+    let mut e = e0 - shift;
+
+    // n = floor(sqrt(c)) via Newton's method
+    let ten_prec = BigInt::from(10).pow(prec as u32);
+    let mut n = ten_prec.clone();
+    loop {
+        let q = &c / &n;
+        if n <= q {
+            break;
+        }
+        n = (n + q) >> 1;
+    }
+    exact = exact && (&n * &n) == c;
+
+    if exact {
+        if shift >= 0 {
+            n /= hundred.pow(shift as u32);
+        } else {
+            n *= hundred.pow((-shift) as u32);
+        }
+        e += shift;
+    } else if (&n % BigInt::from(5)) == BigInt::from(0) {
+        n += BigInt::from(1);
+    }
+
+    let ans = Dec { sign: false, coeff: n, exp: e, special: Special::Finite };
+    // round half-even into the context
+    let rctx = Ctx::from_parts(
+        ctx.prec,
+        Rounding::HalfEven,
+        ctx.emax,
+        ctx.emin,
+        ctx.clamp,
+        ctx.flags.clone(),
+        ctx.traps.clone(),
+    );
+    apply_context(vm, &rctx, ans)
+}
+
 pub(crate) fn ctx_trap_exc(vm: &VirtualMachine, name: &str, _msg: &str) -> PyBaseExceptionRef {
     new_decimal_error(vm, name, &format!("[{name}]"))
 }

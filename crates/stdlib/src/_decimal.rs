@@ -844,22 +844,7 @@ mod _decimal {
         #[pymethod]
         fn sqrt(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
             let ctx = ctx_from_noargs(&args, vm)?;
-            if self.d.is_special() || self.d.is_zero() {
-                return Ok(PyDecimal::to_py(vm, self.d.clone()));
-            }
-            if self.d.sign {
-                ctx.set_flag(vm, "InvalidOperation")?;
-                if ctx.trap(vm, "InvalidOperation")? {
-                    return Err(new_decimal_error(vm, "InvalidOperation", "sqrt of negative"));
-                }
-                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN }));
-            }
-            let prec = ctx.prec as usize + 4;
-            let xf = self.d.to_string().parse::<f64>().unwrap_or(1.0);
-            let result = xf.sqrt();
-            let s = format!("{:.*}", prec, result);
-            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
-            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            let r = _decimal_core::dec_sqrt(vm, &ctx, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
