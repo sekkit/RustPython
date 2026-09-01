@@ -1545,6 +1545,9 @@ mod _decimal {
         #[pymethod]
         fn fma(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
             // self.fma(other, third, context=) ; other=/third= keywords.
+            if args.args.len() > 2 {
+                return Err(vm.new_type_error("fma takes at most two positional arguments".to_string()));
+            }
             let get = |key: &str| -> Option<PyObjectRef> {
                 args.get_optional_kwarg(key).or_else(|| None)
             };
@@ -1702,6 +1705,29 @@ mod _decimal {
             };
             if !triple.is_empty() {
                 let d = Self::from_tuple(&triple, vm)?;
+                // CPython: Decimal(tuple) raises InvalidOperation when the
+                // exponent exceeds the representable range (~1e18).
+                if (d.exp as i128).unsigned_abs() > 999_999_999_999_999_999u128 {
+                    let ctx = match &context_kw {
+                        Some(c) if c.downcast_ref::<PyContext>().is_some() => c
+                            .downcast_ref::<PyContext>()
+                            .unwrap()
+                            .ctx(),
+                        _ => current_ctx(vm)?,
+                    };
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "exponent out of range"));
+                    }
+                    return Ok(PyDecimal {
+                        d: _decimal_core::Dec {
+                            sign: false,
+                            coeff: BigInt::from(0),
+                            exp: 0,
+                            special: _decimal_core::Special::NaN,
+                        },
+                    });
+                }
                 return Ok(PyDecimal { d });
             }
             // CPython 3.11+: invalid string like 'ugly' constructs a
