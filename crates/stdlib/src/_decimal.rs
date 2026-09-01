@@ -2219,6 +2219,12 @@ mod _decimal {
                     }
                     if !ad.is_special() && !bd.is_special() && !ad.is_zero() && bd.is_zero() {
                         ctx.set_flag(vm, "DivisionByZero")?;
+                        if ctx.trap(vm, "DivisionByZero")? {
+                            return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
+                        }
+                    }
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "invalid operation"));
                     }
                     Ok(vm.ctx.new_tuple(vec![
                         PyDecimal::to_py(vm, floor),
