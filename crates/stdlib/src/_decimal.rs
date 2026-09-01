@@ -1368,7 +1368,11 @@ mod _decimal {
         #[pymethod]
         fn to_eng_string(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<String> {
             let _ = ctx_from_noargs(&args, vm)?;
-            Ok(self.d.to_eng_string())
+            let mut s = self.d.to_eng_string();
+            if current_capitals(vm)? == 0 {
+                s = s.replace('E', "e");
+            }
+            Ok(s)
         }
 
         // Logical operations (operate on the decimal digit strings; result
