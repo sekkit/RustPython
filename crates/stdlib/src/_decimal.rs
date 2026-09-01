@@ -1626,20 +1626,29 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("scaleb requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let n_obj = to_dec_ctx(&n_argv, vm)?;
-            if n_obj.special != Special::Finite || n_obj.exp < 0 {
-                return Err(new_decimal_error(vm, "InvalidOperation", "scaleb requires an integer"));
+            if n_obj.special != Special::Finite || n_obj.exp != 0 {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb requires an integer"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
             let n: isize = n_obj.coeff.to_string().parse().unwrap_or(isize::MAX);
             let n = if n_obj.sign { -n } else { n };
-            // CPython raises Overflow when the result's exponent range would
-            // exceed Emax/Emin of the context.
-            if (self.d.exp as i64 + n as i64) > ctx.emax as i64
-                || (self.d.exp as i64 + n as i64) < (ctx.emin - ctx.prec) as i64
-            {
-                ctx.set_flag(vm, "Overflow")?;
-                if ctx.trap(vm, "Overflow")? {
-                    return Err(new_decimal_error(vm, "Overflow", "scaleb overflow"));
+            // CPython: liminf/limsup = +/-2*(Emax+prec); out of range is
+            // InvalidOperation (the exponent isn't even representable).
+            let limsup = 2 * (ctx.emax + ctx.prec);
+            let liminf = -2 * (ctx.emax + ctx.prec);
+            if !(liminf <= n as i64 && n as i64 <= limsup) {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb exponent out of range"));
                 }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
             let result = Dec {
                 sign: self.d.sign, coeff: self.d.coeff.clone(), exp: self.d.exp + n,
