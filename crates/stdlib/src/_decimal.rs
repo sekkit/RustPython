@@ -2219,12 +2219,14 @@ mod _decimal {
                     }
                     if !ad.is_special() && !bd.is_special() && !ad.is_zero() && bd.is_zero() {
                         ctx.set_flag(vm, "DivisionByZero")?;
-                        if ctx.trap(vm, "DivisionByZero")? {
-                            return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
-                        }
                     }
+                    // InvalidOperation takes precedence over DivisionByZero
+                    // when both are trapped (CPython).
                     if ctx.trap(vm, "InvalidOperation")? {
                         return Err(new_decimal_error(vm, "InvalidOperation", "invalid operation"));
+                    }
+                    if ctx.trap(vm, "DivisionByZero")? {
+                        return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
                     }
                     Ok(vm.ctx.new_tuple(vec![
                         PyDecimal::to_py(vm, floor),
@@ -2997,11 +2999,13 @@ mod _decimal {
             if !xd.is_special() && !yd.is_special() && !xd.is_zero() && yd.is_zero() {
                 ctx.set_flag(vm, "DivisionByZero")?;
             }
-            if ctx.trap(vm, "DivisionByZero")? {
-                return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
-            }
+            // InvalidOperation takes precedence over DivisionByZero when both
+            // are trapped (CPython).
             if ctx.trap(vm, "InvalidOperation")? {
                 return Err(new_decimal_error(vm, "InvalidOperation", "invalid operation"));
+            }
+            if ctx.trap(vm, "DivisionByZero")? {
+                return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
             }
             let (floor, m) = _decimal_core::floor_div_mod(&xd, &yd);
             let f = _decimal_core::apply_context(vm, &ctx, floor)?;
