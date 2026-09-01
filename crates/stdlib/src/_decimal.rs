@@ -343,14 +343,25 @@ mod _decimal {
                     "quantize requires a Decimal, int or str exponent".to_string(),
                 ));
             };
-            let rounding_str: Option<String> = args
-                .kwargs
-                .get("rounding")
-                .map(|v| match v.downcast_ref::<PyStr>() {
-                    Some(s) => Ok(s.as_wtf8().to_string()),
-                    None => Err(vm.new_type_error("rounding must be a string".to_string())),
-                })
-                .transpose()?;
+            // The rounding arg may be positional (2nd) or a keyword; a
+            // non-string there is a TypeError (CPython).
+            let rounding_arg = get("rounding").or_else(|| args.args.get(1).cloned());
+            if args.args.len() > 2 {
+                return Err(vm.new_type_error(
+                    "quantize takes at most 3 positional arguments".to_string(),
+                ));
+            }
+            let rounding_str: Option<String> = match rounding_arg {
+                Some(v) => match v.downcast_ref::<PyStr>() {
+                    Some(s) => Some(s.as_wtf8().to_string()),
+                    None => {
+                        return Err(vm.new_type_error(
+                            "rounding must be a string".to_string(),
+                        ))
+                    }
+                },
+                None => None,
+            };
             // context= keyword overrides the current context.
             let mut ctx = if let Some(c) = get("context") {
                 let pc = c.downcast_ref::<PyContext>().ok_or_else(|| {

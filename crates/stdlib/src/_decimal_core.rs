@@ -493,7 +493,7 @@ pub(crate) fn apply_context(
         if ctx.trap(vm, "Clamped")? {
             return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
         }
-    } else if dec.exp + coeff_digits_of(&dec.coeff) as isize - 1 > ctx.emax {
+    } else if (dec.exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1 > ctx.emax as i128 {
         // Overflow is determined by the adjusted exponent, not just the
         // stored coefficient exponent: 999 * 1E+425000000 has adjusted
         // exponent 425000002 even though its stored exponent is Emax.
