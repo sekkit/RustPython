@@ -1726,6 +1726,21 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("remainder_near requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec_ctx(&other, vm)?;
+            // CPython: if the exponent difference is >= prec+1 the quotient is
+            // too large to compute (abs(self/other) > 10**prec) -> DivisionImpossible.
+            let adj = |d: &Dec| d.exp + _decimal_core::coeff_digits_of(&d.coeff) as isize - 1;
+            if self.d.special == Special::Infinity
+                || (self.d.special == Special::Finite && b.special == Special::Finite
+                    && adj(&self.d) - adj(&b) >= ctx.prec + 1)
+            {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "DivisionImpossible"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             // r = self - b * n where n = round(self/b) to nearest int (half-even).
             // Intermediate division uses extra precision so rounding is exact.
             let wide = Ctx::from_parts(50, Rounding::HalfEven, 999999999, -999999999, 0,
