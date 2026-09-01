@@ -654,9 +654,9 @@ pub(crate) fn dec_sqrt(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec>
 
     if exact {
         if shift >= 0 {
-            n /= hundred.pow(shift as u32);
+            n /= BigInt::from(10).pow(shift as u32);
         } else {
-            n *= hundred.pow((-shift) as u32);
+            n *= BigInt::from(10).pow((-shift) as u32);
         }
         e += shift;
     } else if (&n % BigInt::from(5)) == BigInt::from(0) {
