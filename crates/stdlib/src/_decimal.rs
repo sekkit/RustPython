@@ -1580,7 +1580,13 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let n = if n_obj.sign { -n } else { n };
             // CPython bounds the rotation amount to [-prec, prec].
             if !(-(ctx.prec as i64) <= n && n <= ctx.prec as i64) {
-                return Err(new_decimal_error(vm, "InvalidOperation", "rotate amount out of range"));
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "rotate amount out of range"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
             if self.d.special == Special::Infinity {
                 return Ok(PyDecimal::to_py(vm, self.d.clone()));
