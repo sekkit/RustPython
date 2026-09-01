@@ -1339,7 +1339,7 @@ mod _decimal {
         #[pymethod]
         fn to_eng_string(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<String> {
             let _ = ctx_from_noargs(&args, vm)?;
-            Ok(self.d.to_string())
+            Ok(self.d.to_eng_string())
         }
 
         // Logical operations (operate on the decimal digit strings; result

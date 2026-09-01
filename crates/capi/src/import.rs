@@ -18,11 +18,20 @@ pub unsafe extern "C" fn PyImport_Import(name: *mut PyObject) -> *mut PyObject {
 }
 
 /// PyImport_ImportModule: import a module by C string name.
+/// CPython semantics: for a dotted name "a.b.c", the LAST component module
+/// is returned (not the top-level package that Python's `__import__` with an
+/// empty fromlist yields). numpy's `npy_import` relies on this.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyImport_ImportModule(name: *const c_char) -> *mut PyObject {
     with_vm(|vm| {
         let name = unsafe { name.try_as_str(vm) }?;
-        vm.import(name, 0)
+        // Ensure the (possibly dotted) module is imported.
+        vm.import(name, 0)?;
+        // Return the exact module named by `name` (last component for dotted
+        // names), matching CPython's PyImport_ImportModule.
+        vm.sys_module
+            .get_attr(rustpython_vm::identifier!(vm, modules), vm)?
+            .get_item(name, vm)
     })
 }
 

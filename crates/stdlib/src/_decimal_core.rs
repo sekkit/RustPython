@@ -120,6 +120,51 @@ impl Dec {
             }
         }
     }
+
+    /// Engineering notation (exponent is a multiple of 3). Mirrors CPython's
+    /// `Decimal.__str__(eng=True)`.
+    pub fn to_eng_string(&self) -> String {
+        let prefix = if self.sign { "-" } else { "" };
+        match self.special {
+            Special::Infinity => return format!("{prefix}Infinity"),
+            Special::NaN => {
+                if self.coeff == BigInt::from(0) {
+                    return format!("{prefix}NaN");
+                }
+                return format!("{prefix}NaN{}", self.coeff_str());
+            }
+            Special::SignalingNaN => {
+                if self.coeff == BigInt::from(0) {
+                    return format!("{prefix}sNaN");
+                }
+                return format!("{prefix}sNaN{}", self.coeff_str());
+            }
+            Special::Finite => {}
+        }
+        let d = self.coeff_str();
+        let leftdigits = self.exp + d.len() as isize;
+        // dotplace: digits of the coefficient left of the decimal point.
+        let dotplace = if self.exp <= 0 && leftdigits > -6 {
+            leftdigits
+        } else if d == "0" {
+            (leftdigits + 1).rem_euclid(3) - 1
+        } else {
+            (leftdigits - 1).rem_euclid(3) + 1
+        };
+        let (intpart, fracpart) = if dotplace <= 0 {
+            ("0".to_string(), format!(".{}{d}", "0".repeat(-dotplace as usize)))
+        } else if dotplace >= d.len() as isize {
+            (format!("{d}{}", "0".repeat((dotplace - d.len() as isize) as usize)), String::new())
+        } else {
+            (d[..dotplace as usize].to_string(), format!(".{}", &d[dotplace as usize..]))
+        };
+        if leftdigits == dotplace {
+            format!("{prefix}{intpart}{fracpart}")
+        } else {
+            let exp = leftdigits - dotplace;
+            format!("{prefix}{intpart}{fracpart}E{exp:+}")
+        }
+    }
 }
 
 /// Rounding modes, matching CPython's ROUND_* constants.
