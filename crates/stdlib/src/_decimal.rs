@@ -2504,8 +2504,14 @@ mod _decimal {
                 return Err(vm.new_type_error("traps must be a signal dict".to_string()));
             }
             let value_ref = value.downcast_ref::<PyDict>().unwrap();
-            // Every signal must be present in the dict (by exception class).
-            for ty in exc().all() {
+            // Every SIGNAL must be present in the dict (by exception class);
+            // DecimalException and sub-derivatives are not signals.
+            const SIGNALS: &[&str] = &[
+                "Clamped", "InvalidOperation", "DivisionByZero", "Inexact",
+                "FloatOperation", "Overflow", "Rounded", "Subnormal", "Underflow",
+            ];
+            for name in SIGNALS {
+                let ty = exc().by_name(name).unwrap();
                 if value_ref.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
                     let msg: PyObjectRef = vm.ctx.new_str(format!("{} not in traps", ty.name())).into();
                     return Err(vm.new_key_error(msg));
@@ -2525,7 +2531,13 @@ mod _decimal {
                 return Err(vm.new_type_error("flags must be a signal dict".to_string()));
             }
             let value_ref = value.downcast_ref::<PyDict>().unwrap();
-            for ty in exc().all() {
+            // Every SIGNAL must be present (see set_traps).
+            const SIGNALS: &[&str] = &[
+                "Clamped", "InvalidOperation", "DivisionByZero", "Inexact",
+                "FloatOperation", "Overflow", "Rounded", "Subnormal", "Underflow",
+            ];
+            for name in SIGNALS {
+                let ty = exc().by_name(name).unwrap();
                 if value_ref.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
                     let msg: PyObjectRef = vm.ctx.new_str(format!("{} not in flags", ty.name())).into();
                     return Err(vm.new_key_error(msg));
