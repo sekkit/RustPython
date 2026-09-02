@@ -3998,13 +3998,16 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             // localcontext(ctx=None, **kwargs): 'ctx' may be given as a
             // keyword; treat it as the first positional argument.
+            // An explicit None is the same as omitting the argument.
             let mut positional: Vec<PyObjectRef> = args.args.to_vec();
             if let Some(ctx) = args.get_optional_kwarg("ctx") {
                 if positional.is_empty() {
                     positional.push(ctx);
                 }
             }
-            let ctx_arg = if positional.is_empty() {
+            let ctx_arg = if positional.is_empty()
+                || positional[0].is(&vm.ctx.none())
+            {
                 None
             } else {
                 Some(positional[0].clone())
