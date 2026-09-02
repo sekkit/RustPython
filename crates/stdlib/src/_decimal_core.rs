@@ -1790,7 +1790,11 @@ fn apply_locale_grouping(body: &str, loc: &Locale) -> String {
             }
             let split = rem.len() - sz;
             let (head, tail) = rem.split_at(split);
-            out_s = format!("{}{}{}", tail, loc.thousands_sep, out_s);
+            out_s = if out_s.is_empty() {
+                tail.to_string()
+            } else {
+                format!("{}{}{}", tail, loc.thousands_sep, out_s)
+            };
             rem = head;
             last_size = Some(sz);
             gi += 1;
