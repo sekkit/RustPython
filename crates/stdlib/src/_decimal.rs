@@ -4130,7 +4130,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             "ROUND_UP",
             "ROUND_05UP",
         ] {
-            set(r, vm.ctx.new_str(r).into())?;
+            // Intern the rounding string so that `C.ROUND_UP is P.ROUND_UP`
+            // holds (CPython: ROUND_* are the same interned strings).
+            set(r, vm.ctx.intern_str(r).into())?;
         }
 
         for (name, ty) in [
