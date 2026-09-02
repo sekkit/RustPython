@@ -3996,23 +3996,41 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            let ctx_arg = if args.args.is_empty() {
+            // localcontext(ctx=None, **kwargs): 'ctx' may be given as a
+            // keyword; treat it as the first positional argument.
+            let mut positional: Vec<PyObjectRef> = args.args.to_vec();
+            if let Some(ctx) = args.get_optional_kwarg("ctx") {
+                if positional.is_empty() {
+                    positional.push(ctx);
+                }
+            }
+            let ctx_arg = if positional.is_empty() {
                 None
             } else {
-                Some(args.args[0].clone())
+                Some(positional[0].clone())
             };
-            // CPython: localcontext accepts kwargs to modify the context copy.
-            // If kwargs are present, create a Context with them as the source.
+            // CPython: localcontext accepts kwargs (other than ctx) to modify
+            // the context copy. If present, create a Context with them.
             let ctx_arg = if args.kwargs.is_empty() {
                 ctx_arg
             } else {
-                let ctx_cls: PyObjectRef = vm
-                    .import("_decimal", 0)
-                    .and_then(|m| m.get_attr("Context", vm))
-                    .unwrap_or_else(|_| vm.ctx.none());
-                let pos_args = args.args.clone();
-                let kw_args = args.kwargs.clone();
-                Some(vm.invoke(&ctx_cls, FuncArgs::new(pos_args, kw_args))?)
+                let filtered: Vec<(rustpython_vm::Wtf8Buf, PyObjectRef)> = args
+                    .kwargs
+                    .iter()
+                    .filter(|(k, _)| k.as_bytes() != b"ctx")
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                if filtered.is_empty() {
+                    ctx_arg
+                } else {
+                    let ctx_cls: PyObjectRef = vm
+                        .import("_decimal", 0)
+                        .and_then(|m| m.get_attr("Context", vm))
+                        .unwrap_or_else(|_| vm.ctx.none());
+                    let pos = positional.clone();
+                    let kw: rustpython_vm::function::KwArgs = filtered.into_iter().collect();
+                    Some(vm.invoke(&ctx_cls, FuncArgs::new(pos, kw))?)
+                }
             };
             Ok(LocalContext {
                 saved: PyMutex::new(None),
