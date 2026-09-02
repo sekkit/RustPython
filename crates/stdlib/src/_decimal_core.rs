@@ -1639,14 +1639,18 @@ pub(crate) fn format_decimal(
             None => (body, ""),
         };
         // Pre-pad the integer digits with zeros when '0' fill is requested.
+        // Add zeros until the grouped output (sign + grouped int + rest)
+        // reaches the requested width (CPython pads then groups so the
+        // separator chars count toward the width).
         let mut int_digits = int_part.to_string();
         if fill == '0' && width > 0 && !locale.thousands_sep.is_empty() && !rest.starts_with(['e', 'E']) {
-            let grouped_now = apply_locale_grouping(&int_digits, locale);
-            let mut gap = width.saturating_sub(sign_len + grouped_now.chars().count() + rest.chars().count());
-            while gap > 0 {
+            let cur_len = |d: &str| -> usize {
+                sign_len + apply_locale_grouping(d, locale).chars().count() + rest.chars().count()
+            };
+            while cur_len(&int_digits) < width {
                 int_digits = format!("0{int_digits}");
-                gap -= 1;
-                if width.saturating_sub(sign_len + apply_locale_grouping(&int_digits, locale).chars().count() + rest.chars().count()) == 0 {
+                if cur_len(&int_digits) > width {
+                    // Only overshoot if a separator push happened; stop there.
                     break;
                 }
             }
