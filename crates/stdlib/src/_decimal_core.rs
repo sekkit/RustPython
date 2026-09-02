@@ -987,7 +987,7 @@ pub(crate) fn dec_from_float(f: f64) -> Dec {
     if f == 0.0 {
         return Dec { sign: f.is_sign_negative(), coeff: BigInt::from(0), exp: 0, special: Special::Finite };
     }
-    // Exact binary → decimal expansion: value = m * 2^e.
+    // Exact binary â†’ decimal expansion: value = m * 2^e.
     let bits = f.to_bits();
     let sign = (bits >> 63) != 0;
     let exp_bits = ((bits >> 52) & 0x7ff) as i32;
@@ -1119,7 +1119,7 @@ pub(crate) fn to_integral(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exact: bool) 
     quantize_inner(vm, ctx, d, 0, exact)
 }
 
-/// quantize to `exp` using context rounding — shared core without the
+/// quantize to `exp` using context rounding â€” shared core without the
 /// Emax/Emin InvalidOperation check (used by to_integral).
 fn quantize_inner(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize, exact: bool) -> PyResult<Dec> {
     let shift = exp - d.exp;
@@ -1625,12 +1625,12 @@ pub(crate) fn format_decimal(
     // Locale formatting: when a localeconv-style dict was supplied (used by
     // the 'n' type / grouping), swap the decimal point and apply the locale
     // thousands grouping to the integer part.
-    if !loc.decimal_point.is_empty() || !loc.thousands_sep.is_empty() {
+    if !locale.decimal_point.is_empty() || !locale.thousands_sep.is_empty() {
         if !d.is_special() && (ty == 'n' || grouping.is_none()) {
             let sign_len = if signed.starts_with(['+', '-', ' ']) { 1 } else { 0 };
             let sign = &signed[..sign_len];
             let body = &signed[sign_len..];
-            let localized = apply_locale_grouping(body, loc);
+            let localized = apply_locale_grouping(body, locale);
             signed = format!("{sign}{localized}");
         }
     }

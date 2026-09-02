@@ -1154,7 +1154,8 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             }
             // The second positional arg is localeconv data (dict) for the
             // 'n' format; it must be None or a dict (TypeError otherwise).
-            if let Some(lc) = localeconv.into_option() {
+            let localeconv_opt = localeconv.into_option();
+            if let Some(lc) = &localeconv_opt {
                 if !lc.is(&vm.ctx.none()) && lc.downcast_ref::<PyDict>().is_none() {
                     return Err(vm.new_type_error(
                         "localeconv must be a dict or None".to_string(),
@@ -1165,7 +1166,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let capitals = current_capitals(vm)?;
             // Build Locale data from the optional localeconv dict.
             let mut locale = _decimal_core::Locale::default();
-            if let Some(lc) = localeconv.into_option()
+            if let Some(lc) = localeconv_opt
                 && let Some(d) = lc.downcast_ref::<PyDict>()
             {
                 let get_str = |key: &str| -> String {
