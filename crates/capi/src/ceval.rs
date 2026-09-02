@@ -77,8 +77,7 @@ pub extern "C" fn PyEval_GetFrame() -> *mut PyFrameObject {
 pub extern "C" fn PyEval_GetFrameBuiltins() -> *mut PyObject {
     with_vm(|vm| {
         vm.current_frame().map_or_else(
-            || vm.builtins.as_object().to_owned(),
-            |frame| frame.iframe().builtins().to_owned(),
+            || vm.builtins.as_object().to_owned(),            |frame| frame.iframe().builtins().to_owned(),
         )
     })
 }
@@ -145,6 +144,40 @@ pub unsafe extern "C" fn PyEval_GetFuncDesc(func: *mut PyObject) -> *const c_cha
             c" object"
         }
     })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyRun_StringFlags(
+    str_: *const c_char,
+    start: c_int,
+    globals: *mut PyObject,
+    locals: *mut PyObject,
+    _flags: *mut PyCompilerFlags,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let code_obj = unsafe { Py_CompileString(str_, b"<string>\0".as_ptr().cast(), start) };
+        if code_obj.is_null() {
+            return Err(vm.take_raised_exception().unwrap_or_else(|| {
+                vm.new_system_error("PyRun_StringFlags: compile failed".to_string())
+            }));
+        }
+        let code = unsafe { (&*code_obj).try_downcast_ref::<PyCode>(vm) }?;
+        let globals = NonNull::new(globals)
+            .map(|ptr| unsafe { &*ptr.as_ptr() }.to_owned())
+            .ok_or_else(|| vm.new_system_error("PyRun_StringFlags: globals must not be null"))?;
+        let globals = match globals.downcast_ref::<PyDict>() {
+            Some(d) => d.to_owned(),
+            None => return Err(vm.new_type_error("PyRun_StringFlags: globals must be a dict".to_string())),
+        };
+        let _ = locals;
+        let scope = Scope::with_builtins(None, globals, vm);
+        vm.run_code_obj(code.to_owned(), scope)
+    })
+}
+
+#[repr(C)]
+pub struct PyCompilerFlags {
+    _cf_flags: c_int,
 }
 
 #[cfg(test)]
