@@ -1784,31 +1784,49 @@ fn apply_locale_grouping(body: &str, loc: &Locale) -> String {
         // No thousands separator: no grouping of the integer part.
         grouped = digits.to_string();
     } else {
-        // Interpret the grouping byte code from the right:
-        //  - a positive size N groups N digits (repeated if 0 is next)
+        // Interpret the grouping byte code from the right.
+        //  - a positive size N groups N digits
         //  - 0 means "repeat the previous size"
         //  - >= 127 (CHAR_MAX) means "no more grouping"
-        // e.g. [3,3,0] -> groups of 3; [1,4,2,127] -> 1,4,2 then the rest.
+        // If the array ends (or ends in 0), the last positive size repeats;
+        // if it ends in CHAR_MAX the remaining digits stay as one group.
+        // Build the sequence of group sizes first.
+        let mut sizes: Vec<usize> = Vec::new();
+        let mut stop_at_end = true;
+        for (i, &g) in loc.grouping.iter().enumerate() {
+            if g > 0 && g < 127 {
+                sizes.push(g as usize);
+            } else if g == 0 {
+                // repeat the previous size
+                let prev = sizes.last().copied().unwrap_or(3);
+                sizes.push(prev);
+            } else {
+                // CHAR_MAX: stop after this point
+                stop_at_end = false;
+                // the current size (if a positive follows) is not grouped
+                let _ = i;
+                break;
+            }
+        }
+        let last = sizes.last().copied().unwrap_or(3);
         let mut rem = digits;
         let mut out_s = String::new();
-        let mut gi = 0;
-        let mut last_size: Option<usize> = None;
-        'outer: loop {
-            let sz = match loc.grouping.get(gi) {
-                Some(&g) if g > 0 && g < 127 => g as usize,
-                Some(&0) => match last_size {
-                    Some(s) => s,
-                    None => 3,
-                },
-                _ => {
-                    // CHAR_MAX / end of list: rest stays as one group.
-                    if !out_s.is_empty() {
-                        out_s = format!("{}{}{}", rem, loc.thousands_sep, out_s);
-                    } else {
-                        out_s = rem.to_string();
-                    }
-                    break 'outer;
+        let mut si = 0;
+        loop {
+            // Determine the group size for this iteration.
+            let sz = if si < sizes.len() {
+                sizes[si]
+            } else if stop_at_end {
+                // Repeat the last size.
+                last
+            } else {
+                // CHAR_MAX: remaining digits are one group.
+                if !out_s.is_empty() {
+                    out_s = format!("{}{}{}", rem, loc.thousands_sep, out_s);
+                } else {
+                    out_s = rem.to_string();
                 }
+                break;
             };
             if rem.len() <= sz {
                 if !out_s.is_empty() {
@@ -1816,7 +1834,7 @@ fn apply_locale_grouping(body: &str, loc: &Locale) -> String {
                 } else {
                     out_s = rem.to_string();
                 }
-                break 'outer;
+                break;
             }
             let split = rem.len() - sz;
             let (head, tail) = rem.split_at(split);
@@ -1826,8 +1844,7 @@ fn apply_locale_grouping(body: &str, loc: &Locale) -> String {
                 format!("{}{}{}", tail, loc.thousands_sep, out_s)
             };
             rem = head;
-            last_size = Some(sz);
-            gi += 1;
+            si += 1;
         }
         grouped = out_s;
     }
