@@ -1429,12 +1429,31 @@ pub(crate) fn format_decimal(
             _ => None,
         }
     };
-    // Precision: `.N` prefix in what remains.
+    // Precision: `.N` or `.N_`/`.N,` (fractional separator) or `._`/`,`
+    // (fraction separator without digits). The integer thousands separator
+    // may be `,` or `_` (Python 3.13+).
     let mut precision: Option<usize> = None;
+    let mut frac_sep: Option<char> = None;
     if let Some(dot) = spec.rfind('.') {
         let after = &spec[dot + 1..];
-        if !after.is_empty() && after.chars().all(|c| c.is_ascii_digit()) {
-            precision = Some(after.parse().unwrap_or(0));
+        // digits possibly followed by a fractional separator char
+        let digits_end = after
+            .char_indices()
+            .find(|(_, c)| !c.is_ascii_digit())
+            .map(|(i, _)| i)
+            .unwrap_or(after.len());
+        let digits = &after[..digits_end];
+        let trailing = after[digits_end..].chars().next();
+        if !digits.is_empty() {
+            precision = Some(digits.parse().unwrap_or(0));
+            spec.truncate(dot);
+            // optional fractional separator after precision
+            if let Some(c @ (',' | '_')) = trailing {
+                frac_sep = Some(c);
+            }
+        } else if let Some(c @ (',' | '_')) = trailing {
+            // no precision, but a fractional separator: strip the dot
+            frac_sep = Some(c);
             spec.truncate(dot);
         }
     }
@@ -1686,6 +1705,14 @@ pub(crate) fn format_decimal(
     {
         signed.push('.');
     }
+    // Fraction-only grouping (spec like '.,' or '._'): no integer grouping,
+    // only group the fractional digits.
+    if grouping.is_none() && frac_sep.is_some() && !d.is_special() {
+        let sign_len = if signed.starts_with(['+', '-', ' ']) { 1 } else { 0 };
+        let sign = &signed[..sign_len];
+        let body = &signed[sign_len..];
+        signed = format!("{sign}{}", apply_frac_grouping(body, frac_sep.unwrap()));
+    }
     if grouping.is_some() && !d.is_special() {
         // Group first, then handle zero-padding so leading zeros are not
         // drawn into the grouping (e.g. '+09,' of 123456 -> '+0,123,456').
@@ -1697,6 +1724,16 @@ pub(crate) fn format_decimal(
             None => (body, ""),
         };
         let cur_digits = int_part.chars().count();
+        // Apply integer grouping, then (if a fractional separator is present)
+        // group the fractional digits too.
+        let group_all = |s: &str| -> String {
+            let sep = grouping.unwrap();
+            let g = apply_grouping(s, sep);
+            match frac_sep {
+                Some(fs) => apply_frac_grouping(&g, fs),
+                None => g,
+            }
+        };
         if fill == '0' && width > signed.chars().count() {
             // Only pad when the negatively-grouped total still falls short
             // (fractional parts already widen the string; e.g. '08,' of
@@ -1711,13 +1748,13 @@ pub(crate) fn format_decimal(
                 }
                 let pad = dcount - cur_digits;
                 let padded_digits = format!("{}{}", "0".repeat(pad), int_part);
-                signed = format!("{sign}{}{rest}", apply_grouping(&padded_digits, grouping.unwrap()));
+                signed = format!("{sign}{}{rest}", group_all(&padded_digits));
             } else {
-                signed = format!("{sign}{}{rest}", apply_grouping(int_part, grouping.unwrap()));
+                signed = format!("{sign}{}{rest}", group_all(int_part));
             }
             Ok(signed)
         } else {
-            let grouped = apply_grouping(body, grouping.unwrap());
+            let grouped = group_all(body);
             if width > (sign_len + grouped.chars().count()) {
                 let pad = width - sign_len - grouped.chars().count();
                 signed = match align {
@@ -1766,6 +1803,31 @@ fn apply_grouping(s: &str, sep: char) -> String {
     out.push_str(&grouped);
     out.push_str(rest);
     out
+}
+
+/// Group the fractional digits after a decimal point using `frac_sep`,
+/// inserting the separator every 3 digits from the LEFT
+/// (e.g. "23456789" with ',' -> "234,567,89").
+fn apply_frac_grouping(s: &str, frac_sep: char) -> String {
+    // s like "1.23456789e+5" -> split fraction "23456789" then exponent.
+    let dot = s.find('.');
+    let Some(dot) = dot else { return s.to_string() };
+    let after_dot = &s[dot + 1..];
+    let (frac_digits, suffix) = match after_dot.find(['e', 'E']) {
+        Some(i) => (&after_dot[..i], &after_dot[i..]),
+        None => (after_dot, ""),
+    };
+    // only group full groups of 3 from the left (leave rightmost partial)
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    let len = frac_digits.len();
+    while i < len {
+        let take = 3.min(len - i);
+        parts.push(frac_digits[i..i + take].to_string());
+        i += take;
+    }
+    let grouped = parts.join(&format!("{frac_sep}"));
+    format!("{}{}{}", &s[..dot + 1], grouped, suffix)
 }
 
 /// Apply locale grouping to the integer part of a formatted string.
