@@ -74,7 +74,11 @@ pub struct PyFunction {
     type_params: PyMutex<PyTupleRef>,
     annotations: PyMutex<Option<PyDictRef>>,
     annotate: PyMutex<Option<PyObjectRef>>,
-    module: PyMutex<PyObjectRef>,
+    /// Lazily-resolved module name. `None` means "not yet computed".
+    /// Computed from `globals["__name__"]` on first `__module__` access,
+    /// falling back to `None` when the key is absent. Skipping this lookup
+    /// at construction time saves one dict hash lookup per function creation.
+    module: PyMutex<Option<PyObjectRef>>,
     doc: PyMutex<PyObjectRef>,
     func_version: AtomicU32,
     #[cfg(feature = "jit")]
@@ -106,7 +110,9 @@ unsafe impl Traverse for PyFunction {
         // Traverse additional fields that may contain references
         self.type_params.lock().traverse(tracer_fn);
         self.annotations.lock().traverse(tracer_fn);
-        self.module.lock().traverse(tracer_fn);
+        if let Some(module) = self.module.lock().as_ref() {
+            module.traverse(tracer_fn);
+        }
         self.doc.lock().traverse(tracer_fn);
     }
 
@@ -140,9 +146,9 @@ unsafe impl Traverse for PyFunction {
 
         // Clear module, doc, and type_params (Py_CLEAR)
         if let Some(mut guard) = self.module.try_lock() {
-            let old_module =
-                core::mem::replace(&mut *guard, Context::genesis().none.to_owned().into());
-            out.push(old_module);
+            if let Some(old_module) = guard.take() {
+                out.push(old_module);
+            }
         }
         if let Some(mut guard) = self.doc.try_lock() {
             let old_doc =
@@ -179,7 +185,9 @@ impl PyFunction {
         vm: &VirtualMachine,
     ) -> PyResult<Self> {
         let name = PyMutex::new(code.obj_name.to_owned());
-        let module = vm.unwrap_or_none(globals.get_item_opt(identifier!(vm, __name__), vm)?);
+        // __module__ is resolved lazily on first access (see `__module__` getter),
+        // avoiding a dict hash lookup on every function creation.
+        let module = PyMutex::new(None);
         let builtins = globals.get_item("__builtins__", vm).unwrap_or_else(|_| {
             // If not in globals, inherit from current execution context
             crate::frame::current_builtins().unwrap_or_else(|| vm.builtins.dict().into())
@@ -215,7 +223,7 @@ impl PyFunction {
             type_params: PyMutex::new(vm.ctx.empty_tuple.clone()),
             annotations: PyMutex::new(None),
             annotate: PyMutex::new(None),
-            module: PyMutex::new(module),
+            module,
             doc: PyMutex::new(doc),
             func_version: AtomicU32::new(next_func_version()),
             #[cfg(feature = "jit")]
@@ -1006,13 +1014,22 @@ impl PyFunction {
     }
 
     #[pygetset]
-    fn __module__(&self) -> PyObjectRef {
-        self.module.lock().clone()
+    fn __module__(&self, vm: &VirtualMachine) -> PyObjectRef {
+        // Lazily resolve the module name from globals["__name__"] on first
+        // access, caching the result; falls back to None when absent.
+        let mut guard = self.module.lock();
+        if let Some(module) = guard.as_ref() {
+            return module.clone();
+        }
+        let module = vm
+            .unwrap_or_none(self.globals.get_item_opt(identifier!(vm, __name__), vm).unwrap_or(None));
+        *guard = Some(module.clone());
+        module
     }
 
     #[pygetset(setter)]
     fn set___module__(&self, module: PySetterValue<PyObjectRef>, vm: &VirtualMachine) {
-        *self.module.lock() = module.unwrap_or_none(vm);
+        *self.module.lock() = Some(module.unwrap_or_none(vm));
     }
 
     #[pygetset]
