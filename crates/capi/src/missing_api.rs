@@ -143,6 +143,42 @@ pub unsafe extern "C" fn _PyObject_GC_New(typeobj: *mut crate::object::PyTypeObj
     }
 }
 
+/// _PyObject_GC_NewVar: allocate a new GC-tracked variable-size object.
+/// Mirrors _PyObject_GC_New but reserves `nitems` extra slots after the
+/// object header. Returns a pointer past the GC head, with the object header
+/// stamped and size word written at ob_size (offset 0x10).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyObject_GC_NewVar(
+    typeobj: *mut crate::object::PyTypeObject,
+    nitems: isize,
+) -> *mut crate::object::PyVarObject {
+    if typeobj.is_null() || nitems < 0 {
+        return core::ptr::null_mut();
+    }
+    const GC_HEAD_SIZE: usize = 16;
+    let basicsize = unsafe { *(typeobj as *const usize).add(4) };
+    let item_size = 8usize; // sizeof(void*) per slot
+    let obj_size = basicsize.max(core::mem::size_of::<crate::PyObject>())
+        + (nitems as usize) * item_size;
+    let total = GC_HEAD_SIZE + obj_size;
+    let raw = unsafe { libc::malloc(total) } as *mut u8;
+    if raw.is_null() {
+        return core::ptr::null_mut();
+    }
+    unsafe {
+        core::ptr::write_bytes(raw, 0, total);
+        let obj = raw.add(GC_HEAD_SIZE);
+        let header = obj as *mut usize;
+        core::ptr::write(header, 1); // ob_refcnt
+        core::ptr::write(header.add(1), typeobj as usize); // ob_type
+        core::ptr::write(header.add(2), nitems as usize); // ob_size at 0x10
+        let gc_head = raw as *mut usize;
+        core::ptr::write(gc_head, 0);
+        core::ptr::write(gc_head.add(1), 0);
+        obj as *mut crate::object::PyVarObject
+    }
+}
+
 /// PyObject_Init: initialize a raw object allocation with the given type.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Init(
@@ -583,6 +619,32 @@ pub extern "C" fn Py_FatalError(message: *const c_char) -> ! {
     eprintln!("Fatal Python error: {msg}");
     std::process::abort()
 }
+
+/// _Py_FatalErrorFunc: like Py_FatalError but with the caller's function name.
+#[unsafe(no_mangle)]
+pub extern "C" fn _Py_FatalErrorFunc(func: *const c_char, message: *const c_char) -> ! {
+    let func = if func.is_null() {
+        String::from("?")
+    } else {
+        unsafe { core::ffi::CStr::from_ptr(func) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let msg = if message.is_null() {
+        String::from("(null)")
+    } else {
+        unsafe { core::ffi::CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    eprintln!("Fatal Python error: {func}: {msg}");
+    std::process::abort()
+}
+
+/// _PyByteArray_empty_string: shared empty byte string used by bytearray
+/// internals (CPython keeps a single zero-length buffer).
+#[unsafe(no_mangle)]
+pub static mut _PyByteArray_empty_string: *const u8 = core::ptr::null();
 
 /// PyErr_FormatUnraisable: report an unraisable exception. Falls back to
 /// PyErr_WriteUnraisable semantics (format the message, then hand off).

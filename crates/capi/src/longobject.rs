@@ -11,6 +11,24 @@ use rustpython_vm::{AsObject, PyResult, VirtualMachine};
 define_py_check!(fn PyLong_Check, types.int_type);
 define_py_check!(exact fn PyLong_CheckExact, types.int_type);
 
+/// _PyLong_Sign: return the sign of a PyLong (-1, 0, or 1). Internal API.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyLong_Sign(obj: *mut PyObject) -> c_int {
+    with_vm(|vm| {
+        let long = unsafe { &*obj }.try_downcast_ref::<PyInt>(vm);
+        match long {
+            Ok(v) => Ok(if *v.as_bigint() == BigInt::from(0) {
+                0
+            } else if *v.as_bigint() < BigInt::from(0) {
+                -1
+            } else {
+                1
+            }),
+            Err(_) => Ok(0),
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn PyLong_FromLong(value: c_long) -> *mut PyObject {
     with_vm(|vm| vm.ctx.new_int(value))
