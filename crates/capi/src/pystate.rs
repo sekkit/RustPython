@@ -50,6 +50,22 @@ pub extern "C" fn PyGILState_Release(state: PyGILState_STATE) {
     }
 }
 
+/// PyGILState_GetThisThreadState: return the current thread state, or NULL if
+/// the GIL is not held on this thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyGILState_GetThisThreadState() -> *mut PyThreadState {
+    if current_vm_is_set_export() {
+        unsafe { crate::missing_api::PyThreadState_Get() }
+    } else {
+        core::ptr::null_mut()
+    }
+}
+
+fn current_vm_is_set_export() -> bool {
+    use rustpython_vm::vm::thread::current_vm_is_set;
+    current_vm_is_set()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn PyEval_SaveThread() -> *mut PyThreadState {
     let interp = PyInterpreterState_Get();

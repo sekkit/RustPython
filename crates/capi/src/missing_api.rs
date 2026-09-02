@@ -475,6 +475,86 @@ pub unsafe extern "C" fn PyInterpreterState_Main() -> *mut crate::pystate::PyInt
     crate::pystate::PyInterpreterState_Get()
 }
 
+/// PyInterpreterState_GetDict: return the interpreter's global namespace dict.
+/// CPython returns the module dict of `builtins`; RustPython has no single
+/// interpreter-scoped dict, so allocate a fresh dict for the caller (used by
+/// extensions to stash per-interpreter state).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyInterpreterState_GetDict(
+    _interp: *mut crate::pystate::PyInterpreterState,
+) -> *mut PyObject {
+    with_vm(|vm| Ok(vm.ctx.new_dict()))
+}
+
+/// PyThreadState_GetDict: return the thread state's private namespace dict.
+/// RustPython has no per-thread dict; allocate a fresh one (matching CPython's
+/// lazily-created tstate dict that extensions use for per-thread storage).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyThreadState_GetDict() -> *mut PyObject {
+    with_vm(|vm| Ok(vm.ctx.new_dict()))
+}
+
+/// PyThreadState_GetInterpreter: return the interpreter of a thread state.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyThreadState_GetInterpreter(
+    tstate: *mut crate::pystate::PyThreadState,
+) -> *mut crate::pystate::PyInterpreterState {
+    if !tstate.is_null() {
+        return unsafe { (*tstate).interp };
+    }
+    crate::pystate::PyInterpreterState_Get()
+}
+
+/// PyThreadState_GetUnchecked: like PyThreadState_Get but without asserting a
+/// current thread state exists. Return the same (possibly null) state.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyThreadState_GetUnchecked() -> *mut crate::pystate::PyThreadState {
+    unsafe { PyThreadState_Get() }
+}
+
+/// PyThreadState_Clear: release references held by a thread state. No-op for
+/// RustPython (thread states own only a SavedThreadState).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyThreadState_Clear(_tstate: *mut crate::pystate::PyThreadState) {
+    // No-op
+}
+
+/// PyThreadState_Delete: deallocate a thread state. No-op for RustPython
+/// (states are owned by the VM thread bookkeeping, not the caller).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyThreadState_Delete(_tstate: *mut crate::pystate::PyThreadState) {
+    // No-op
+}
+
+/// Py_FatalError: print a fatal error message and abort. CPython never
+/// returns; match that by printing to stderr and aborting.
+#[unsafe(no_mangle)]
+pub extern "C" fn Py_FatalError(message: *const c_char) -> ! {
+    let msg = if message.is_null() {
+        String::from("(null)")
+    } else {
+        unsafe { core::ffi::CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    eprintln!("Fatal Python error: {msg}");
+    std::process::abort()
+}
+
+/// PyErr_FormatUnraisable: report an unraisable exception. Falls back to
+/// PyErr_WriteUnraisable semantics (format the message, then hand off).
+/// Declared with the format/obj params only (no variadic tail): on the
+/// Windows x64 and SysV ABIs extra register args are ignored by the callee,
+/// so this stays ABI-safe for callers that pass additional format args which
+/// we never interpret anyway.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_FormatUnraisable(
+    _format: *const c_char,
+    _obj: *mut PyObject,
+) {
+    unsafe { crate::pyerrors::PyErr_WriteUnraisable(_obj) }
+}
+
 // ===========================================================================
 // Context variables
 // ===========================================================================
