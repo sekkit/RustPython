@@ -24,12 +24,13 @@ code 对象创建时已 intern_str qualname，直接复用 PyStrRef（引用计�
   → 闭包 7.1x 的主导成本是**函数对象创建本身（PyFunction::new）**，
   而不是 cell 分配；cell 分配只贡献 ~60-120ns
 - `PyFunction::new`（frame.rs MakeFunction → function.rs:176）每次创建做：
-  - **9 个 PyMutex 字段各自的堆分配**（name/qualname/defaults/type_params/
-    annotations/annotate/module/doc/jitted_code）
-  - 2 次 dict 查找（__name__、__builtins__）+ docstring 提取
+  - 2 次 dict 查找（`__name__`、`__builtins__`）+ docstring 提取
+  - 一次 PyFunction 对象堆分配（pyobject 头 + payload）
+  - 9 个 `PyMutex` 字段初始化（lock_api Mutex，T 内联存放，
+    PyStrRef/PyTupleRef 为指针大小 → 无额外堆分配）
   - `next_func_version()` 原子自增
-- 对比：CPython 用紧凑 PyFunctionObject + 惰性 dict；RustPython 每个函数
-  多 9 次小分配 → 这是最集中的**实现可节流项**
+- 对比：CPython 用紧凑 PyFunctionObject + 惰性 dict；RustPython 每次函数
+  创建做 2 次 dict 查找 + 完整对象分配 → 这是集中的**实现可节流项**
 
 ## 修复方案（按风险排序）
 1. **低风险**：`PyFunction::new` 减少分配——name/qualname 复用 code 对象的
