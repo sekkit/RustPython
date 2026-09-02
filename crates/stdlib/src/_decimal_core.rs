@@ -1625,21 +1625,12 @@ pub(crate) fn format_decimal(
     let mut signed = format!("{sign_str}{value_str}");
     // Locale formatting: when a localeconv-style dict was supplied (used by
     // the 'n' type / grouping), swap the decimal point and apply the locale
-    // thousands grouping to the integer part.
-    if !locale.decimal_point.is_empty() || !locale.thousands_sep.is_empty() {
-        if !d.is_special() && (ty == 'n' || grouping.is_none()) {
-            let sign_len = if signed.starts_with(['+', '-', ' ']) { 1 } else { 0 };
-            let sign = &signed[..sign_len];
-            let body = &signed[sign_len..];
-            let localized = apply_locale_grouping(body, locale);
-            signed = format!("{sign}{localized}");
-        }
-    }
-    // '0' zero-padding with locale grouping: the padding must be applied to
-    // the integer digits BEFORE grouping (e.g. '08n' of 12345 -> '0,012,345').
-    if fill == '0' && width > 0 && grouping.is_none() && !locale.thousands_sep.is_empty()
-        && !d.is_special() && (ty == 'n')
-    {
+    // thousands grouping to the integer part. '0' zero-padding must be
+    // applied to the raw integer digits BEFORE grouping so padded zeros are
+    // grouped too (e.g. '08n' of 12345 -> '0,012,345').
+    let use_locale =
+        !locale.decimal_point.is_empty() || !locale.thousands_sep.is_empty();
+    if use_locale && !d.is_special() && (ty == 'n' || grouping.is_none()) {
         let sign_len = if signed.starts_with(['+', '-', ' ']) { 1 } else { 0 };
         let sign = &signed[..sign_len];
         let body = &signed[sign_len..];
@@ -1647,14 +1638,28 @@ pub(crate) fn format_decimal(
             Some(i) => (&body[..i], &body[i..]),
             None => (body, ""),
         };
-        // Recompute: pad the integer digits to reach `width`, then regroup.
-        let grouped_now = apply_locale_grouping(int_part, locale);
-        let gap = width.saturating_sub(sign_len + grouped_now.chars().count() + rest.chars().count());
-        if gap > 0 {
-            let padded = format!("{}{}", "0".repeat(gap), int_part);
-            let regrouped = apply_locale_grouping(&padded, locale);
-            signed = format!("{sign}{regrouped}{rest}");
+        // Pre-pad the integer digits with zeros when '0' fill is requested.
+        let mut int_digits = int_part.to_string();
+        if fill == '0' && width > 0 && !locale.thousands_sep.is_empty() && !rest.starts_with(['e', 'E']) {
+            let grouped_now = apply_locale_grouping(&int_digits, locale);
+            let mut gap = width.saturating_sub(sign_len + grouped_now.chars().count() + rest.chars().count());
+            while gap > 0 {
+                int_digits = format!("0{int_digits}");
+                gap -= 1;
+                if width.saturating_sub(sign_len + apply_locale_grouping(&int_digits, locale).chars().count() + rest.chars().count()) == 0 {
+                    break;
+                }
+            }
         }
+        let localized = apply_locale_grouping(&int_digits, locale);
+        let localized = format!("{localized}{rest}");
+        // swap the locale decimal point
+        let localized = if !locale.decimal_point.is_empty() {
+            localized.replace('.', &locale.decimal_point)
+        } else {
+            localized
+        };
+        signed = format!("{sign}{localized}");
     }
     // 'z' option: if the FORMATTED value (after rounding) is negative zero,
     // drop the minus sign (e.g. '-.01' with '.1f' rounds to '-0.0' -> '0.0').
