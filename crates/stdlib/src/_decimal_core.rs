@@ -1597,7 +1597,7 @@ pub(crate) fn format_decimal(
         'f' => format_fixed(&dec, precision, rounding, vm),
         'e' => format_sci(&dec, precision, ty == 'E', rounding, vm),
         'g' | 'n' => {
-            if (no_type || ty == 'n') && precision.is_none() {
+            if (no_type || ty == 'n' || ty == 'N') && precision.is_none() {
                 // No type char / 'n' without precision: Decimal keeps its
                 // exact str representation (trailing zeros preserved), like
                 // format(d, '') == str(d). Strip the sign (sign_str is
@@ -1754,31 +1754,46 @@ fn apply_locale_grouping(body: &str, loc: &Locale) -> String {
         // No thousands separator: no grouping of the integer part.
         grouped = digits.to_string();
     } else {
-        // Build group sizes from the right; 0 = repeat last, 127 = stop.
-        let mut sizes: Vec<usize> = Vec::new();
-        for &g in &loc.grouping {
-            if g <= 0 || g >= 127 {
-                break;
-            }
-            sizes.push(g as usize);
-        }
-        if sizes.is_empty() {
-            sizes = vec![3];
-        }
+        // Interpret the grouping byte code from the right:
+        //  - a positive size N groups N digits (repeated if 0 is next)
+        //  - 0 means "repeat the previous size"
+        //  - >= 127 (CHAR_MAX) means "no more grouping"
+        // e.g. [3,3,0] -> groups of 3; [1,4,2,127] -> 1,4,2 then the rest.
+        let mut rem = digits;
         let mut out_s = String::new();
-        let mut idx = digits.len();
-        let mut si = 0;
-        while idx > 0 {
-            let sz = if si < sizes.len() { sizes[si] } else { sizes[sizes.len() - 1] };
-            let take = sz.min(idx);
-            let part: String = digits[idx - take..idx].to_string();
-            if out_s.is_empty() {
-                out_s = part;
-            } else {
-                out_s = format!("{}{}{}", part, loc.thousands_sep, out_s);
+        let mut gi = 0;
+        let mut last_size: Option<usize> = None;
+        'outer: loop {
+            let sz = match loc.grouping.get(gi) {
+                Some(&g) if g > 0 && g < 127 => g as usize,
+                Some(&0) => match last_size {
+                    Some(s) => s,
+                    None => 3,
+                },
+                _ => {
+                    // CHAR_MAX / end of list: rest stays as one group.
+                    if !out_s.is_empty() {
+                        out_s = format!("{}{}{}", rem, loc.thousands_sep, out_s);
+                    } else {
+                        out_s = rem.to_string();
+                    }
+                    break 'outer;
+                }
+            };
+            if rem.len() <= sz {
+                if !out_s.is_empty() {
+                    out_s = format!("{}{}{}", rem, loc.thousands_sep, out_s);
+                } else {
+                    out_s = rem.to_string();
+                }
+                break 'outer;
             }
-            idx -= take;
-            si += 1;
+            let split = rem.len() - sz;
+            let (head, tail) = rem.split_at(split);
+            out_s = format!("{}{}{}", tail, loc.thousands_sep, out_s);
+            rem = head;
+            last_size = Some(sz);
+            gi += 1;
         }
         grouped = out_s;
     }
