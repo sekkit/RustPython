@@ -1635,6 +1635,27 @@ pub(crate) fn format_decimal(
             signed = format!("{sign}{localized}");
         }
     }
+    // '0' zero-padding with locale grouping: the padding must be applied to
+    // the integer digits BEFORE grouping (e.g. '08n' of 12345 -> '0,012,345').
+    if fill == '0' && width > 0 && grouping.is_none() && !locale.thousands_sep.is_empty()
+        && !d.is_special() && (ty == 'n')
+    {
+        let sign_len = if signed.starts_with(['+', '-', ' ']) { 1 } else { 0 };
+        let sign = &signed[..sign_len];
+        let body = &signed[sign_len..];
+        let (int_part, rest) = match body.find(['.', 'e', 'E', '%']) {
+            Some(i) => (&body[..i], &body[i..]),
+            None => (body, ""),
+        };
+        // Recompute: pad the integer digits to reach `width`, then regroup.
+        let grouped_now = apply_locale_grouping(int_part, locale);
+        let gap = width.saturating_sub(sign_len + grouped_now.chars().count() + rest.chars().count());
+        if gap > 0 {
+            let padded = format!("{}{}", "0".repeat(gap), int_part);
+            let regrouped = apply_locale_grouping(&padded, locale);
+            signed = format!("{sign}{regrouped}{rest}");
+        }
+    }
     // 'z' option: if the FORMATTED value (after rounding) is negative zero,
     // drop the minus sign (e.g. '-.01' with '.1f' rounds to '-0.0' -> '0.0').
     if coerce_negzero && sign_str == "-" {
