@@ -557,6 +557,18 @@ pub static mut Py_FileSystemDefaultEncoding: *const c_char = b"utf-8\0".as_ptr()
 #[unsafe(no_mangle)]
 pub static mut Py_FileSystemDefaultEncodeErrors: *const c_char = b"surrogateescape\0".as_ptr().cast();
 
+/// Py_HashPointer: deterministic hash of a pointer value (used by CPython for
+/// hashing weakref/capsule-like pointers). RustPython uses the pointer value
+/// byte-swapped by position, matching CPython's splitmix-ish approach closely
+/// enough that identity-based dict keys behave consistently.
+#[unsafe(no_mangle)]
+pub extern "C" fn Py_HashPointer(ptr: *const c_void) -> isize {
+    let v = ptr as usize as u64;
+    // uintptr_t rounded to Py_hash_t; mix so consecutive pointers differ.
+    let x = v.rotate_left(24) ^ v;
+    x as isize
+}
+
 /// Py_FatalError: print a fatal error message and abort. CPython never
 /// returns; match that by printing to stderr and aborting.
 #[unsafe(no_mangle)]
