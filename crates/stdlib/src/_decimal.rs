@@ -418,12 +418,17 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 },
                 None => None,
             };
-            // context= keyword overrides the current context.
+            // context= keyword overrides the current context; None means "use the
+            // current context".
             let mut ctx = if let Some(c) = get("context") {
-                let pc = c.downcast_ref::<PyContext>().ok_or_else(|| {
-                    vm.new_type_error("context must be a Context object".to_string())
-                })?;
-                pc.ctx()
+                if c.is(&vm.ctx.none()) {
+                    current_ctx(vm)?
+                } else {
+                    let pc = c.downcast_ref::<PyContext>().ok_or_else(|| {
+                        vm.new_type_error("context must be a Context object".to_string())
+                    })?;
+                    pc.ctx()
+                }
             } else {
                 current_ctx(vm)?
             };
