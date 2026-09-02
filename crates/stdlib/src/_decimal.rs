@@ -4014,7 +4014,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let ctx_arg = if args.kwargs.is_empty() {
                 ctx_arg
             } else {
-                let filtered: Vec<(rustpython_vm::Wtf8Buf, PyObjectRef)> = args
+                let filtered: Vec<(rustpython_common::wtf8::Wtf8Buf, PyObjectRef)> = args
                     .kwargs
                     .iter()
                     .filter(|(k, _)| k.as_bytes() != b"ctx")
