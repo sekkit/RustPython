@@ -163,6 +163,11 @@ pub(crate) fn ensure_object_statics(vm: &VirtualMachine) {
             size,
         );
         fill_type_stub(&mut PyUnicode_Type, vm.ctx.types.str_type.as_object().as_raw());
+        // CPython's PyUnicode_Type carries Py_TPFLAGS_UNICODE_SUBCLASS
+        // (1<<28 = 0x10000000) so that PyUnicode_Check fast-paths work from C
+        // extensions. RustPython's internal str type doesn't set it; OR it in
+        // for the CPython-visible stub (tp_flags at offset 168 = words[21]).
+        PyUnicode_Type.words[21] |= 0x10000000;
         copy_header(
             &mut PyLong_Type,
             vm.ctx.types.int_type.as_object().as_raw(),
