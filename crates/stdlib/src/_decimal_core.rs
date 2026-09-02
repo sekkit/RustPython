@@ -1444,16 +1444,31 @@ pub(crate) fn format_decimal(
             .unwrap_or(after.len());
         let digits = &after[..digits_end];
         let trailing = after[digits_end..].chars().next();
+        let rest_after_trailing = if trailing.is_some() {
+            after[digits_end..].chars().nth(1).is_some()
+        } else {
+            false
+        };
         if !digits.is_empty() {
             precision = Some(digits.parse().unwrap_or(0));
             spec.truncate(dot);
             // optional fractional separator after precision
             if let Some(c @ (',' | '_')) = trailing {
                 frac_sep = Some(c);
+                // nothing may follow the fractional separator (e.g. '.6_X')
+                if rest_after_trailing {
+                    return Err(format!("invalid format string: '{c}'"));
+                }
+            } else if trailing.is_some() {
+                // digits then an invalid trailing char (e.g. '.6fz')
+                return Err(format!("invalid format string: '{}'", trailing.unwrap()));
             }
         } else if let Some(c @ (',' | '_')) = trailing {
             // no precision, but a fractional separator: strip the dot
             frac_sep = Some(c);
+            if rest_after_trailing {
+                return Err(format!("invalid format string: '{c}'"));
+            }
             spec.truncate(dot);
         }
     }
