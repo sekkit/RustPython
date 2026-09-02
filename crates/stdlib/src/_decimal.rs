@@ -1184,6 +1184,21 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     .and_then(|v| v.downcast_ref::<PyStr>().map(|s| s.as_bytes().to_vec()))
                 {
                     locale.grouping = g.into_iter().map(|b| b as i32).collect();
+                    // grouping byte codes must be <= CHAR_MAX (127);
+                    // larger values (e.g. 255) are invalid overrides.
+                    if locale.grouping.iter().any(|&v| v > 127) {
+                        return Err(vm.new_value_error(
+                            "invalid grouping override in localeconv".to_string(),
+                        ));
+                    }
+                }
+                // decimal_point / thousands_sep must be at most one character.
+                if locale.decimal_point.chars().count() > 1
+                    || locale.thousands_sep.chars().count() > 1
+                {
+                    return Err(vm.new_value_error(
+                        "invalid locale separator override".to_string(),
+                    ));
                 }
             }
             _decimal_core::format_decimal(&self.d, &spec, vm, &ctx, capitals, &locale)
