@@ -710,6 +710,42 @@ pub unsafe extern "C" fn PyUnicode_AsWideChar(
     })
 }
 
+/// PyUnicode_AsWideCharString: convert a unicode string to a NULL-terminated
+/// wide character buffer.  If `size` is non-NULL, receives the number of
+/// wide characters (excluding the terminating NULL).  Returns a heap
+/// allocation owned by the caller (freed with PyMem_Free).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_AsWideCharString(
+    unicode: *mut PyObject,
+    size: *mut isize,
+) -> *mut libc::wchar_t {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut libc::wchar_t> {
+        let unicode = unsafe { &*unicode }.try_downcast_ref::<PyStr>(vm)?;
+        let text = unicode.to_str().ok_or_else(|| {
+            vm.new_system_error("PyUnicode_AsWideCharString only supports UTF-8 or ASCII strings")
+        })?;
+        #[cfg(windows)]
+        let units: Vec<u16> = text.encode_utf16().collect();
+        #[cfg(not(windows))]
+        let units: Vec<u32> = text.chars().map(|c| c as u32).collect();
+        let n = units.len();
+        // Allocate space for units + trailing NUL.
+        let alloc = unsafe { libc::malloc((n + 1) * core::mem::size_of::<libc::wchar_t>()) };
+        if alloc.is_null() {
+            return Err(vm.new_memory_error("PyUnicode_AsWideCharString: out of memory".to_string()));
+        }
+        let wptr = alloc.cast::<libc::wchar_t>();
+        unsafe {
+            core::ptr::copy_nonoverlapping(units.as_ptr(), wptr, n);
+            *wptr.add(n) = 0;
+        }
+        if !size.is_null() {
+            unsafe { *size = n as isize };
+        }
+        Ok(wptr)
+    })
+}
+
 /// PyUnicode_Join: join a sequence of strings with a separator.
 /// separator is a unicode string, seq is a tuple/list of strings.
 /// Returns a new unicode string.

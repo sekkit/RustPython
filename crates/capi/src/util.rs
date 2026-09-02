@@ -97,6 +97,14 @@ impl FfiResult for *mut c_void {
     }
 }
 
+impl FfiResult for *mut libc::wchar_t {
+    const ERR_VALUE: *mut libc::wchar_t = core::ptr::null_mut();
+
+    fn into_output(self, _vm: &VirtualMachine) -> *mut libc::wchar_t {
+        self
+    }
+}
+
 impl FfiResult for *mut *mut PyObject {
     const ERR_VALUE: Self = core::ptr::null_mut();
 
