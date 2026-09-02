@@ -1163,7 +1163,29 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             }
             let ctx = current_ctx(vm)?;
             let capitals = current_capitals(vm)?;
-            _decimal_core::format_decimal(&self.d, &spec, vm, &ctx, capitals)
+            // Build Locale data from the optional localeconv dict.
+            let mut locale = _decimal_core::Locale::default();
+            if let Some(lc) = localeconv.into_option()
+                && let Some(d) = lc.downcast_ref::<PyDict>()
+            {
+                let get_str = |key: &str| -> String {
+                    d.get_item_opt(vm.ctx.intern_str(key), vm)
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.downcast_ref::<PyStr>().map(|s| s.as_wtf8().to_string()))
+                        .unwrap_or_default()
+                };
+                locale.decimal_point = get_str("decimal_point");
+                locale.thousands_sep = get_str("thousands_sep");
+                // grouping is a string of byte codes (e.g. "\x03\x03\0")
+                if let Some(g) = d.get_item_opt(vm.ctx.intern_str("grouping"), vm)
+                    .ok().flatten()
+                    .and_then(|v| v.downcast_ref::<PyStr>().map(|s| s.as_bytes().to_vec()))
+                {
+                    locale.grouping = g.into_iter().map(|b| b as i32).collect();
+                }
+            }
+            _decimal_core::format_decimal(&self.d, &spec, vm, &ctx, capitals, &locale)
                 .map_err(|e| vm.new_value_error(e))
         }
 

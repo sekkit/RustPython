@@ -1390,12 +1390,25 @@ pub(crate) fn dec_mod(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
 /// Format a finite decimal for `format()` / `__format__`.
 /// Supports the CPython Decimal format spec: `[[fill]align][sign][#][0][width][,][.precision][type]`
 /// with types e/E/f/F/g/G/n/%. Rounding is round-half-even via context.
+/// Locale formatting data used by the 'n' format and ','/_ grouping.
+/// Mirrors `localeconv()` / decimal.__format__ localeconv argument.
+#[derive(Clone, Default)]
+pub(crate) struct Locale {
+    /// Decimal point separator ("" uses '.').
+    pub decimal_point: String,
+    /// Thousands separator ("" collapses to no grouping).
+    pub thousands_sep: String,
+    /// Grouping byte code: e.g. [3, 3, 0], [1, 4, 2, <CHAR_MAX=127>].
+    pub grouping: Vec<i32>,
+}
+
 pub(crate) fn format_decimal(
     d: &Dec,
     spec: &str,
     vm: &VirtualMachine,
     ctx: &Ctx,
     capitals: isize,
+    locale: &Locale,
 ) -> Result<String, String> {
     // Parse the format spec.
     let mut spec = spec.to_string();
@@ -1609,6 +1622,18 @@ pub(crate) fn format_decimal(
     };
 
     let mut signed = format!("{sign_str}{value_str}");
+    // Locale formatting: when a localeconv-style dict was supplied (used by
+    // the 'n' type / grouping), swap the decimal point and apply the locale
+    // thousands grouping to the integer part.
+    if !loc.decimal_point.is_empty() || !loc.thousands_sep.is_empty() {
+        if !d.is_special() && (ty == 'n' || grouping.is_none()) {
+            let sign_len = if signed.starts_with(['+', '-', ' ']) { 1 } else { 0 };
+            let sign = &signed[..sign_len];
+            let body = &signed[sign_len..];
+            let localized = apply_locale_grouping(body, loc);
+            signed = format!("{sign}{localized}");
+        }
+    }
     // 'z' option: if the FORMATTED value (after rounding) is negative zero,
     // drop the minus sign (e.g. '-.01' with '.1f' rounds to '-0.0' -> '0.0').
     if coerce_negzero && sign_str == "-" {
@@ -1709,6 +1734,63 @@ fn apply_grouping(s: &str, sep: char) -> String {
     }
     out.push_str(&grouped);
     out.push_str(rest);
+    out
+}
+
+/// Apply locale grouping to the integer part of a formatted string.
+/// `grouping` is the locale grouping byte code: a sequence of group sizes
+/// from right to left; 0 means "repeat the previous size"; 127 (CHAR_MAX)
+/// means "no more grouping". An empty thousands_sep disables grouping.
+fn apply_locale_grouping(body: &str, loc: &Locale) -> String {
+    let (int_part, rest) = match body.find(['.', 'e', 'E', '%']) {
+        Some(i) => (&body[..i], &body[i..]),
+        None => (body, ""),
+    };
+    let has_sign = int_part.starts_with(['+', '-', ' ']);
+    let digits = if has_sign { &int_part[1..] } else { int_part };
+    let mut grouped;
+    if loc.thousands_sep.is_empty() {
+        // No thousands separator: no grouping of the integer part.
+        grouped = digits.to_string();
+    } else {
+        // Build group sizes from the right; 0 = repeat last, 127 = stop.
+        let mut sizes: Vec<usize> = Vec::new();
+        for &g in &loc.grouping {
+            if g <= 0 || g >= 127 {
+                break;
+            }
+            sizes.push(g as usize);
+        }
+        if sizes.is_empty() {
+            sizes = vec![3];
+        }
+        let mut out_s = String::new();
+        let mut idx = digits.len();
+        let mut si = 0;
+        while idx > 0 {
+            let sz = if si < sizes.len() { sizes[si] } else { sizes[sizes.len() - 1] };
+            let take = sz.min(idx);
+            let part: String = digits[idx - take..idx].to_string();
+            if out_s.is_empty() {
+                out_s = part;
+            } else {
+                out_s = format!("{}{}{}", part, loc.thousands_sep, out_s);
+            }
+            idx -= take;
+            si += 1;
+        }
+        grouped = out_s;
+    }
+    let mut out = String::new();
+    if has_sign {
+        out.push(int_part.chars().next().unwrap());
+    }
+    out.push_str(&grouped);
+    if !loc.decimal_point.is_empty() {
+        out.push_str(&rest.replace('.', &loc.decimal_point));
+    } else {
+        out.push_str(rest);
+    }
     out
 }
 
