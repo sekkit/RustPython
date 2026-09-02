@@ -58,6 +58,7 @@ define_exception_statics! {
     PyExc_NameError => name_error,
     PyExc_UnboundLocalError => unbound_local_error,
     PyExc_OSError => os_error,
+    PyExc_WindowsError => os_error, // CPython: WindowsError is an OSError alias on Windows
     PyExc_BlockingIOError => blocking_io_error,
     PyExc_ChildProcessError => child_process_error,
     PyExc_ConnectionError => connection_error,

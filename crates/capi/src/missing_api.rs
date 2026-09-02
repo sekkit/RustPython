@@ -453,6 +453,28 @@ pub unsafe extern "C" fn PyType_GenericNew(
     })
 }
 
+/// PyType_GenericAlloc: allocate an instance of the given type without
+/// invoking tp_new. Mirrors CPython's tp_alloc default: allocates the
+/// instance storage and, when the type has Py_TPFLAGS_HAVE_GC-less dict
+/// semantics, attaches a fresh dict when tp_dictoffset requests one.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GenericAlloc(
+    typeobj: *mut crate::object::PyTypeObject,
+    nitems: isize,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let _ = nitems;
+        let ty = crate::object::pytype::resolve_type_ptr(vm, typeobj);
+        match ty {
+            Ok(ty) => Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict()))),
+            Err(_) => {
+                let ty = vm.ctx.types.object_type.to_owned();
+                Ok(vm.ctx.new_base_object(ty, Some(vm.ctx.new_dict())))
+            }
+        }
+    })
+}
+
 /// PyType_Modified: notify that a type was modified (no-op for RustPython).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Modified(_tp: *mut crate::object::PyTypeObject) {
@@ -525,6 +547,15 @@ pub unsafe extern "C" fn PyThreadState_Clear(_tstate: *mut crate::pystate::PyThr
 pub unsafe extern "C" fn PyThreadState_Delete(_tstate: *mut crate::pystate::PyThreadState) {
     // No-op
 }
+
+/// Py_FileSystemDefaultEncoding: the filesystem encoding as a C string.
+/// RustPython always uses UTF-8 for the filesystem.
+#[unsafe(no_mangle)]
+pub static mut Py_FileSystemDefaultEncoding: *const c_char = b"utf-8\0".as_ptr().cast();
+
+/// Py_FileSystemDefaultEncodeErrors: filesystem error handler (UTF-8).
+#[unsafe(no_mangle)]
+pub static mut Py_FileSystemDefaultEncodeErrors: *const c_char = b"surrogateescape\0".as_ptr().cast();
 
 /// Py_FatalError: print a fatal error message and abort. CPython never
 /// returns; match that by printing to stderr and aborting.

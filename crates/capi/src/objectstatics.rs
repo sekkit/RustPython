@@ -91,6 +91,10 @@ pub static mut PyMethodDescr_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: 
 pub static mut PySet_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 #[unsafe(no_mangle)]
 pub static mut PyTuple_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
+#[unsafe(no_mangle)]
+pub static mut PyModule_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
+#[unsafe(no_mangle)]
+pub static mut PyByteArray_Type: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
 // ---------- data object stubs ----------
 #[unsafe(no_mangle)]
 pub static mut _Py_NotImplementedStruct: ObjectHeaderCopy = ObjectHeaderCopy { words: [0; 32] };
@@ -235,6 +239,10 @@ pub(crate) fn ensure_object_statics(vm: &VirtualMachine) {
         fill_type_stub(&mut PySet_Type, vm.ctx.types.set_type.as_object().as_raw());
         copy_header(&mut PyTuple_Type, vm.ctx.types.tuple_type.as_object().as_raw(), size);
         fill_type_stub(&mut PyTuple_Type, vm.ctx.types.tuple_type.as_object().as_raw());
+        copy_header(&mut PyModule_Type, vm.ctx.types.module_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyModule_Type, vm.ctx.types.module_type.as_object().as_raw());
+        copy_header(&mut PyByteArray_Type, vm.ctx.types.bytearray_type.as_object().as_raw(), size);
+        fill_type_stub(&mut PyByteArray_Type, vm.ctx.types.bytearray_type.as_object().as_raw());
         copy_header(&mut _Py_NotImplementedStruct, vm.ctx.not_implemented.as_object().as_raw(), size);
         // _Py_ascii_whitespace: CPython's " \t\n\r\x0b\x0c" (7 bytes)
         _Py_ascii_whitespace = [
