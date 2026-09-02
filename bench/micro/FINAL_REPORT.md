@@ -42,6 +42,8 @@
 
 1. **PyFunction::new 剩余 dict 查找**（子代理 A 进行中）
 2. **vectorcall 参数栈缓冲**：中收益、高风险（改 VectorCallFunc 签名 20+ 注册点）
+   - argcost_bench 量化：empty 205.6ns，每多 1 参 +120ns（含 Vec 分配+参数处理）
+   - 即便省掉 Vec 堆分配，参数处理仍占大部分 → 改签名收益有限、风险高
 3. **instance freelist / cell 批量分配**：中收益、中风险
 4. numpy foreign PyList（方向 A）：大工程，PyPy cpyext 级别
 
