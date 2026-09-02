@@ -400,6 +400,12 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             };
             // The rounding arg may be positional (2nd) or a keyword; None
             // means "use the context rounding"; a non-string is TypeError.
+            // Passing both is a TypeError (multiple values for 'rounding').
+            if args.get_optional_kwarg("rounding").is_some() && args.args.len() >= 2 {
+                return Err(vm.new_type_error(
+                    "quantize() got multiple values for argument 'rounding'".to_string(),
+                ));
+            }
             let rounding_arg = get("rounding").or_else(|| args.args.get(1).cloned());
             if args.args.len() > 2 {
                 return Err(vm.new_type_error(
