@@ -8,6 +8,17 @@
 | list_as_cell（类似 cell 分配） | 232.2 | 64.1 | 3.6x |
 | reuse_cached_func（复用函数对象） | 230.9 | 52.9 | 4.4x |
 
+## 已实施的优化：qualname 复用（commit c08b8741d）
+`PyFunction::new` 用 `code.qualname.to_owned()` 替代 `vm.ctx.new_str(...)`：
+code 对象创建时已 intern_str qualname，直接复用 PyStrRef（引用计数+1），
+不再为每个函数新分配字符串。
+
+**验证**（优化后重跑 closure_decomp.py）：
+- def_no_capture: 808.0 → **717.0 ns（-11.3%）**
+- closure_1_capture: 869.9 → 813.1 ns（-6.5%）
+- closure_2_capture: 927.0 → 858.0 ns（-7.4%）
+- list_as_cell / reuse_cached_func 不变（~231ns，与此优化无关）
+
 ## 关键结论
 - **def_no_capture 8.7x > closure_1_capture 7.5x > list_as_cell 3.6x**
   → 闭包 7.1x 的主导成本是**函数对象创建本身（PyFunction::new）**，
