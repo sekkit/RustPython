@@ -201,7 +201,9 @@ impl PyFunction {
             vm.ctx.none()
         };
 
-        let qualname = vm.ctx.new_str(code.qualname.as_str());
+        // qualname is already interned on the code object; reuse the
+        // PyStrRef (refcount bump only) instead of allocating a new string.
+        let qualname = code.qualname.to_owned();
         let func = Self {
             code: PyAtomicRef::from(code),
             globals,
