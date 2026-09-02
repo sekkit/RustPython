@@ -1597,10 +1597,11 @@ pub(crate) fn format_decimal(
         'f' => format_fixed(&dec, precision, rounding, vm),
         'e' => format_sci(&dec, precision, ty == 'E', rounding, vm),
         'g' | 'n' => {
-            if no_type && precision.is_none() {
-                // No type char: Decimal keeps its exact str representation
-                // (trailing zeros preserved), like format(d, '') == str(d).
-                // Strip the sign (sign_str is applied separately below).
+            if (no_type || ty == 'n') && precision.is_none() {
+                // No type char / 'n' without precision: Decimal keeps its
+                // exact str representation (trailing zeros preserved), like
+                // format(d, '') == str(d). Strip the sign (sign_str is
+                // applied separately below).
                 // Honour context.capitals for the 'E'/'e' exponent marker.
                 let mut s = dec.to_string();
                 s = s.trim_start_matches(['-', '+']).to_string();
