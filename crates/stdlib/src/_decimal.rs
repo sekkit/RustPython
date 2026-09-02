@@ -398,8 +398,8 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     "quantize requires a Decimal, int or str exponent".to_string(),
                 ));
             };
-            // The rounding arg may be positional (2nd) or a keyword; a
-            // non-string there is a TypeError (CPython).
+            // The rounding arg may be positional (2nd) or a keyword; None
+            // means "use the context rounding"; a non-string is TypeError.
             let rounding_arg = get("rounding").or_else(|| args.args.get(1).cloned());
             if args.args.len() > 2 {
                 return Err(vm.new_type_error(
@@ -407,6 +407,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 ));
             }
             let rounding_str: Option<String> = match rounding_arg {
+                Some(v) if v.is(&vm.ctx.none()) => None,
                 Some(v) => match v.downcast_ref::<PyStr>() {
                     Some(s) => Some(s.as_wtf8().to_string()),
                     None => {
