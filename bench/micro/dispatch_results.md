@@ -128,6 +128,17 @@
 4. 特化覆盖率已高（probe 显示 CALL/BINARY_OP/SUBSCR/FOR_ITER 全特化），追加特化收益递减；
    应转向削减每指令常数因子。
 
+### 主仓评估（2026-09-03）
+- **建议 1 被否决（低收益高风险）**：默认构建**未启用 `threading` feature**
+  （Cargo.toml default = compiler,wasmbind,gc,host_env,stdio），`eval_breaker_tripped()`
+  在默认下仅 **1 次 relaxed 加载**（`eval_breaker_pending()`）；"2-3 次"仅出现在
+  threading 构建。改为每 N 条会引入信号/GC/ThreadStop 处理延迟，且默认构建收益≈0
+  → 判定为不实施，保留每次检查。
+- **建议 2 待评估**：`read_op`/`read_arg` 去原子化是纯分派地板的另一来源，但字节码
+  数组跨线程共享，去原子需 UnsafeCell 或按代切换，风险中等，列为后续专项。
+- **建议 3 已部分量化**：`argcost_bench.py` 显示每参 ~120ns（含参数处理），
+  execute_call_vectorcall 与 CallPyExactArgs 的差距已并入 fn_call 专项评估。
+
 ---
 
 ## 5. 原始数据（min-of-5）
