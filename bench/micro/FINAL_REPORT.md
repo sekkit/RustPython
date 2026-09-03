@@ -75,6 +75,18 @@
 3. numpy foreign PyList（方向 A）：大工程；边界物化折中方案已给出
    （wrap_foreign 重建原生 PyList 覆盖 numpy 构建一次即返回模式）
 
-## 5. 测试标注
-test_decimal 3 个 Whitebox C-API 测试标 expectedFailure（c_context_errors /
-c_disallow_instantiation / c_signaldict_segfault）——与布局墙同源。
+## 5. 测试标注合规与回归汇总
+
+**AGENTS.md 合规**（Lib/test/test_decimal.py）：
+- 4 处 expectedFailure（1 预先存在 test_unicode_digits + 3 本会话新增：
+  c_context_errors / c_disallow_instantiation / c_signaldict_segfault），
+  均带 `# TODO: RUSTPYTHON; <reason>` 注释
+- `git diff` 无断言/数据/逻辑修改（仅 expectedFailure 标注，符合项目规则）
+- crates/pylib 拷贝与 Lib 完全同步（SHA-256 一致）
+
+**回归汇总**：
+- test_decimal 187/187（184 ok + 3 xfail）、test_pickle 464/0、
+  test_dict/test_list/test_str regrtest SUCCESS、test_funcattrs 34/35
+  （唯一失败为预先存在 test_builtin__self__）、test_extcall 1/1
+- 双优化跨多轮稳定：def_no_capture 594.8-680.6ns（808 基线，-16~-26%）、
+  empty_call 189-212ns、add1_call 318-365ns、method_call 343-398ns
