@@ -85,8 +85,11 @@
 - crates/pylib 拷贝与 Lib 完全同步（SHA-256 一致）
 
 **回归汇总**：
-- test_decimal 187/187（184 ok + 3 xfail）、test_pickle 464/0、
-  test_dict/test_list/test_str regrtest SUCCESS、test_funcattrs 34/35
-  （唯一失败为预先存在 test_builtin__self__）、test_extcall 1/1
+- test_decimal C 类 187/187（184 ok + 3 xfail）、**Py 实现类 170/170**
+  （0 fail/0 err，仅 1 预先存在 xfail + 1 skip）——_decimal 修复对纯 Python
+  实现同样无破坏
+- test_pickle 464/0、test_dict/test_list/test_str regrtest SUCCESS、
+  test_funcattrs 34/35（唯一失败为预先存在 test_builtin__self__）、
+  test_extcall 1/1
 - 双优化跨多轮稳定：def_no_capture 594.8-680.6ns（808 基线，-16~-26%）、
   empty_call 189-212ns、add1_call 318-365ns、method_call 343-398ns
