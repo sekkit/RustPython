@@ -64,6 +64,16 @@ CPython 头 → 模拟 `mov rax,[r+0x18]; [rax]=rcx` → 读写一致，头字�
   实现不稳定 Eval/Code extra 索引 API（映射到 code 对象的 extra 槽位），
   属 capi 补齐项，可单独排期
 
+## code-extra 实施探索（2026-09-03，子代理 df8f8d3e，已中断）
+- 尝试：在 PyCode 增加 extra 侧表 + 全局 freefunc 注册表 + 三个导出符号
+- 结果：子代理运行约 16 分钟无任何产出（无文件改动/构建/日志），
+  疑似在 PyCode 析构/GC 回收时机方案上停滞，中断处理
+- 判定：实现需在 VM 核心 PyCode 结构加侧表并解决回收时机（freefunc 调用
+  与 GC/refcount 交互），属中等工程、需专职实施；保持为可排期 capi 补齐项
+- 注意：RustPython 的 check_impl_detail(cpython=True) 返回 True 本身也值得
+  复核——若改回正确返回 False，test_code 的 ctypes 块会整体跳过，
+  这是修复该崩溃的**更小方案**（改 test.support 的 impl 判定或支持层）
+
 ## 保留的测试标注
 test_decimal 3 个 Whitebox C-API 测试（c_context_errors /
 c_disallow_instantiation / c_signaldict_segfault）标为 expectedFailure，
