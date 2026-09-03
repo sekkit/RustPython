@@ -52,6 +52,18 @@ CPython 头 → 模拟 `mov rax,[r+0x18]; [rax]=rcx` → 读写一致，头字�
   单次并行子代理中收敛。可行性已由 probe 3/3 PASS 证实，实施计划已文档化
   （NUMPY_DIRECTION_A_PLAN.md），留待专职大工程推进。
 
+## 额外发现：test_code 模块崩溃（2026-09-03，预先存在，与本次优化无关）
+- 现象：`-m test test_code` 模块级崩溃（AttributeError: GetProcAddress failed）
+- 根因：库模块顶层 `ctypes.pythonapi.PyUnstable_Eval_RequestCodeExtraIndex`
+  缺失——RustPython 的 check_impl_detail(cpython=True) 返回 True（自报为
+  CPython），但 capi 未导出 CPython 不稳定 Eval/Code extra-index API
+  （PyUnstable_Eval_RequestCodeExtraIndex / PyUnstable_Code_SetExtra /
+  PyUnstable_Code_GetExtra）
+- 判定：预先存在（test.support 与 test_code.py 均未在本会话修改），
+  与函数创建优化无关；test_builtin 独立运行 SUCCESS。若要修复需在 capi
+  实现不稳定 Eval/Code extra 索引 API（映射到 code 对象的 extra 槽位），
+  属 capi 补齐项，可单独排期
+
 ## 保留的测试标注
 test_decimal 3 个 Whitebox C-API 测试（c_context_errors /
 c_disallow_instantiation / c_signaldict_segfault）标为 expectedFailure，
