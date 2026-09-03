@@ -39,3 +39,16 @@ code 对象创建时已 intern_str qualname，直接复用 PyStrRef（引用计�
 3. **高风险**：函数对象 freelist（CPython 3.12+ 做法），需配合 GC 语义验证
 
 > 验证方式：改后重跑 `closure_decomp.py`，目标 def_no_capture ≤ 500ns
+
+## 已实施的优化叠加：惰性 module 字段（commit db6cc1bcf，子代理 A，worktree 并行）
+`PyFunction::new` 移除了每次创建的 `globals["__name__"]` dict 哈希查找：
+`module` 字段改为 `PyMutex<Option<PyObjectRef>>`，首次访问 `__module__` 时
+才从 globals 惰性计算并缓存，取不到回退 None——省一次 dict 查找/函数。
+
+**双优化累计验证**（qualname + 惰性 module，主仓重测）：
+- def_no_capture: 808.0 → 680.6 ns（**累计 -15.8%**；单 module 优化约 -8%）
+- closure_1_capture: 869.9 → 767.8 ns
+- closure_2_capture: 927.0 → 811.5 ns
+- 语义验证：顶层 `__main__`、pickle 往返、setter、exec 无 __name__ → None 全过
+- 回归：test_decimal 187/187 无变化；test_funcattrs 35 测试 34 通过
+  （唯一失败为预先存在的 test_builtin__self__，与函数创建无关）
