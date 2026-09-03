@@ -96,3 +96,11 @@ ctypes/GetProcAddress 类崩溃（capi 符号缺口）**，test_capi 为模块�
 test_decimal 3 个 Whitebox C-API 测试（c_context_errors /
 c_disallow_instantiation / c_signaldict_segfault）标为 expectedFailure，
 与上述布局墙同源（需要真实 C SignalDict/dict 子类布局）。
+
+## capi 单测状态（Round 150 复验）
+- crate 单测：原先的 3 个预先存在失败降至 **2 个**
+  （`is_foreign_object_checks_ob_type_stub_addr` / `parse_tuple_and_keywords`）；
+  `module_create_with_methods` **已通过**——本会话的 capi 修复（PyModule_Type
+  stub、Py_HashPointer 等 +20 符号补齐）顺带修复了它
+- 剩余 2 个失败均为预先存在（stub 地址语义 / C-ABI 参数解析），
+  与本次性能优化无关；其余 foreign/dictobject/bytesobject 等全部通过
