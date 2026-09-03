@@ -34,6 +34,8 @@
 - def_no_capture: 808 → 680.6 ns（**-15.8%**）
 - fn_call 全套 -5~7%；test_decimal 187/187、test_pickle 464/0 无回归
 - eval_breaker 默认构建仅 1 次 relaxed 加载 → 每 N 条改动低收益高风险，判定不实施
+- 最终一致性复测：empty_call 211.9（-3.8%）、add1_call 359.3（-6.7%）、
+  method_call 389.5（-5.7%）——收益跨基准稳定
 
 ## 3. numpy / C 扩展加载链（三阶段）
 
