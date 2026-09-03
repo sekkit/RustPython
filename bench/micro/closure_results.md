@@ -19,6 +19,25 @@ code 对象创建时已 intern_str qualname，直接复用 PyStrRef（引用计�
 - closure_2_capture: 927.0 → 858.0 ns（-7.4%）
 - list_as_cell / reuse_cached_func 不变（~231ns，与此优化无关）
 
+## ⚠️ 测量修正（2026-09-03，子代理 399f43cf 发现）
+原 `closure_decomp.py` 的闭包用例 `def f(x=i)` 用**默认参数**（编译为
+BUILD_TUPLE + SET_FUNCTION_ATTRIBUTE(defaults)），**不产生 MAKE_CELL**——
+所谓 "cell 增量 ~100ns" 实际是 defaults 元组/解释器开销，**不能归因于 cell
+堆分配**。已修正脚本：闭包真实引用外层局部（`def f(): return i`），产生
+MAKE_CELL + COPY_FREE_VARS。
+
+**修正后真实数据**（N=500k，主仓无 freelist）：
+- def_no_capture: 672.4 ns | closure_1_capture: 882.9 ns | closure_2_capture: 944.0 ns
+- 真实 1-cell 增量 ≈ 210ns，2-cell 增量 ≈ 272ns（比此前的 100ns 更大）
+
+## PyCell freelist 评估（wt-fl，commit 6b5f1a9f，未合入主仓）
+子代理 399f43cf 实现：`traverse="manual"` + 手写 `Traverse::clear`（提取
+contents 防 husk 残留）+ `CELL_FREELIST`（MAX=100）。语义/GC/回归全过，
+无悬垂泄漏。但修正基准后对比：
+- closure_1_capture: 882.9 → 881.1 ns；closure_2_capture: 944.0 → 941.3 ns
+- **收益 <0.3%（噪声带内）**——单 cell malloc/free 每次迭代 <2%
+- 判定：**不合并**——实现正确但收益不可测，引入 GC clear 语义复杂度不划算。
+
 ## 关键结论
 - **def_no_capture 8.7x > closure_1_capture 7.5x > list_as_cell 3.6x**
   → 闭包 7.1x 的主导成本是**函数对象创建本身（PyFunction::new）**，

@@ -19,23 +19,25 @@ def no_closure(n):
     return s
 bench('def_no_capture', no_closure)
 
-# closure capturing 1 loop var (1 cell)
+# closure capturing 1 outer var via cell (uses MAKE_CELL; `x=i` defaults
+# would compile to a defaults tuple without MAKE_CELL, so reference the
+# outer variable directly to force a real cell)
 def one_capture(n):
     s = 0
     for i in range(n):
-        def f(x=i):
-            return x
+        def f():
+            return i
         s += f()
     return s
 bench('closure_1_capture', one_capture)
 
-# closure capturing 2 vars (2 cells)
+# closure capturing 2 outer vars (2 cells, real MAKE_CELL)
 def two_capture(n):
     s = 0
     j = 1
     for i in range(n):
-        def f(x=i, y=j):
-            return x + y
+        def f():
+            return i + j
         s += f()
     return s
 bench('closure_2_capture', two_capture)
