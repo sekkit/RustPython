@@ -74,6 +74,17 @@ CPython 头 → 模拟 `mov rax,[r+0x18]; [rax]=rcx` → 读写一致，头字�
   复核——若改回正确返回 False，test_code 的 ctypes 块会整体跳过，
   这是修复该崩溃的**更小方案**（改 test.support 的 impl 判定或支持层）
 
+## sys.implementation.name 判定（2026-09-03，不实施）
+- 根因：`crates/vm/src/stdlib/sys.rs:671` 硬编码 NAME="cpython"（注释：cache
+  tag 用 cpython 因编译器兼容），`_sysconfig.rs:26` 注释说明保持 cpython
+  让 pip 可找到 wheel——**有意设计**，非缺陷
+- 判定：改为 "rustpython" 会破坏 pip 兼容（wheel 平台标签）与大量依赖
+  check_impl_detail(cpython=True) 的 CPython 兼容测试 → **不实施**。
+  因此 test_code 崩溃的可行修复路径仅剩：实现 unstable Eval/Code
+  extra-index capi（中等工程，PyCode 加侧表 + freefunc 回收时机），
+  或对 test_code 标注 skip/expectedFailure（需谨慎——模块级崩溃使
+  expectedFailure 无效，需按 crash 处理用 skip）
+
 ## 保留的测试标注
 test_decimal 3 个 Whitebox C-API 测试（c_context_errors /
 c_disallow_instantiation / c_signaldict_segfault）标为 expectedFailure，
