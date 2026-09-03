@@ -96,5 +96,9 @@
 - 扩展回归批次 2（Round 115）：test_set/test_tuple/test_bytes/
   test_memoryview 4/5 SUCCESS；test_bytearray 失败根因为**环境缺文件**
   （Lib/test/test_bytearray.py 不存在），非真实回归
+- 扩展回归批次 3（Round 121）：test_enum/test_itertools/test_re 3/4
+  SUCCESS；test_traceback 84 错误根因为**环境缺 `_testcapi` 内部 C
+  扩展测试模块**（ModuleNotFoundError），预先存在的环境性失败，
+  非真实回归
 - 双优化跨多轮稳定：def_no_capture 594.8-680.6ns（808 基线，-16~-26%）、
   empty_call 189-212ns、add1_call 318-365ns、method_call 343-398ns
