@@ -134,8 +134,10 @@
   在默认下仅 **1 次 relaxed 加载**（`eval_breaker_pending()`）；"2-3 次"仅出现在
   threading 构建。改为每 N 条会引入信号/GC/ThreadStop 处理延迟，且默认构建收益≈0
   → 判定为不实施，保留每次检查。
-- **建议 2 待评估**：`read_op`/`read_arg` 去原子化是纯分派地板的另一来源，但字节码
-  数组跨线程共享，去原子需 UnsafeCell 或按代切换，风险中等，列为后续专项。
+- **建议 2 被否决（数据竞争，不可去原子）**：`replace_op`/`specialize_at`
+  在**帧执行期间**写字节码（frame.rs:9472 等），`read_op` 的 AtomicU8 relaxed
+  读是防止与特化写构成数据竞争的必需开销（去原子化=UB）。且 relaxed 原子读在
+  单线程下编译为普通 load，实际成本极低 → 判定不实施。
 - **建议 3 已部分量化**：`argcost_bench.py` 显示每参 ~120ns（含参数处理），
   execute_call_vectorcall 与 CallPyExactArgs 的差距已并入 fn_call 专项评估。
 
