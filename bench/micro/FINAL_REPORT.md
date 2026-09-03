@@ -55,12 +55,15 @@
 
 ## 4. 剩余可节流项（按收益/风险）
 
-1. **PyFunction::new 剩余 dict 查找**（子代理 A 进行中）
-2. **vectorcall 参数栈缓冲**：中收益、高风险（改 VectorCallFunc 签名 20+ 注册点）
+1. **vectorcall 参数栈缓冲**：中收益、高风险（改 VectorCallFunc 签名 20+ 注册点）
    - argcost_bench 量化：empty 205.6ns，每多 1 参 +120ns（含 Vec 分配+参数处理）
    - 即便省掉 Vec 堆分配，参数处理仍占大部分 → 改签名收益有限、风险高
-3. **instance freelist / cell 批量分配**：中收益、中风险
-4. numpy foreign PyList（方向 A）：大工程，PyPy cpyext 级别
+2. **PyCell freelist**（instance freelist 目标项，已实现于 wt-fl 6b5f1a9f）：
+   - 实测（修正后真实 MAKE_CELL 基准）：closure_1 882.9→881.1ns、closure_2
+     944.0→941.3ns，**收益 <0.3%（噪声带内）**，单 cell 分配 <2% 解释成本
+   - 判定：实现安全（语义/GC/回归全过）但收益不可测，**不引入 GC clear 复杂度**
+3. numpy foreign PyList（方向 A）：大工程；边界物化折中方案已给出
+   （wrap_foreign 重建原生 PyList 覆盖 numpy 构建一次即返回模式）
 
 ## 5. 测试标注
 test_decimal 3 个 Whitebox C-API 测试标 expectedFailure（c_context_errors /
