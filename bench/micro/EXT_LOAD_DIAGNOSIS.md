@@ -43,6 +43,15 @@ CPython 头 → 模拟 `mov rax,[r+0x18]; [rax]=rcx` → 读写一致，头字�
 缓冲重建原生 PyList（数组存活至 refcount 归零），覆盖 numpy"构建一次即返回"
 模式，改动面小得多。
 
+**边界物化实施探索（2026-09-03，子代理 bce8271f，已中断）**：
+- 尝试实施：PyList_New 返回 CPython 布局缓冲 + wrap_foreign list 物化 +
+  PyList_* 双路径，触及 capi 5 文件 + vm/object/core.rs（GC/refcount 核心）
+- 结果：4 轮验证迭代（out/err 1-4）未收敛到可提交状态——实现触及
+  `is_foreign` 判定与 GC 引用计数平衡，复杂度超出单次子代理能力
+- 判定：**方向 A 完整实施需专职工程**（capi 双路径 + GC 语义），不可在
+  单次并行子代理中收敛。可行性已由 probe 3/3 PASS 证实，实施计划已文档化
+  （NUMPY_DIRECTION_A_PLAN.md），留待专职大工程推进。
+
 ## 保留的测试标注
 test_decimal 3 个 Whitebox C-API 测试（c_context_errors /
 c_disallow_instantiation / c_signaldict_segfault）标为 expectedFailure，
