@@ -43,7 +43,15 @@
 |---|---|---|---|
 | 1 DLL 加载 | error 126 | numpy.libs 未进搜索路径 | ✅ 已修（add_dll_directory） |
 | 2 符号解析 | error 127 | capi 缺 16+ 符号 | ✅ 已修（补齐，shim 1033→1055） |
-| 3 PyInit 布局 | AV / 版本检查 | PyListObject ob_item@0x18、tp_flags@0xa8 等 CPython 布局硬编码 | ⛔ 架构墙（需 foreign buffer 大工程） |
+| 3 PyInit 布局 | AV / 版本检查 | PyListObject ob_item@0x18、tp_flags@0xa8 等 CPython 布局硬编码 | ⛔ 架构墙（方向 A 已验：内存机制可行，完整修复需大工程） |
+
+### 方向 A（PyListObject foreign 布局）可行性验证（2026-09-03）
+- Probe 3/3 PASS：CPython 布局 raw-buffer + ob_item@0x18 能安全承载 numpy
+  内联宏写（`crates/capi/tests/foreign_list_probe.rs`，未改现有文件）
+- 结论：内存机制**可行**；完整修复需 12 个导出函数双路径 + dealloc +
+  PyList_Check + **Python 层 list 协议**（现有 foreign_dispatch 仅 getattr/call）
+- 推荐折中方案：**边界物化**——wrap_foreign 对 list-stub 型缓冲重建原生
+  PyList（缓冲存活至 refcount 归零），覆盖 numpy"构建一次即返回"模式
 
 ## 4. 剩余可节流项（按收益/风险）
 
