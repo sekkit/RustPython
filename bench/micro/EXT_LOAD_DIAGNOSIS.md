@@ -64,6 +64,13 @@ CPython 头 → 模拟 `mov rax,[r+0x18]; [rax]=rcx` → 读写一致，头字�
   实现不稳定 Eval/Code extra 索引 API（映射到 code 对象的 extra 槽位），
   属 capi 补齐项，可单独排期
 
+## 标准库测试模块扫描（2026-09-03）
+对 10 个标准库测试模块（test_code/capi/sys/json/math/functools/inspect/
+types/contextlib/dataclasses）做 import 扫描：**仅 test_code 存在
+ctypes/GetProcAddress 类崩溃（capi 符号缺口）**，test_capi 为模块不存在
+（环境无此文件，非符号缺口），其余 8 个模块全部可正常加载。
+→ 确认该 capi 缺口是孤立的（不扩散到其他标准库模块）。
+
 ## code-extra 实施探索（2026-09-03，子代理 df8f8d3e，已中断）
 - 尝试：在 PyCode 增加 extra 侧表 + 全局 freefunc 注册表 + 三个导出符号
 - 结果：子代理运行约 16 分钟无任何产出（无文件改动/构建/日志），
