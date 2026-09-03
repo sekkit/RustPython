@@ -27,6 +27,22 @@ CPython 内存布局硬编码，RustPython 对象/类型布局不同。修复需
 raw-buffer 对象（PyList/PyTuple/PyBytes/类型），是 PyPy cpyext 级别的
 大工程（子代理 B 已给出方向 A 方案，工程量大）。
 
+## 方向 A（PyListObject foreign 布局）可行性验证（子代理 abc7b13f 完成）
+
+**布局实证**：CPython PyListObject = ob_refcnt@0/ob_type@8/ob_size@0x10/**ob_item@0x18**；
+RustPython PyInner = ref@0/typ@8/payload@0x10（头仅 0x10 字节）。numpy 内联宏
+读 `[r+0x18]` 落在原生 payload（RwLock<Vec>）内部 → 崩溃根因确认。
+
+**Probe 验证：PASS（3/3）**（`crates/capi/tests/foreign_list_probe.rs`，自包含
+仅依赖 libc，未改任何现有文件）：malloc foreign 缓冲 + ob_item 槽数组 → 手写
+CPython 头 → 模拟 `mov rax,[r+0x18]; [rax]=rcx` → 读写一致，头字节完整。
+
+**结论**：方向 A 内存机制**可行**；完整修复需大工程（12 个 PyList_* 导出函数
+双路径 + dealloc + PyList_Check + Python 层 list 协议——现有 foreign_dispatch
+仅覆盖 getattr/call）。推荐折中：**边界物化**——wrap_foreign 对 list-stub 型
+缓冲重建原生 PyList（数组存活至 refcount 归零），覆盖 numpy"构建一次即返回"
+模式，改动面小得多。
+
 ## 保留的测试标注
 test_decimal 3 个 Whitebox C-API 测试（c_context_errors /
 c_disallow_instantiation / c_signaldict_segfault）标为 expectedFailure，
