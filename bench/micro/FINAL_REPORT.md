@@ -43,6 +43,9 @@
 - 长期稳定性（多轮回归）：test_decimal 持续 187/187（184 ok + 3 xfail），
   函数相关模块（funcattrs/extcall/builtin 子集）无新增失败；主循环原子开销
   已优化到单次 relaxed load/RMW（无竞争等价普通 load），无更多低风险节流点
+- 最新复测（Round 92）：def_no_capture 594.8-680.6 ns（808 基线，-16~-26%）、
+  empty_call 189-212 ns、add1_call 318-365 ns、method_call 343-398 ns——
+  双优化收益跨多轮波动但稳定为正；全量基准冒烟 11/11 脚本通过
 
 ## 3. numpy / C 扩展加载链（三阶段）
 
