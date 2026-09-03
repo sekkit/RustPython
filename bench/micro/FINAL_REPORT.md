@@ -14,6 +14,10 @@
 | 字节码指令 | bytecode_bench.py | 3.0-4.7x | 架构地板（专家分派器） |
 | 实例分配 | alloc_bench.py | 闭包 7.1x | **实现可节流**（函数对象创建） |
 | 闭包分解 | closure_decomp.py | def 8.7x | 主导=PyFunction::new（可节流） |
+| 参数成本 | argcost_bench.py | 每参 ~120ns | 决策依据：vectorcall 改签名收益有限 |
+| 分派地板 | dispatch_bench.py | 6.75-7.03x | 架构地板（纯分派最差乘数） |
+| 特化价值 | spec_bench.py | 命中 345 vs 未命 441 | 特化有效但全命中仍 4.5x |
+| 异常/字符串 | extra_bench.py | 2.7-3.6x | 无新可节流项（落已知区间） |
 
 ## 2. 已实施并验证的优化
 
