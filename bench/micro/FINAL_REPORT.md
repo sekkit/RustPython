@@ -91,5 +91,7 @@
 - test_pickle 464/0、test_dict/test_list/test_str regrtest SUCCESS、
   test_funcattrs 34/35（唯一失败为预先存在 test_builtin__self__）、
   test_extcall 1/1
+- 扩展回归（Round 114）：test_collections/test_heapq/test_random/
+  test_string/test_queue 5/5 SUCCESS——双优化在更多标准库模块无回归
 - 双优化跨多轮稳定：def_no_capture 594.8-680.6ns（808 基线，-16~-26%）、
   empty_call 189-212ns、add1_call 318-365ns、method_call 343-398ns
