@@ -36,6 +36,9 @@
 - eval_breaker 默认构建仅 1 次 relaxed 加载 → 每 N 条改动低收益高风险，判定不实施
 - 最终一致性复测：empty_call 211.9（-3.8%）、add1_call 359.3（-6.7%）、
   method_call 389.5（-5.7%）——收益跨基准稳定
+- 长期稳定性（多轮回归）：test_decimal 持续 187/187（184 ok + 3 xfail），
+  函数相关模块（funcattrs/extcall/builtin 子集）无新增失败；主循环原子开销
+  已优化到单次 relaxed load/RMW（无竞争等价普通 load），无更多低风险节流点
 
 ## 3. numpy / C 扩展加载链（三阶段）
 
