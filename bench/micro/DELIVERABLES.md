@@ -1,6 +1,6 @@
 # RustPython 性能诊断最终交付清单（Round 124）
 
-## 交付物总览（主仓 clean，27 文件，17717 commits）
+## 交付物总览（主仓 clean，27 文件，17700+ commits）
 
 ### 基准脚本（13）
 fn_call_bench.py / call_decomp.py / poly_bench.py / frame_bench.py /
