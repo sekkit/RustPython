@@ -61,3 +61,8 @@
 5. 容器操作（list/dict ~2.9x）最接近地板，说明 GC/分配差距小于调用链路
 
 **首要可节流项**：`execute_call_vectorcall` 每次用 `Vec::with_capacity` 堆分配参数数组——改用栈上小缓冲区（≤3 参数零分配）
+
+## 补充：dict 细粒度（2026-09-03）
+dict_set_str_key 192.5 / set_int_key 194.8 / get_str_key 178.6 ns-op
+——与 dict_setget 2.9x 一致，容器操作确认接近地板；int/str key 特化无差异，
+无额外可节流空间。
