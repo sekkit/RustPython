@@ -1,18 +1,18 @@
-# RustPython 性能诊断最终交付清单（Round 95）
+# RustPython 性能诊断最终交付清单（Round 124）
 
-## 交付物总览（主仓 clean，25 文件，17703 commits）
+## 交付物总览（主仓 clean，27 文件，17715 commits）
 
-### 基准脚本（12）
+### 基准脚本（13）
 fn_call_bench.py / call_decomp.py / poly_bench.py / frame_bench.py /
 bytecode_bench.py / alloc_bench.py / closure_decomp.py / argcost_bench.py /
-dispatch_bench.py / spec_bench.py / extra_bench.py
+dispatch_bench.py / spec_bench.py / extra_bench.py / extra2_bench.py
 
-### 结果文档（13）
+### 结果文档（14）
 PERF_SUMMARY.md / PERFORMANCE_ANALYSIS.md / FINAL_REPORT.md /
 fn_call_results.md / call_decomp_results.md / bytecode_results.md /
 alloc_results.md / closure_results.md / dispatch_results.md /
 EXT_LOAD_DIAGNOSIS.md / NUMPY_DIRECTION_A_PLAN.md / extra_results.md /
-DELIVERABLES.md（本清单）
+extra2_results.md / DELIVERABLES.md（本清单）
 
 ## 关键成果
 
