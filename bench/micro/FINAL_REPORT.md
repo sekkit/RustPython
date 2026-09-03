@@ -30,6 +30,11 @@
 - A：PyFunction `module` 字段惰性化（省每次创建的 `__name__` dict 查找）
 - B：指令分派开销量化（每字节码 ns + 特化缓存价值）
 
+**累计验证**（双优化）：
+- def_no_capture: 808 → 680.6 ns（**-15.8%**）
+- fn_call 全套 -5~7%；test_decimal 187/187、test_pickle 464/0 无回归
+- eval_breaker 默认构建仅 1 次 relaxed 加载 → 每 N 条改动低收益高风险，判定不实施
+
 ## 3. numpy / C 扩展加载链（三阶段）
 
 | 阶段 | 现象 | 根因 | 状态 |
