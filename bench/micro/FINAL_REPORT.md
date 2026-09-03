@@ -93,5 +93,8 @@
   test_extcall 1/1
 - 扩展回归（Round 114）：test_collections/test_heapq/test_random/
   test_string/test_queue 5/5 SUCCESS——双优化在更多标准库模块无回归
+- 扩展回归批次 2（Round 115）：test_set/test_tuple/test_bytes/
+  test_memoryview 4/5 SUCCESS；test_bytearray 失败根因为**环境缺文件**
+  （Lib/test/test_bytearray.py 不存在），非真实回归
 - 双优化跨多轮稳定：def_no_capture 594.8-680.6ns（808 基线，-16~-26%）、
   empty_call 189-212ns、add1_call 318-365ns、method_call 343-398ns
