@@ -43,23 +43,33 @@
 **验证**：numpy 推进到 `AttributeError: '\x00' object has no attribute '__name__'`
 （不再 panic，错误可捕获）。
 
-## 当前关卡（判定：架构墙，需 cpyext 级专职工程）
+## 第四关：DType __name__（已修复，commit 6ad759994）
 - 现象：`AttributeError: '\x00' object has no attribute '__name__'`
   触发：numpy `_core/dtypes.py:80` `_add_dtype_helper(DType, alias)` 的
   `DType.__name__` 访问。
-- 已确认：被访问对象的 `ob_type@8 = 0x7fff0d5f8790`（每次运行相同，堆地址），
-  该 ob_type 指向对象的 class.name = "\0"（NUL），对象本身非 foreign、
-  ob_type 也非 foreign。`PyType_FromSpec` 未创建名字含 "DType" 的 heap type。
-- 根因：numpy 的 DType 类通过 C 侧 `PyType_FromSpec` 之外的机制创建（numpy 2.x
-  的 DTypeMeta / 静态 PyTypeObject），其 ob_type 无法经 `resolve_type_ptr` 解析，
-  fallback 路径（pytype.rs 约 239 行）将其强转成 RustPython PyType 后 name 读取
-  NUL。完整支持需要 numpy 类型对象的真实验证/解析（tp_name 槽读取、heap type
-  语义），属 **cpyext 级架构墙**。
-- 判定：方向 A 边界物化已达成核心目标（越过 PyList 布局墙 + 三连关推进）；
-  当前关卡与 NUMPY_DIRECTION_A_PLAN 的既有判定一致——**"方向 A 完整实施需
-  专职工程"**（capi 双路径 + 完整类型对象语义），非单轮可收敛。
-- 后续建议：专职实施时优先解决 DType 类对象的类型名读取（在 wrap_foreign 或
-  resolve 路径识别 numpy 自有 PyTypeObject 并正确读取 tp_name@offset）。
+- 根因（字节级证据链）：numpy 2.5.2 的内建 DType 类**不是** PyType_FromSpec
+  创建，而是编译进 `_multiarray_umath.pyd` 的**静态 CPython PyTypeObject 结构体**
+  （pyd 导入表只含 PyType_Ready / PyType_GenericNew / PyType_Type）；ob_type@8
+  指向 DLL 内静态 metaclass（PyArray_DTypeMeta_Type），tp_name@24 可读、vtable=0。
+  vm 的 get_attr_inner 把裸结构体当 RustPython PyType，name 读出 "\0"。
+- 关键发现：exe 启动走 `init_main_interpreter`（src/lib.rs:136）而非
+  `Py_InitializeEx`，`foreign_dispatch::set()` 此前从未在二进制安装（is_foreign
+  恒 false、wrap_foreign 恒 None）——前三个 commit 的 foreign 机制在 exe 中
+  部分休眠；本修复在 init_main_interpreter 补装整个 foreign 调度表 + 物化回调。
+- 修复：`materialize_cpy_type_object` 回调（capi foreign.rs）识别裸 CPython
+  type 结构体（ob_type@8 与 tp_name@24 都在非 exe 模块、tp_name 有界可读），
+  用 tp_name 物化成原生 heap type 并按地址缓存（实测读出
+  `tp_name="numpy.dtypes.BoolDType"`）；`get_attr_inner` 两分支尝试物化；
+  `PyMethod::get` getattro 空 slot 不再硬 unwrap；init_main_interpreter +
+  Py_InitializeEx 注册全部 5 个回调。
+- 验证：dtypes.py:80 的 __name__ AttributeError 消失（0 命中）；numpy 推进到
+  下一关——`_multiarray_umath` init 期间 `ExecutingFrame::load_attr` 的
+  NATIVE-CRASH access violation（类型层级语义缺失）。
+- 下一关精确缺失点（未修复，建议专职推进）：
+  1. 将"静态 CPython type 结构体物化"推广到 resolve_type_ptr 盲 fallback、
+     PyType_GenericNew/GenericAlloc、_PyObject_New/GC_New 返回的 type 对象；
+  2. 物化时从 tp_base（offset 256）递归物化 MRO，并设置 __module__；
+  3. crash_diag 补当前 Python 帧（file:line）定位原生 AV 源码位置。
 
 ## 方法论
 - 独立 worktree（RustPython-wt-aa）实施，主仓保持稳定；验证后 cherry-pick 回主仓。
