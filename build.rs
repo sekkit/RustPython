@@ -146,3 +146,4 @@ fn read_pe_exports(path: &std::path::Path) -> Option<Vec<String>> {
     }
     Some(out)
 }
+

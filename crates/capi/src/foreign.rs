@@ -351,6 +351,16 @@ pub unsafe extern "C" fn wrap_foreign_object(raw: *mut PyObject) -> *mut PyObjec
         if raw.is_null() {
             return Err(vm.new_system_error("wrap_foreign: NULL pointer"));
         }
+        // Boundary materialization: a CPython-layout list buffer (created by
+        // PyList_New, filled C-side via the inlined PyList_SET_ITEM macro) is
+        // rebuilt as a native RustPython list so Python-side len/index/iter
+        // all work. Elements are real RustPython objects (e.g. results of
+        // PyUnicode_FromString); each gets a new reference for the native
+        // list while the buffer keeps its own (its dealloc decrefs them).
+        if unsafe { crate::listobject::is_foreign_list_buffer(raw) } {
+            let list = unsafe { crate::listobject::foreign_list_to_native(vm, raw)? };
+            return Ok(list.into_raw().as_ptr());
+        }
         // ob_type at offset 8 is the extension's own PyTypeObject (or one of
         // our stubs). Resolve it to a real RustPython type.
         let ty_raw = unsafe { *(raw as *const usize).add(1) } as *mut crate::object::PyTypeObject;
