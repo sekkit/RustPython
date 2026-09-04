@@ -21,7 +21,12 @@ pub(crate) enum PyMethod {
 impl PyMethod {
     pub(crate) fn get(obj: PyObjectRef, name: &Py<PyStr>, vm: &VirtualMachine) -> PyResult<Self> {
         let cls = obj.class();
-        let getattro = cls.slots.getattro.load().unwrap();
+        // A class with no getattro slot (e.g. a heuristic-shadow of a C
+        // extension's static type object) falls back to generic attribute
+        // access, mirroring `get_attr_inner`; do not hard-unwrap.
+        let Some(getattro) = cls.slots.getattro.load() else {
+            return obj.get_attr(name, vm).map(Self::Attribute);
+        };
         if fn_addr(getattro) != fn_addr(PyBaseObject::getattro as GetattroFunc) {
             return obj.get_attr(name, vm).map(Self::Attribute);
         }

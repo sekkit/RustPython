@@ -74,4 +74,16 @@ pub fn init_main_interpreter(interpreter: Interpreter) {
         interp.as_ref().unwrap() as *const _ as *mut _,
         Ordering::Release,
     );
+    // The embedded binary initialises through `init_main_interpreter`, not
+    // `Py_InitializeEx`, so the foreign-dispatch table (and the raw
+    // CPython-type materialiser) must be registered here too.
+    rustpython_vm::object::foreign_dispatch::set(
+        crate::foreign::foreign_getattr as *mut (),
+        crate::foreign::foreign_call as *mut (),
+        crate::foreign::is_foreign_object as *mut (),
+        crate::foreign::wrap_foreign_object as *mut (),
+    );
+    rustpython_vm::object::foreign_dispatch::set_materialize_cpy_type(
+        crate::foreign::materialize_cpy_type_object as *mut (),
+    );
 }

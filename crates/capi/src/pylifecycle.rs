@@ -71,6 +71,9 @@ pub extern "C" fn Py_InitializeEx(_initsigs: c_int) {
             crate::foreign::is_foreign_object as *mut (),
             crate::foreign::wrap_foreign_object as *mut (),
         );
+        rustpython_vm::object::foreign_dispatch::set_materialize_cpy_type(
+            crate::foreign::materialize_cpy_type_object as *mut (),
+        );
         // Install native crash diagnostics (VEH logging faulting IP/module).
         crate::crash_diag::install();
     }

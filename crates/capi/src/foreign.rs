@@ -30,9 +30,11 @@
 
 use core::ffi::{c_char, c_void};
 use core::ptr::NonNull;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use rustpython_vm::builtins::PyStr;
-use rustpython_vm::{PyObject, PyObjectRef};
+use rustpython_vm::{AsObject, PyObject, PyObjectRef};
 
 use crate::descrobject::PyGetSetDef;
 use crate::methodobject::{PyMethodDef, build_method_def};
@@ -338,6 +340,105 @@ pub unsafe fn foreign_call(
     }
     let call: CCallFunc = unsafe { core::mem::transmute(tp_call) };
     unsafe { call(obj, args, kwds) }
+}
+
+/// Global cache: raw CPython type-object address -> materialised native
+/// heap type. Static extension types (numpy DTypes &co.) live forever, so the
+/// native shadows are leaked by design (a strong ref held in this map).
+fn cpy_type_material_cache() -> &'static Mutex<Option<HashMap<usize, rustpython_vm::PyObjectRef>>> {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<Mutex<Option<HashMap<usize, rustpython_vm::PyObjectRef>>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(None))
+}
+
+/// Materialise a raw CPython-layout *type* object into a native RustPython
+/// heap type named from its `tp_name`, or return NULL (no exception) when
+/// `raw` is not such an object.
+///
+/// C extensions define their scalar/DType classes as plain `PyTypeObject`
+/// structs linked into their DLL (numpy's `_add_dtype_helper(DType, alias)`
+/// receives exactly such a struct). RustPython holds such a cross-boundary
+/// pointer as a bare `PyObjectRef` whose header looks CPython-shaped: its
+/// `ob_type` at offset 8 points at the extension's static metaclass, which the
+/// VM would otherwise misread as a RustPython type with garbage fields.
+/// Attribute access then fails with `AttributeError: '\x00' object has no
+/// attribute '__name__'`. Materialising gives the object a working native
+/// class (name from its `tp_name`), restoring CPython's type-object semantics.
+pub unsafe extern "C" fn materialize_cpy_type_object(raw: *mut PyObject) -> *mut PyObject {
+    with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
+        if raw.is_null() {
+            return Ok(core::ptr::null_mut());
+        }
+        let addr = raw as usize;
+        // A registered foreign buffer must stay eligible: raw CPython-layout
+        // TYPE objects (numpy DTypes &co.) are registered by _PyObject_New /
+        // _PyObject_GC_New, and they are exactly the objects this function
+        // exists to materialise. Genuine native heap objects are not handled
+        // here (their own attribute machinery applies).
+        if unsafe { crate::object::pytype::looks_like_native_object(raw) } {
+            return Ok(core::ptr::null_mut());
+        }
+
+        // Cache hit: hand over one owned reference.
+        if let Some(cached) = cpy_type_material_cache().lock().unwrap().as_ref()
+            && let Some(shadow) = cached.get(&addr)
+        {
+            let ptr = shadow.to_owned().into_raw().as_ptr();
+            return Ok(ptr);
+        }
+
+        // A CPython-layout type object carries its name at offset 24 (tp_name)
+        // and its metaclass pointer at offset 8; both must be statically
+        // addressable for this to be an extension-defined type struct.
+        let ob_type = unsafe { *(addr as *const usize).add(1) } as *const u8;
+        let tp_name_ptr = unsafe { *(addr as *const usize).add(3) } as *const c_char;
+        if ob_type.is_null()
+            || tp_name_ptr.is_null()
+            || !addr_in_non_exe_module(ob_type as usize)
+            || !addr_in_non_exe_module(tp_name_ptr as usize)
+        {
+            return Ok(core::ptr::null_mut());
+        }
+        let Ok(name) = (unsafe {
+            // Bounded read: never walk further than 255 bytes so a short
+            // tp_name at the end of a mapped region cannot cross into an
+            // unmapped page.
+            let mut len = 0usize;
+            while len < 255 && *tp_name_ptr.add(len) != 0 {
+                len += 1;
+            }
+            core::str::from_utf8(core::slice::from_raw_parts(tp_name_ptr as *const u8, len))
+        })
+        .map(str::to_owned) else {
+            return Ok(core::ptr::null_mut());
+        };
+
+        // Build a native heap type named from tp_name; a failure to construct
+        // it is *not* an error of the caller's, so swallow it and decline.
+        let Ok(materialized) = (|| -> rustpython_vm::PyResult<rustpython_vm::PyObjectRef> {
+            use rustpython_vm::function::FuncArgs;
+            let dict = vm.ctx.new_dict();
+            let bases = vm.ctx
+                .new_tuple(vec![vm.ctx.types.object_type.to_owned().into()]);
+            let args = FuncArgs::from(vec![
+                vm.ctx.new_str(name.to_owned()).into(),
+                bases.into(),
+                dict.into(),
+            ]);
+            let metaclass: rustpython_vm::PyObjectRef = vm.ctx.types.type_type.to_owned().into();
+            metaclass.call(args, vm)
+        })() else {
+            return Ok(core::ptr::null_mut());
+        };
+        // Keep one strong ref alive for later accesses; hand the caller's ref
+        // over through into_raw (get_attr_inner wraps it with from_raw).
+        cpy_type_material_cache()
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(addr, materialized.to_owned());
+        Ok(materialized.into_raw().as_ptr())
+    })
 }
 
 /// Wrap a foreign raw-buffer object into a safe native RustPython object.

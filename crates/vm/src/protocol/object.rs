@@ -136,6 +136,20 @@ impl PyObject {
         // Check for foreign (raw-buffer) C extension objects first.
         let raw = self.as_object().as_raw();
         if crate::object::foreign_dispatch::is_foreign(raw) {
+            // Raw CPython-layout *type* objects (numpy's static DType / scalar
+            // classes live in the extension DLL as plain PyTypeObject structs)
+            // are materialised into native heap types before the C tp_getattro
+            // slot is consulted: that slot expects full CPython type machinery
+            // and its raw invocation crashes. Materialising also makes
+            // `SomeCType.__name__` work ("AttributeError: '\x00' object has no
+            // attribute ..." otherwise).
+            if let Some(materialize) = crate::object::foreign_dispatch::materialize_cpy_type_fn()
+                && let Some(materialized) =
+                    unsafe { std::ptr::NonNull::new(materialize(raw as *mut _)) }
+            {
+                let obj = unsafe { crate::object::PyObjectRef::from_raw(materialized) };
+                return obj.get_attr(attr_name, vm);
+            }
             if let Some(getattro) = crate::object::foreign_dispatch::getattr_fn() {
                 let name_raw = attr_name.as_object().as_raw();
                 let result = unsafe { getattro(raw as *mut _, name_raw as *mut _) };
@@ -148,6 +162,19 @@ impl PyObject {
                 }
                 return Ok(unsafe { crate::object::PyObjectRef::from_raw(std::ptr::NonNull::new_unchecked(result)) });
             }
+        }
+        // Materialise raw CPython-layout *type* objects (numpy's static DType /
+        // scalar classes live in the extension DLL as plain PyTypeObject structs)
+        // so attribute access on them works like on native heap types. Without
+        // this, `SomeCType.__name__` reads the extension struct's bytes as a
+        // RustPython PyType and fails ("AttributeError: '\x00' object has no
+        // attribute ...").
+        if let Some(materialize) = crate::object::foreign_dispatch::materialize_cpy_type_fn()
+            && let Some(materialized) =
+                unsafe { std::ptr::NonNull::new(materialize(raw as *mut _)) }
+        {
+            let obj = unsafe { crate::object::PyObjectRef::from_raw(materialized) };
+            return obj.get_attr(attr_name, vm);
         }
         // Fall back to object.__getattribute__ (generic lookup) when the class
         // does not install an explicit getattro slot. C-extension heap types

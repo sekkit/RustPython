@@ -440,6 +440,13 @@ pub mod foreign_dispatch {
     /// function's return value crosses back into Python.
     static WRAP_FOREIGN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
+    /// `fn(raw: *mut PyObject) -> *mut PyObject` — materialise a raw CPython-layout
+    /// *type* object (e.g. numpy's static DType / scalar classes) into a native
+    /// RustPython heap type, returning NULL (no exception) when `raw` is not such
+    /// a type object. Invoked at the attribute-access boundary so `SomeClass.name`
+    /// and friends work on classes that live in a C extension's DLL.
+    static MATERIALIZE_CPY_TYPE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
     /// Set the four C-API foreign-dispatch callbacks.  Called once by the
     /// capi crate during `Py_Initialize`.
     pub fn set(
@@ -452,6 +459,12 @@ pub mod foreign_dispatch {
         CALL.store(call, Ordering::Relaxed);
         IS_FOREIGN.store(is_foreign, Ordering::Relaxed);
         WRAP_FOREIGN.store(wrap_foreign, Ordering::Relaxed);
+    }
+
+    /// Set the materialise-CPython-type callback (see [`MATERIALIZE_CPY_TYPE`]).
+    /// Called once by the capi crate during `Py_Initialize`.
+    pub fn set_materialize_cpy_type(f: *mut ()) {
+        MATERIALIZE_CPY_TYPE.store(f, Ordering::Relaxed);
     }
 
     /// Wrap a foreign raw buffer into a safe native object. Returns None when
@@ -502,6 +515,15 @@ pub mod foreign_dispatch {
     /// Returns the foreign-call function pointer, or NULL.
     pub fn call_fn() -> Option<unsafe extern "C" fn(*mut super::PyObject, *mut super::PyObject, *mut super::PyObject) -> *mut super::PyObject> {
         let ptr = CALL.load(Ordering::Relaxed);
+        if ptr.is_null() { None } else {
+            Some(unsafe { core::mem::transmute(ptr) })
+        }
+    }
+
+    /// Returns the materialise-CPython-type function pointer, or NULL when the
+    /// capi crate never installed one (plain RustPython).
+    pub fn materialize_cpy_type_fn() -> Option<unsafe extern "C" fn(*mut super::PyObject) -> *mut super::PyObject> {
+        let ptr = MATERIALIZE_CPY_TYPE.load(Ordering::Relaxed);
         if ptr.is_null() { None } else {
             Some(unsafe { core::mem::transmute(ptr) })
         }
