@@ -713,7 +713,13 @@ impl PyObject {
             return vm.with_recursion("while hashing", || hash(self, vm));
         }
 
-        Err(vm.new_type_error(format!("unhashable type: '{}'", self.class().name())))
+        // No explicit hash slot. In CPython, only types that set tp_hash = NULL
+        // (or __hash__ = None) are unhashable; those are registered here through
+        // the `hash_not_implemented` slot by the `unhashable` pyclass flag. An
+        // *empty* hash slot therefore means "default identity hash" (like
+        // object.__hash__), not "unhashable". This matters for C-extension
+        // heap types (numpy &co.) whose instances are hashable by identity.
+        Ok(self.as_object().get_id() as PyHash)
     }
 
     // type protocol
