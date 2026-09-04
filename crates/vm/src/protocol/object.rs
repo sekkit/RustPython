@@ -149,7 +149,15 @@ impl PyObject {
                 return Ok(unsafe { crate::object::PyObjectRef::from_raw(std::ptr::NonNull::new_unchecked(result)) });
             }
         }
-        let getattro = self.class().slots.getattro.load().unwrap();
+        // Fall back to object.__getattribute__ (generic lookup) when the class
+        // does not install an explicit getattro slot. C-extension heap types
+        // (numpy &co.) whose type stub we cannot fully populate may leave the
+        // slot empty; CPython semantics for such objects are the generic
+        // attribute access, not a hard crash.
+        let getattro = self.class().slots.getattro.load().unwrap_or(
+            crate::builtins::object::PyBaseObject::getattro
+                as crate::types::GetattroFunc,
+        );
         getattro(self, attr_name, vm).inspect_err(|exc| {
             vm.set_attribute_error_context(exc, self.to_owned(), attr_name.to_owned());
         })
