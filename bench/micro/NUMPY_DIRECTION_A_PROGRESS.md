@@ -43,17 +43,23 @@
 **验证**：numpy 推进到 `AttributeError: '\x00' object has no attribute '__name__'`
 （不再 panic，错误可捕获）。
 
-## 当前关卡（诊断中）
+## 当前关卡（判定：架构墙，需 cpyext 级专职工程）
 - 现象：`AttributeError: '\x00' object has no attribute '__name__'`
   触发：numpy `_core/dtypes.py:80` `_add_dtype_helper(DType, alias)` 的
   `DType.__name__` 访问。
 - 已确认：被访问对象的 `ob_type@8 = 0x7fff0d5f8790`（每次运行相同，堆地址），
   该 ob_type 指向对象的 class.name = "\0"（NUL），对象本身非 foreign、
   ob_type 也非 foreign。`PyType_FromSpec` 未创建名字含 "DType" 的 heap type。
-- 推测：numpy 的 DType 类是通过 C 侧其它机制创建的静态类型对象，我们的
-  `resolve_type_ptr` fallback 路径（pytype.rs 约 239 行 `(&*(ptr as *mut PyObject))
-  .to_owned().downcast::<PyType>()`）将其强转成 PyType 后 name 读出 NUL。
-- 状态：交由子代理 e90eda07 诊断（实现问题 vs 架构墙）。
+- 根因：numpy 的 DType 类通过 C 侧 `PyType_FromSpec` 之外的机制创建（numpy 2.x
+  的 DTypeMeta / 静态 PyTypeObject），其 ob_type 无法经 `resolve_type_ptr` 解析，
+  fallback 路径（pytype.rs 约 239 行）将其强转成 RustPython PyType 后 name 读取
+  NUL。完整支持需要 numpy 类型对象的真实验证/解析（tp_name 槽读取、heap type
+  语义），属 **cpyext 级架构墙**。
+- 判定：方向 A 边界物化已达成核心目标（越过 PyList 布局墙 + 三连关推进）；
+  当前关卡与 NUMPY_DIRECTION_A_PLAN 的既有判定一致——**"方向 A 完整实施需
+  专职工程"**（capi 双路径 + 完整类型对象语义），非单轮可收敛。
+- 后续建议：专职实施时优先解决 DType 类对象的类型名读取（在 wrap_foreign 或
+  resolve 路径识别 numpy 自有 PyTypeObject 并正确读取 tp_name@offset）。
 
 ## 方法论
 - 独立 worktree（RustPython-wt-aa）实施，主仓保持稳定；验证后 cherry-pick 回主仓。
