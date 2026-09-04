@@ -1660,6 +1660,11 @@ impl Callable for PyCFuncPtr {
         };
 
         // 8. Call the function through the unified entry point.
+        // CPython's ctypes promotes a Python exception that the foreign
+        // function leaves pending (set via the C-API) into a raised exception;
+        // mirror that so error-raising C functions surface their error to
+        // Python instead of returning a raw error scalar.
+        let before_exc = vm.current_exception();
         let call_result = ctypes_callproc(addr, &arguments, &call_info.ret, options).map_err(
             |err| match err {
                 CallError::NullFunctionPointer => vm.new_value_error("NULL function pointer"),
@@ -1671,6 +1676,11 @@ impl Callable for PyCFuncPtr {
                 )),
             },
         )?;
+        if let Some(exc) = vm.current_exception() {
+            if before_exc.is_none() {
+                return Err(exc);
+            }
+        }
 
         // 9. Build result
         build_result(call_result, &call_info, out_buffers, zelf, &args, vm)

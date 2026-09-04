@@ -8,7 +8,7 @@ use crate::pystate::with_vm;
 use crate::util::CStrExt;
 use crate::PyObject;
 use core::ffi::{c_char, c_double, c_int, c_long, c_ulong, c_void, c_uint};
-use rustpython_vm::builtins::{PyDict, PyInt, PyTuple, PyStr, PyType, PyComplex};
+use rustpython_vm::builtins::{PyCode, PyDict, PyInt, PyTuple, PyStr, PyType, PyComplex};
 use rustpython_vm::common::{hash::hash_float, str::{StrData, StrKind}};
 use rustpython_vm::{AsObject, PyObjectRef, VirtualMachine};
 
@@ -884,6 +884,79 @@ pub unsafe extern "C" fn PyUnstable_Object_IsUniquelyReferenced(
     with_vm(|_vm| {
         let obj = unsafe { &*obj };
         Ok(obj.strong_count() == 1)
+    })
+}
+
+// ===========================================================================
+// Code-object extra index (unstable API)
+// ===========================================================================
+
+/// PyUnstable_Eval_RequestCodeExtraIndex: register a free callback and return
+/// a unique code-object extra index.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnstable_Eval_RequestCodeExtraIndex(
+    free: Option<rustpython_vm::builtins::CodeExtraFreeFunc>,
+) -> isize {
+    with_vm(|_vm| -> rustpython_vm::PyResult<isize> {
+        Ok(rustpython_vm::builtins::request_code_extra_index(free))
+    })
+}
+
+/// PyUnstable_Code_SetExtra: set the extra data of a code-object slot.
+/// Raises SystemError and returns -1 when `code` is not a code object or
+/// `index` is not a registered extra index.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnstable_Code_SetExtra(
+    code: *mut PyObject,
+    index: isize,
+    extra: *mut c_void,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<()> {
+        if code.is_null() {
+            return Err(vm.new_system_error(
+                "PyUnstable_Code_SetExtra: not a code object".to_owned(),
+            ));
+        }
+        let Some(co) = unsafe { &*code }.downcast_ref::<PyCode>() else {
+            return Err(vm.new_system_error(
+                "PyUnstable_Code_SetExtra: not a code object".to_owned(),
+            ));
+        };
+        if !co.co_extra_set(index, extra) {
+            return Err(vm.new_system_error(
+                "bad argument to internal function".to_owned(),
+            ));
+        }
+        Ok(())
+    })
+}
+
+/// PyUnstable_Code_GetExtra: get the extra data of a code-object slot.
+/// Raises SystemError and returns -1 when `code` is not a code object; an
+/// out-of-range `index` returns 0 and leaves `*extra` untouched.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnstable_Code_GetExtra(
+    code: *mut PyObject,
+    index: isize,
+    extra: *mut *mut c_void,
+) -> c_int {
+    with_vm(|vm| -> rustpython_vm::PyResult<()> {
+        if code.is_null() {
+            return Err(vm.new_system_error(
+                "PyUnstable_Code_GetExtra: not a code object".to_owned(),
+            ));
+        }
+        let Some(co) = unsafe { &*code }.downcast_ref::<PyCode>() else {
+            return Err(vm.new_system_error(
+                "PyUnstable_Code_GetExtra: not a code object".to_owned(),
+            ));
+        };
+        if let Some(val) = co.co_extra_get(index) {
+            if !extra.is_null() {
+                unsafe { *extra = val as *mut c_void };
+            }
+        }
+        Ok(())
     })
 }
 

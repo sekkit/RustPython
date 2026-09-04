@@ -476,6 +476,12 @@ pub struct PyCode {
     /// this code cannot leave the slot unbalanced, so `with_frame` skips the
     /// exc_info save/restore. Computed once by scanning the instruction stream.
     pub has_exc_handling: bool,
+    /// Extra slots for `PyUnstable_Code_SetExtra`/`GetExtra` (CPython's
+    /// `co_extra`). Values are opaque C pointers stored as `usize` so the
+    /// struct stays `Send + Sync`; they are only ever handed back to the
+    /// per-index free callback (on drop or overwrite) or returned verbatim by
+    /// `PyUnstable_Code_GetExtra`.
+    pub co_extra: PyMutex<Option<Vec<Option<usize>>>>,
 }
 
 impl Deref for PyCode {
@@ -508,6 +514,7 @@ impl PyCode {
             monitoring_data: PyMutex::new(None),
             quickened: core::sync::atomic::AtomicBool::new(false),
             has_exc_handling,
+            co_extra: PyMutex::new(None),
         }
     }
 
@@ -580,6 +587,53 @@ impl PyCode {
         let compiled =
             compile_bytecode.call((code_bytes_obj, name, bytecode_path, source_path), vm)?;
         compiled.try_downcast(vm)
+    }
+
+    /// CPython `PyUnstable_Code_SetExtra` semantics without exception handling.
+    /// Returns `false` if `index` is not a registered extra index. Overwriting
+    /// an existing value first invokes the index's registered free callback on
+    /// the old value, matching CPython.
+    pub fn co_extra_set(&self, index: isize, extra: *mut core::ffi::c_void) -> bool {
+        if index < 0 || index >= crate::builtins::code_extra::code_extra_len() {
+            return false;
+        }
+        let idx = index as usize;
+        let old = {
+            let mut guard = self.co_extra.lock();
+            let slots = guard.get_or_insert_with(Vec::new);
+            if slots.len() <= idx {
+                slots.resize(idx + 1, None);
+            }
+            slots[idx].replace(extra as usize)
+        };
+        if let Some(old) = old {
+            if let Some(free) = crate::builtins::code_extra::code_extra_freefunc(index) {
+                // SAFETY: `old` was stored through PyUnstable_Code_SetExtra and
+                // is reclaimed exactly once by the callback for its index.
+                unsafe { free(old as *mut core::ffi::c_void) };
+            }
+        }
+        true
+    }
+
+    /// CPython `PyUnstable_Code_GetExtra` semantics: the stored pointer (as
+    /// `usize`) for `index`, or `None` when `index` is invalid or unset.
+    pub fn co_extra_get(&self, index: isize) -> Option<usize> {
+        if index < 0 {
+            return None;
+        }
+        let guard = self.co_extra.lock();
+        guard.as_ref()?.get(index as usize).copied().flatten()
+    }
+}
+
+impl Drop for PyCode {
+    fn drop(&mut self) {
+        // Take the slots out so the callback runs without the object's lock held.
+        let Some(slots) = self.co_extra.lock().take() else {
+            return;
+        };
+        crate::builtins::code_extra::free_slots(slots);
     }
 }
 

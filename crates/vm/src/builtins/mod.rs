@@ -15,6 +15,8 @@ pub(crate) mod classmethod;
 pub use classmethod::PyClassMethod;
 pub(crate) mod code;
 pub use code::PyCode;
+pub(crate) mod code_extra;
+pub use code_extra::{CodeExtraFreeFunc, request_code_extra_index};
 pub(crate) mod complex;
 pub use complex::PyComplex;
 pub(crate) mod coroutine;
