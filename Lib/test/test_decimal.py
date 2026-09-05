@@ -5062,7 +5062,6 @@ class CWhitebox(unittest.TestCase):
                    "FloatOperation, Overflow, Rounded, Subnormal, Underflow])"
         self.assertEqual(s, t)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; requires C SignalDict dict-subclass semantics
     def test_c_context_errors(self):
         Context = C.Context
         InvalidOperation = C.InvalidOperation
@@ -5750,12 +5749,10 @@ class CWhitebox(unittest.TestCase):
                 with self.assertRaisesRegex(TypeError, "immutable"):
                     tp.foo = 1
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; requires DISALLOW_INSTANTIATION on a factory-returned type
     def test_c_disallow_instantiation(self):
         ContextManager = type(C.localcontext())
         check_disallow_instantiation(self, ContextManager)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; requires C SignalDict uninitialized-instance state
     def test_c_signaldict_segfault(self):
         # See gh-106263 for details.
         SignalDict = type(C.Context().flags)

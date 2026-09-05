@@ -11,12 +11,19 @@ use rustpython_common::hash;
 use rustpython_common::lock::PyMutex;
 
 use crate::vm::{
-    AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
-    builtins::{PyComplex, PyDict, PyDictRef, PyFloat, PyInt, PyModule, PyStr, PyStrRef, PyTuple, PyTupleRef, PyType, PyTypeRef},
+    AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine, atomic_func,
+    builtins::{
+        PyComplex, PyDict, PyDictRef, PyFloat, PyInt, PyModule, PyStr, PyStrRef, PyTuple,
+        PyTupleRef, PyType, PyTypeRef,
+    },
+    common::lock::LazyLock,
     convert::ToPyResult,
     function::{FuncArgs, OptionalArg, PyComparisonValue},
-    protocol::PyNumberMethods,
-    types::{AsNumber, Comparable, Constructor, Hashable, PyComparisonOp, Representable},
+    protocol::{PyMappingMethods, PyNumberMethods, PySequenceMethods},
+    types::{
+        AsMapping, AsNumber, AsSequence, Comparable, Constructor, Hashable, Iterable,
+        PyComparisonOp, Representable,
+    },
     types::{PyTypeFlags, PyTypeSlots},
 };
 
@@ -41,6 +48,12 @@ mod _decimal {
         type Target = PyMutex<T>;
         fn deref(&self) -> &Self::Target { &self.0 }
     }
+
+    // mpdecimal's 64-bit limits (mirror the module constants set in
+    // module_exec: MAX_PREC/MAX_EMAX/MIN_EMIN).
+    const MAX_PREC: isize = 999_999_999_999_999_999;
+    const MAX_EMAX: isize = 999_999_999_999_999_999;
+    const MIN_EMIN: isize = -999_999_999_999_999_999;
 
     static DEFAULT_CTX: SyncMutex<Option<PyObjectRef>> = SyncMutex(PyMutex::new(None));
 
@@ -221,6 +234,26 @@ mod _decimal {
             .into_iter()
             .filter(|ty| _decimal_core::is_signal(ty))
             .collect()
+    }
+
+    /// Extract the underlying plain dict from a value being assigned to a
+    /// Context's flags/traps: either a plain dict or a live SignalDict.
+    /// Anything else raises TypeError (cpython: "flags/traps must be a
+    /// signal dict").
+    fn signal_dict_value(
+        value: PyObjectRef,
+        name: &str,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyDictRef> {
+        if let Some(sd) = value.downcast_ref::<SignalDict>() {
+            return sd.live_dict(vm);
+        }
+        if value.class().fast_issubclass(vm.ctx.types.dict_type) {
+            return value
+                .downcast::<PyDict>()
+                .map_err(|_| vm.new_type_error(format!("{name} must be a signal dict")));
+        }
+        Err(vm.new_type_error(format!("{name} must be a signal dict")))
     }
 
     /// Validate a list/tuple of signals (used for Context(flags=...) and
@@ -1386,7 +1419,11 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let ctx = current_ctx(vm)?;
             if let Some(nd) = ndigits.into_option() {
                 let n: isize = nd.try_to_value(vm)?;
-                let r = _decimal_core::quantize(vm, &ctx, xd, -n)?;
+                // Negating isize::MIN would overflow; that rounds to an
+                // absurdly large exponent, which quantize rejects as out of
+                // range (InvalidOperation), matching CPython.
+                let exp = n.checked_neg().unwrap_or(isize::MAX);
+                let r = _decimal_core::quantize(vm, &ctx, xd, exp)?;
                 return Ok(PyDecimal::to_py(vm, r));
             }
             let mut coeff = xd.coeff.clone();
@@ -2536,6 +2573,184 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         }
     }
 
+    // SignalDict: mpdecimal's dict-subclass used as the type of a Context's
+    // `flags`/`traps` attributes. The dict data is shared with the owning
+    // Context (a fresh SignalDict view is produced by the `flags`/`traps`
+    // getter); a directly-constructed instance (`SignalDict()`) has no
+    // backing dict and every operation raises `ValueError: invalid signal
+    // dict` (cpython gh-106263 segfault guard).
+    #[pyclass(no_attr, name = "SignalDict", module = "decimal", traverse)]
+    #[derive(Debug, PyPayload)]
+    struct SignalDict {
+        dict: Option<PyDictRef>,
+    }
+
+    #[pyclass(with(AsMapping, AsSequence, Iterable, Comparable, Representable, Constructor))]
+    impl SignalDict {
+        fn live_dict(&self, vm: &VirtualMachine) -> PyResult<PyDictRef> {
+            self.dict.clone().ok_or_else(|| {
+                vm.new_value_error("invalid signal dict".to_string())
+            })
+        }
+
+        fn mapping_len(&self, vm: &VirtualMachine) -> PyResult<usize> {
+            Ok(self.live_dict(vm)?.__len__())
+        }
+
+        fn mapping_getitem(&self, needle: &PyObject, vm: &VirtualMachine) -> PyResult {
+            self.live_dict(vm)?.get_item(needle, vm)
+        }
+
+        fn mapping_setitem(
+            &self,
+            needle: &PyObject,
+            value: PyObjectRef,
+            vm: &VirtualMachine,
+        ) -> PyResult<()> {
+            let d = self.live_dict(vm)?;
+            // Keys must be one of the nine signal exception classes.
+            if !signal_types().iter().any(|ty| needle.is(ty.as_object())) {
+                return Err(vm.new_key_error(needle.to_owned()));
+            }
+            d.set_item(needle, value, vm)
+        }
+
+        fn mapping_delitem(&self, _needle: &PyObject, vm: &VirtualMachine) -> PyResult<()> {
+            // mpdecimal: deleting from a signal dict is always an error.
+            self.live_dict(vm)?;
+            Err(vm.new_value_error("cannot delete items from a signal dict".to_string()))
+        }
+
+        fn mapping_contains(&self, target: &PyObject, vm: &VirtualMachine) -> PyResult<bool> {
+            Ok(self.live_dict(vm)?.contains_key(target, vm))
+        }
+
+        #[pymethod]
+        fn get(
+            zelf: PyRef<Self>,
+            key: PyObjectRef,
+            default: OptionalArg<PyObjectRef>,
+            vm: &VirtualMachine,
+        ) -> PyResult {
+            let d = zelf.live_dict(vm)?;
+            let args = if let Some(def) = default.into_option() {
+                (key, def)
+            } else {
+                (key, vm.ctx.none())
+            };
+            vm.call_method(d.as_object(), "get", args)
+        }
+
+        #[pymethod]
+        fn copy(&self, vm: &VirtualMachine) -> PyResult {
+            let d = self.live_dict(vm)?;
+            vm.call_method(d.as_object(), "copy", ())
+        }
+
+        #[pymethod]
+        fn keys(&self, vm: &VirtualMachine) -> PyResult {
+            let d = self.live_dict(vm)?;
+            vm.call_method(d.as_object(), "keys", ())
+        }
+
+        #[pymethod]
+        fn values(&self, vm: &VirtualMachine) -> PyResult {
+            let d = self.live_dict(vm)?;
+            vm.call_method(d.as_object(), "values", ())
+        }
+
+        #[pymethod]
+        fn items(&self, vm: &VirtualMachine) -> PyResult {
+            let d = self.live_dict(vm)?;
+            vm.call_method(d.as_object(), "items", ())
+        }
+    }
+
+    impl AsMapping for SignalDict {
+        fn as_mapping() -> &'static PyMappingMethods {
+            static AS_MAPPING: PyMappingMethods = PyMappingMethods {
+                length: atomic_func!(|mapping, _vm| {
+                    SignalDict::mapping_downcast(mapping).mapping_len(_vm)
+                }),
+                subscript: atomic_func!(|mapping, needle, vm| {
+                    SignalDict::mapping_downcast(mapping).mapping_getitem(needle, vm)
+                }),
+                ass_subscript: atomic_func!(|mapping, needle, value, vm| {
+                    let zelf = SignalDict::mapping_downcast(mapping);
+                    if let Some(value) = value {
+                        zelf.mapping_setitem(needle, value, vm)
+                    } else {
+                        zelf.mapping_delitem(needle, vm)
+                    }
+                }),
+            };
+            &AS_MAPPING
+        }
+    }
+
+    impl AsSequence for SignalDict {
+        fn as_sequence() -> &'static PySequenceMethods {
+            static AS_SEQUENCE: LazyLock<PySequenceMethods> = LazyLock::new(|| PySequenceMethods {
+                contains: atomic_func!(|seq, target, vm| {
+                    SignalDict::sequence_downcast(seq).mapping_contains(target, vm)
+                }),
+                ..PySequenceMethods::NOT_IMPLEMENTED
+            });
+            &AS_SEQUENCE
+        }
+    }
+
+    impl Iterable for SignalDict {
+        fn iter(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
+            let d = zelf.live_dict(vm)?;
+            vm.call_method(d.as_object(), "__iter__", ())
+        }
+    }
+
+    impl Comparable for SignalDict {
+        fn cmp(
+            zelf: &Py<Self>,
+            other: &PyObject,
+            op: PyComparisonOp,
+            vm: &VirtualMachine,
+        ) -> PyResult<PyComparisonValue> {
+            op.eq_only(|| {
+                let self_d = zelf.live_dict(vm)?;
+                if let Some(other_sd) = other.downcast_ref::<SignalDict>() {
+                    let other_d = other_sd.live_dict(vm)?;
+                    let eq = vm.bool_eq(self_d.as_object(), other_d.as_object())?;
+                    return Ok(PyComparisonValue::Implemented(eq));
+                }
+                if let Some(other_d) = other.downcast_ref::<PyDict>() {
+                    let eq = vm.bool_eq(self_d.as_object(), other_d.as_object())?;
+                    return Ok(PyComparisonValue::Implemented(eq));
+                }
+                Ok(PyComparisonValue::NotImplemented)
+            })
+        }
+    }
+
+    impl Representable for SignalDict {
+        fn repr(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyRef<PyStr>> {
+            let d = zelf.live_dict(vm)?;
+            let r = vm.call_method(d.as_object(), "__repr__", ())?;
+            r.downcast::<PyStr>().map_err(|o| {
+                vm.new_type_error(format!("unexpected repr result: {}", o.class()))
+            })
+        }
+    }
+
+    impl Constructor for SignalDict {
+        type Args = ();
+
+        fn py_new(_cls: &Py<PyType>, _args: (), vm: &VirtualMachine) -> PyResult<Self> {
+            // Direct construction yields an uninitialized SignalDict whose
+            // backing dict is None.
+            let _ = vm;
+            Ok(SignalDict { dict: None })
+        }
+    }
+
     #[pyattr(name = "Context")]
     #[pyclass(name = "Context", module = "decimal", traverse)]
     #[derive(Debug, PyPayload)]
@@ -2609,6 +2824,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             if v < 1 {
                 return Err(vm.new_value_error("prec must be >= 1".to_string()));
             }
+            if v > MAX_PREC {
+                return Err(vm.new_value_error("prec must be <= MAX_PREC".to_string()));
+            }
             *self.prec.lock() = v;
             Ok(())
         }
@@ -2638,6 +2856,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             if v > 0 {
                 return Err(vm.new_value_error("Emin must be <= 0".to_string()));
             }
+            if v < MIN_EMIN {
+                return Err(vm.new_value_error("Emin must be >= MIN_EMIN".to_string()));
+            }
             *self.emin.lock() = v;
             Ok(())
         }
@@ -2653,6 +2874,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .try_to_primitive(vm)?;
             if v < 0 {
                 return Err(vm.new_value_error("Emax must be >= 0".to_string()));
+            }
+            if v > MAX_EMAX {
+                return Err(vm.new_value_error("Emax must be <= MAX_EMAX".to_string()));
             }
             *self.emax.lock() = v;
             Ok(())
@@ -2690,16 +2914,21 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             Ok(())
         }
         #[pygetset]
-        fn traps(&self) -> PyDictRef {
-            self.traps.lock().clone()
+        fn traps(&self, vm: &VirtualMachine) -> PyObjectRef {
+            // Return a live SignalDict view sharing this Context's traps dict.
+            SignalDict { dict: Some(self.traps.lock().clone()) }.into_ref(&vm.ctx).into()
         }
         #[pygetset(setter)]
         fn set_traps(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
-            // CPython: non-dict -> TypeError; dict missing known signals -> KeyError.
-            if !value.class().fast_issubclass(vm.ctx.types.dict_type) {
-                return Err(vm.new_type_error("traps must be a signal dict".to_string()));
+            let dict_value = signal_dict_value(value, "traps", vm)?;
+            // CPython: dict missing known signals -> KeyError; extra non-signal
+            // keys -> KeyError.
+            for (k, _) in dict_value.items_vec() {
+                if !signal_types().iter().any(|ty| k.is(ty.as_object())) {
+                    let msg: PyObjectRef = vm.ctx.new_str("invalid key in traps").into();
+                    return Err(vm.new_key_error(msg));
+                }
             }
-            let value_ref = value.downcast_ref::<PyDict>().unwrap();
             // Every SIGNAL must be present in the dict (by exception class);
             // DecimalException and sub-derivatives are not signals.
             const SIGNALS: &[&str] = &[
@@ -2708,25 +2937,28 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             ];
             for name in SIGNALS {
                 let ty = exc().by_name(name).unwrap();
-                if value_ref.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
+                if dict_value.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
                     let msg: PyObjectRef = vm.ctx.new_str(format!("{} not in traps", ty.name())).into();
                     return Err(vm.new_key_error(msg));
                 }
             }
-            // PyDictRef is PyRef<PyDict>; clone from the owned value.
-            *self.traps.lock() = value.downcast::<PyDict>().unwrap();
+            *self.traps.lock() = dict_value;
             Ok(())
         }
         #[pygetset]
-        fn flags(&self) -> PyDictRef {
-            self.flags.lock().clone()
+        fn flags(&self, vm: &VirtualMachine) -> PyObjectRef {
+            // Return a live SignalDict view sharing this Context's flags dict.
+            SignalDict { dict: Some(self.flags.lock().clone()) }.into_ref(&vm.ctx).into()
         }
         #[pygetset(setter)]
         fn set_flags(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
-            if !value.class().fast_issubclass(vm.ctx.types.dict_type) {
-                return Err(vm.new_type_error("flags must be a signal dict".to_string()));
+            let dict_value = signal_dict_value(value, "flags", vm)?;
+            for (k, _) in dict_value.items_vec() {
+                if !signal_types().iter().any(|ty| k.is(ty.as_object())) {
+                    let msg: PyObjectRef = vm.ctx.new_str("invalid key in flags").into();
+                    return Err(vm.new_key_error(msg));
+                }
             }
-            let value_ref = value.downcast_ref::<PyDict>().unwrap();
             // Every SIGNAL must be present (see set_traps).
             const SIGNALS: &[&str] = &[
                 "Clamped", "InvalidOperation", "DivisionByZero", "Inexact",
@@ -2734,12 +2966,12 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             ];
             for name in SIGNALS {
                 let ty = exc().by_name(name).unwrap();
-                if value_ref.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
+                if dict_value.get_item_opt(ty.as_object(), vm).unwrap_or(None).is_none() {
                     let msg: PyObjectRef = vm.ctx.new_str(format!("{} not in flags", ty.name())).into();
                     return Err(vm.new_key_error(msg));
                 }
             }
-            *self.flags.lock() = value.downcast::<PyDict>().unwrap();
+            *self.flags.lock() = dict_value;
             Ok(())
         }
 
@@ -3896,6 +4128,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 if pv < 1 {
                     return Err(vm.new_value_error("prec must be >= 1".to_string()));
                 }
+                if pv > MAX_PREC {
+                    return Err(vm.new_value_error("prec must be <= MAX_PREC".to_string()));
+                }
                 c.prec = PyMutex::new(pv);
             }
             if let Some(v) = get_field("rounding") {
@@ -3912,12 +4147,18 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 if ev > 0 {
                     return Err(vm.new_value_error("Emin must be <= 0".to_string()));
                 }
+                if ev < MIN_EMIN {
+                    return Err(vm.new_value_error("Emin must be >= MIN_EMIN".to_string()));
+                }
                 c.emin = PyMutex::new(ev);
             }
             if let Some(v) = get_field("Emax") {
                 let ev: isize = v.try_to_value(vm)?;
                 if ev < 0 {
                     return Err(vm.new_value_error("Emax must be >= 0".to_string()));
+                }
+                if ev > MAX_EMAX {
+                    return Err(vm.new_value_error("Emax must be <= MAX_EMAX".to_string()));
                 }
                 c.emax = PyMutex::new(ev);
             }
@@ -3997,15 +4238,18 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         }
     }
 
-    #[pyattr(name = "localcontext")]
-    #[pyclass(name = "localcontext", module = "decimal", traverse)]
+    // The ContextManager type returned by the localcontext() function.
+    // Instances can only be created from Rust (via localcontext() below);
+    // direct Python-level instantiation is disallowed, mirroring CPython's
+    // Py_TPFLAGS_DISALLOW_INSTANTIATION on _decimal.localcontext's result.
+    #[pyclass(no_attr, name = "localcontext", module = "decimal", traverse)]
     #[derive(Debug, PyPayload)]
     struct LocalContext {
         saved: PyMutex<Option<PyObjectRef>>,
         ctx_arg: Option<PyObjectRef>,
     }
 
-    #[pyclass(with(Constructor))]
+    #[pyclass(flags(DISALLOW_INSTANTIATION))]
     impl LocalContext {
         #[pymethod]
         fn __enter__(&self, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
@@ -4036,54 +4280,62 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         }
     }
 
-    impl Constructor for LocalContext {
-        type Args = FuncArgs;
-
-        fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            // localcontext(ctx=None, **kwargs): 'ctx' may be given as a
-            // keyword; treat it as the first positional argument.
-            // An explicit None is the same as omitting the argument.
-            let mut positional: Vec<PyObjectRef> = args.args.to_vec();
-            if let Some(ctx) = args.get_optional_kwarg("ctx") {
-                if positional.is_empty() {
-                    positional.push(ctx);
-                }
+    // localcontext(ctx=None, **kwargs): 'ctx' may be given as a keyword;
+    // treated as the first positional argument. An explicit None is the
+    // same as omitting the argument. Returns a ContextManager (LocalContext)
+    // instance; the LocalContext type itself cannot be instantiated from
+    // Python (DISALLOW_INSTANTIATION), matching CPython.
+    #[pyfunction]
+    fn localcontext(args: FuncArgs, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let mut positional: Vec<PyObjectRef> = args.args.to_vec();
+        if let Some(ctx) = args.get_optional_kwarg("ctx") {
+            if positional.is_empty() {
+                positional.push(ctx);
             }
-            let ctx_arg = if positional.is_empty()
-                || positional[0].is(&vm.ctx.none())
-            {
-                None
-            } else {
-                Some(positional[0].clone())
-            };
-            // CPython: localcontext accepts kwargs (other than ctx) to modify
-            // the context copy. If present, create a Context with them.
-            let ctx_arg = if args.kwargs.is_empty() {
+        }
+        let ctx_arg = if positional.is_empty()
+            || positional[0].is(&vm.ctx.none())
+        {
+            None
+        } else {
+            Some(positional[0].clone())
+        };
+        // CPython: localcontext accepts kwargs (other than ctx) to modify
+        // the context copy. If present, create a Context with them.
+        let ctx_arg = if args.kwargs.is_empty() {
+            ctx_arg
+        } else {
+            let filtered: Vec<(rustpython_common::wtf8::Wtf8Buf, PyObjectRef)> = args
+                .kwargs
+                .iter()
+                .filter(|(k, _)| k.as_bytes() != b"ctx")
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if filtered.is_empty() {
                 ctx_arg
             } else {
-                let filtered: Vec<(rustpython_common::wtf8::Wtf8Buf, PyObjectRef)> = args
-                    .kwargs
-                    .iter()
-                    .filter(|(k, _)| k.as_bytes() != b"ctx")
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                if filtered.is_empty() {
-                    ctx_arg
-                } else {
-                    let ctx_cls: PyObjectRef = vm
-                        .import("_decimal", 0)
-                        .and_then(|m| m.get_attr("Context", vm))
-                        .unwrap_or_else(|_| vm.ctx.none());
-                    let pos = positional.clone();
-                    let kw: rustpython_vm::function::KwArgs = filtered.into_iter().collect();
-                    Some(vm.invoke(&ctx_cls, FuncArgs::new(pos, kw))?)
-                }
-            };
-            Ok(LocalContext {
-                saved: PyMutex::new(None),
-                ctx_arg,
-            })
+                let ctx_cls: PyObjectRef = vm
+                    .import("_decimal", 0)
+                    .and_then(|m| m.get_attr("Context", vm))
+                    .unwrap_or_else(|_| vm.ctx.none());
+                let pos = positional.clone();
+                let kw: rustpython_vm::function::KwArgs = filtered.into_iter().collect();
+                Some(vm.invoke(&ctx_cls, FuncArgs::new(pos, kw))?)
+            }
+        };
+        // The ctx argument must be a Context (or omitted). Anything else is
+        // a TypeError (cpython: localcontext("xyz") -> TypeError).
+        if let Some(ctx) = &ctx_arg {
+            if ctx.downcast_ref::<PyContext>().is_none() {
+                return Err(vm.new_type_error("context must be a Context object".to_string()));
+            }
         }
+        Ok(LocalContext {
+            saved: PyMutex::new(None),
+            ctx_arg,
+        }
+        .into_ref(&vm.ctx)
+        .into())
     }
 
     #[pyfunction]
