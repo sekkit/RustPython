@@ -602,6 +602,20 @@ pub(crate) fn apply_context(
         if ctx.trap(vm, "Clamped")? {
             return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
         }
+    } else if (new_exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1 < ctx.emin as i128 {
+        // Subnormal: the *adjusted* exponent (exp + digits - 1) is below Emin
+        // but the stored exponent is at/above Etiny, so no underflow; the
+        // Subnormal signal is set. A zero coefficient is not subnormal
+        // (CPython: only nonzero values get the Subnormal flag). Using the
+        // adjusted exponent matters at the boundary: 1.00E-999 with
+        // prec=3/Emin=-999 has adjusted exponent -999 == Emin (not subnormal),
+        // while 1E-1000 has adjusted -1000 < Emin (subnormal).
+        if !dec.is_zero() {
+            ctx.set_flag(vm, "Subnormal")?;
+            if ctx.trap(vm, "Subnormal")? {
+                return Err(ctx_trap_exc(vm, "Subnormal", "subnormal"));
+            }
+        }
     } else if (dec.exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1 > ctx.emax as i128 {
         // Overflow is determined by the adjusted exponent, not just the
         // stored coefficient exponent: 999 * 1E+425000000 has adjusted
