@@ -71,6 +71,28 @@
   2. 物化时从 tp_base（offset 256）递归物化 MRO，并设置 __module__；
   3. crash_diag 补当前 Python 帧（file:line）定位原生 AV 源码位置。
 
+## 第五关：LOAD_ATTR AV（已修复，commit 92d761431）
+- 现象：`_multiarray_umath` init 注册首个 DType 后，
+  `ExecutingFrame::load_attr` NATIVE-CRASH（rcx=裸 CPython 对象、rax 垃圾值）。
+- 根因：`specialize_load_attr`（load_attr 包装内、slow 路径之前）直接
+  `obj.class()`——对裸 CPython 布局对象（numpy 经 C 参数打包直接进帧、未注册
+  foreign）读取 CPython 头部字节当 RustPython PyType，崩溃。`get_attr_inner`
+  已有物化处理，但 specialize 抢先崩溃无法到达。
+- 修复：specialize_load_attr 开头探测物化回调（其内部对非 type 对象安全返回
+  NULL）——is_foreign 或物化命中即跳过特化、回退 slow 路径（slow 的
+  get_attr_inner 尝试物化）。
+- 验证：LOAD_ATTR AV 越过；numpy 推进到第六关——Rust std
+  `windows::decode_error_kind` 崩溃（rdx=垃圾值被当 Windows os error 码）。
+
+## 第六关：decode_error_kind 崩溃（判定：待专职）
+- 现象：`std::sys::io::error::windows::decode_error_kind` (read) 0x10 AV，
+  rdx=0xbd95b944f0 垃圾值被当错误码。
+- 性质：numpy 某 Windows API 路径（console/io/编码检测）产生的错误状态经
+  std::io::Error 转换时收到垃圾值；与物化机制关联渐远，属 numpy Windows
+  深度兼容路径。诊断需跟踪 numpy C 侧 Windows API 调用链，成本高。
+- 状态：记录为专职项；numpy 已从 AV 崩溃连闯六关（远超"越过 PyList 墙"
+  原始目标），每关修复均已合并主仓。
+
 ## 方法论
 - 独立 worktree（RustPython-wt-aa）实施，主仓保持稳定；验证后 cherry-pick 回主仓。
 - 每关修复均先加针对性调试 eprintln → 重建（4-8 分钟）→ 观察 numpy 下一状态 → 清除调试 → 提交。
