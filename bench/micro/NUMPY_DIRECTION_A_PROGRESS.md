@@ -29,14 +29,18 @@
 ## 第六关（待专职）细节
 - 现象：`std::sys::io::error::windows::decode_error_kind` (read) 0x10 AV，
   rdx=垃圾值被当 Windows os error 码。
-- 性质：numpy 某 Windows API 路径（console/io/编码检测）产生的错误状态经
-  std::io::Error 转换时收到垃圾值。诊断需跟踪 numpy C 侧 Windows API 调用链
-  （numpy 无源码、仅 .pyd），成本高。
-- 判定：记录为 numpy Windows 深度兼容专职项。numpy 已六关连闯，远超
-  "越过 PyList 墙"原始目标。
-- 建议：若专职推进，先定位 decode_error_kind 的调用源（crash_diag 回溯
-  显示 fn=''——无 Python 帧信息，需给 crash_diag 补当前 Python 帧
-  file:line 定位原生 AV 源码位置）。
+- **判定升级：广泛 C-API 语义缺口（架构墙），非单一可修 bug**。证据：
+  - 崩溃链符号化不可靠（`rp_va_call_method_objargs` → `_Py_HashDouble` →
+    decode_error_kind，native crash 在 stripped exe 上无可靠 Python 帧）；
+  - 更换启动参数（`-W ignore` / NPY_DISABLE_CPU_FEATURES）后崩溃点完全不
+    同（Py_SetRecursionLimit 读 0x1）——numpy 在 import 中**多处**调用
+    C-API 获得垃圾值，是广泛不兼容而非单点缺陷；
+  - 与 numpy 100% 兼容需要 cpyext 级完整类型/C-API 语义的既有判定一致。
+- 结论：numpy 连闯六关（前六关为明确 bug 逐个修复）后已抵达广泛架构墙
+  区域；第六关起需要 cpyext 级专职大工程，非本会话可收敛。
+- 建议：若专职推进，先给 crash_diag 补当前 Python 帧（file:line）以可靠
+  定位原生 AV；再从 `_Py_HashDouble`/`Py_SetRecursionLimit` 等被误用入口
+  专项核查。
 
 ## 关键发现（方法论）
 - exe 启动走 `init_main_interpreter`（src/lib.rs:136）而非 `Py_InitializeEx`，
