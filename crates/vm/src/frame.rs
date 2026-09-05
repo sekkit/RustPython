@@ -9422,6 +9422,32 @@ impl ExecutingFrame<'_> {
             return;
         }
         let obj = self.top_value();
+
+        // DSH-FIX: a bare CPython-layout object (e.g. a value a C extension
+        // pushed through the boundary that we could not materialise yet) has no
+        // usable RustPython class; calling obj.class() here would read garbage
+        // from its CPython-shaped header and crash. Skip specialisation and let
+        // the slow path (which tries materialisation) handle it. The
+        // materialiser itself safely declines non-type objects (returns NULL),
+        // so probing it is the reliable guard for both registered and
+        // unregistered CPython-layout objects.
+        let raw = obj.as_object().as_raw();
+        let needs_slow = crate::object::foreign_dispatch::is_foreign(raw)
+            || crate::object::foreign_dispatch::materialize_cpy_type_fn().is_some_and(|m| {
+                unsafe { !m(raw as *mut _).is_null() }
+            });
+        if needs_slow {
+            unsafe {
+                self.code.instructions.write_adaptive_counter(
+                    cache_base,
+                    bytecode::adaptive_counter_backoff(
+                        self.code.instructions.read_adaptive_counter(cache_base),
+                    ),
+                );
+            }
+            return;
+        }
+
         let cls = obj.class();
 
         // Check if this is a type object (class attribute access)
