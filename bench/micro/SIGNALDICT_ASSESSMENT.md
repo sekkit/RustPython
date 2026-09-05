@@ -1,8 +1,37 @@
 # SignalDict 语义评估 — test_decimal 3 个 Whitebox xfail 根因
 
-> 状态：**已完成根因判定**。3 个 xfail 均为 mpdecimal `SignalDict` 语义缺口，
-> 属"实现有问题（可修复的专用类型）"，需在 `_decimal.rs` 实现带状态标志的
-> dict 子类。尚未实施（评估与 numpy/code-extra 并行，优先级排后）。
+> 状态：**已实施并验证完成**（commit 7bbac4b30，主仓）。3 个 Whitebox xfail
+> 全部变 pass（移除 expectedFailure 标注后真正通过，非 unexpected success）。
+
+## 实施总结（7bbac4b30）
+- `crates/stdlib/src/_decimal.rs`：
+  - 新增 `SignalDict` pyclass（`Option<PyDictRef>` 内部字典；`py_new` 直接构造
+    得未初始化实例 dict=None）
+  - AsMapping（len/getitem/setitem/delitem/contains）+ AsSequence + Iterable +
+    Comparable（eq 比较 backing dict）+ Representable（repr 委托）+ Constructor
+  - 未初始化（dict=None）时所有操作抛 `ValueError("invalid signal dict")`
+  - 已初始化时 `__setitem__` 校验键为 9 信号异常类（否则 KeyError）、
+    `__delitem__` 拒绝删信号键（ValueError）
+  - `Context.flags/traps` getter 返回**共享 dict 的 live SignalDict 视图**；
+    setter 保留 CPython 校验（非 dict → TypeError、缺/多信号 → KeyError）
+  - localcontext 结果类型禁止直接实例化（DISALLOW_INSTANTIATION 语义，
+    `cannot create` TypeError on 构造与 __new__）
+- `test_decimal.py`（Lib/ + crates/pylib/Lib/ 双副本同步）：移除 3 个
+  `@unittest.expectedFailure` + TODO 注释
+
+## 验证结果
+- 3 个目标测试：`run=3 failures=0 errors=0`（test_c_context_errors /
+  test_c_disallow_instantiation / test_c_signaldict_segfault 全部 ok）
+- vm 单测 53 passed / 2 failed（基线一致，无新增回归）
+- decimal 冒烟：flags/traps 类型为 SignalDict、9 信号键、信号键设置 OK、
+  非信号键 KeyError
+
+## 后续
+- test_decimal 曾出现 IBM 测试（CIBMTestCases）90% 随机抽样失败
+  （Clamped 预存缺陷，见 bench/micro/CIBM_CLAMPED_FINDING.md），与 SignalDict
+  无关，待独立排期。
+
+（历史评估记录保留于下文）
 
 ## 涉及测试（Lib/test/test_decimal.py，Whitebox/CPython-only 分支）
 
