@@ -518,6 +518,12 @@ pub(crate) fn coeff_digits_of(coeff: &BigInt) -> usize {
     if t.is_empty() { 1 } else { t.len() }
 }
 
+/// Number of trailing decimal zeros in a coefficient (e.g. 1200 -> 2).
+fn trailing_zeros_of(coeff: &BigInt) -> usize {
+    let s = coeff.to_string();
+    s.chars().rev().take_while(|&c| c == '0').count()
+}
+
 /// Apply the context to a finite result: round to precision, apply exponent
 /// limits, and set Inexact/Rounded/Clamped/Underflow/Overflow flags.
 pub(crate) fn apply_context(
@@ -592,19 +598,25 @@ pub(crate) fn apply_context(
         if ctx.trap(vm, "Underflow")? {
             return Err(ctx_trap_exc(vm, "Underflow", "underflow"));
         }
-        // clamp to etiny
+        // clamp to etiny (round-half-up the discarded part, mpdecimal-style)
         let shift = etiny - new_exp;
         let pow = BigInt::from(10).pow(shift as u32);
         let (q, r) = (&dec.coeff / &pow, &dec.coeff % &pow);
-        dec.coeff = q;
+        let round_up = (&r * BigInt::from(2)) >= pow;
+        dec.coeff = if round_up { q + BigInt::from(1) } else { q };
         dec.exp = etiny;
         if r != BigInt::from(0) {
             ctx.set_flag(vm, "Inexact")?;
             ctx.set_flag(vm, "Rounded")?;
         }
-        ctx.set_flag(vm, "Clamped")?;
-        if ctx.trap(vm, "Clamped")? {
-            return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+        // Clamped only when the clamped result is zero (the value was flushed
+        // to zero at Etiny): 0.001E-999 -> 0E-1001 is Clamped, while
+        // 0.009E-999 -> 1E-1001 (rounds up to a nonzero subnormal) is not.
+        if dec.coeff == BigInt::from(0) {
+            ctx.set_flag(vm, "Clamped")?;
+            if ctx.trap(vm, "Clamped")? {
+                return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+            }
         }
     } else if adj_exp < ctx.emin as i128 {
         // Subnormal: the *adjusted* exponent (exp + digits - 1) is below Emin
@@ -618,6 +630,50 @@ pub(crate) fn apply_context(
             ctx.set_flag(vm, "Subnormal")?;
             if ctx.trap(vm, "Subnormal")? {
                 return Err(ctx_trap_exc(vm, "Subnormal", "subnormal"));
+            }
+            // mpdecimal normalises subnormal results by stripping trailing
+            // zeros until the *stored* exponent reaches Etiny (value
+            // unchanged, so Rounded but not Inexact). 100E-1002 with
+            // prec=3/Emin=-999/Etiny=-1001 strips one zero -> 10E-1001
+            // (1.0E-1000), flagged Rounded+Subnormal. If stripping all
+            // trailing zeros still leaves the exponent below Etiny, the value
+            // cannot be represented exactly and it falls through to the
+            // underflow/clamp handling below.
+            let k = trailing_zeros_of(&dec.coeff);
+            if (new_exp + k as isize) < etiny {
+                // Underflow: even at minimum precision the exponent is below
+                // Etiny; round to Etiny (inexact -> Inexact+Rounded). No
+                // Clamped here: the result is an ordinary rounding up into the
+                // subnormal Etiny range, not a zero clamp (CPython 0.999E-999
+                // -> 1.00E-999 with Inexact Rounded Subnormal Underflow).
+                ctx.set_flag(vm, "Subnormal")?; // already set above
+                ctx.set_flag(vm, "Underflow")?;
+                if ctx.trap(vm, "Underflow")? {
+                    return Err(ctx_trap_exc(vm, "Underflow", "underflow"));
+                }
+                let shift = (etiny - new_exp) as usize;
+                let pow = BigInt::from(10).pow(shift as u32);
+                let (q, r) = (&dec.coeff / &pow, &dec.coeff % &pow);
+                // Half-up rounding on the discarded part (mpdecimal rounds a
+                // subnormal to the closest representable; ties round up).
+                let round_up = (&r * BigInt::from(2)) >= pow;
+                dec.coeff = if round_up { q + BigInt::from(1) } else { q };
+                dec.exp = etiny;
+                ctx.set_flag(vm, "Inexact")?;
+                ctx.set_flag(vm, "Rounded")?;
+            } else if new_exp < etiny {
+                // Strip trailing zeros up to Etiny (value-preserving), Rounded.
+                let strip = (etiny - new_exp) as usize;
+                let strip = strip.min(k);
+                if strip > 0 {
+                    let pow = BigInt::from(10).pow(strip as u32);
+                    dec.coeff = &dec.coeff / &pow;
+                    dec.exp = etiny;
+                    ctx.set_flag(vm, "Rounded")?;
+                    if ctx.trap(vm, "Rounded")? {
+                        return Err(ctx_trap_exc(vm, "Rounded", "rounded result"));
+                    }
+                }
             }
         }
     } else if (dec.exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1 > ctx.emax as i128 {

@@ -3305,9 +3305,24 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         #[pymethod]
         fn abs(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
+            let ctx = self.ctx();
+            // CPython: a signaling NaN operand raises InvalidOperation; the
+            // result is a quiet NaN (payload and sign preserved).
+            if xd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "abs with sNaN"));
+                }
+                let mut n = xd.clone();
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
+            }
+            // NaN keeps its sign (abs(-NaN22) == -NaN22); Infinity loses it.
+            if xd.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, xd.clone()));
+            }
             let mut d = xd.clone();
             d.sign = false;
-            let ctx = self.ctx();
             let r = _decimal_core::apply_context(vm, &ctx, d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3316,6 +3331,15 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         fn minus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
+            if xd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "minus with sNaN"));
+                }
+                let mut n = xd.clone();
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
+            }
             let r = _decimal_core::apply_context(vm, &ctx, xd)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3324,6 +3348,15 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         fn plus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
+            if xd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "plus with sNaN"));
+                }
+                let mut n = xd.clone();
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
+            }
             let r = _decimal_core::apply_context(vm, &ctx, xd)?;
             Ok(PyDecimal::to_py(vm, r))
         }
