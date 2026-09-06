@@ -52,12 +52,14 @@ signal、sqrt）OK。
 | abs.decTest | 0/all | ✅ 全过（修复覆盖） |
 | copy.decTest | 0/43 | ✅ 全过 |
 | rescale.decTest | 0/618 | ✅ 全过 |
+| tointegral.decTest | 0/168 | ✅ 全过（b74b5fdef：舍入/表示/exact 信号/sNaN） |
 | compare.decTest | 59/639 | ⏳ 独立缺陷（比较语义） |
-| tointegral.decTest | 86/168 | ⏳ 独立缺陷（取整语义） |
 | quantize.decTest | 132/776 | ⏳ 独立缺陷（量化/舍入语义） |
 
-copy/rescale 与 abs 同领域（subnormal/特殊值处理），修复已迁移生效。
-compare/tointegral/quantize 暴露**独立语义领域**缺陷，需逐个专项诊断
+copy/rescale/abs 同领域（subnormal/特殊值处理），修复迁移生效；
+tointegral 经 b74b5fdef 修复（round_to_prec 按 rounding 舍入、exp≥0 保持
+表示、exact 设 Inexact/Rounded、sNaN 信号）后全过。
+compare/quantize 暴露**独立语义领域**缺陷，需逐个专项诊断
 （每个是单独的 mpdecimal 语义对齐工作）。抽样模式 test_decimal 失败数
 在 115-122 波动区间（与这些文件的主要失败对应），无新增回归。
 
