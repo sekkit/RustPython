@@ -29,12 +29,24 @@
   旧判定（-1002 < -1001）误发 Underflow。
 - absx213 从 raise 变为仅表示形式差异。
 
-## 剩余（判定：专项/深水区）
-- **尾零规范化**：absx213 得 `1.00E-1000` 而期望 `1.0E-1000`——subnormal 条件下
-  mpdecimal 对系数做尾零规范化，RustPython 保留尾零。影响多个 absx2xx case。
-- **absx235 Clamped**：`abs -0.999E-999` 期望无 Clamped 但 C 实现置位（原本
-  触发本调查的 case）；修复上两项后已非首个失败，需继续推进。
-- 全量 `.decTest` 逐文件验证（TEST_ALL=True）仍有更多边界 case 待收敛。
+### 3. 尾零规范化 + half-up Etiny clamp + sNaN 语义（f4ca22daf）
+- **尾零规范化**：subnormal 结果去尾零直至存储指数达 Etiny（值不变→Rounded
+  非 Inexact）；若全去尾零仍 exp<Etiny，则 half-up 舍入到 Etiny
+  （Underflow+Inexact+Rounded）。
+- **Clamped 仅当 clamp 后系数为零**：0.001E-999→0E-1001 Clamped；
+  0.009E-999→1E-1001 无 Clamped。
+- **sNaN signal**：一元 abs/minus/plus 遇 signaling-NaN 置 InvalidOperation
+  并返回 quiet NaN（payload+sign 保留）；abs 对 quiet NaN 保留符号
+  （-NaN22→-NaN22）、对 Infinity 去符号。
+- 新增辅助 trailing_zeros_of。
+
+## 里程碑：abs.decTest 全部通过（TEST_ALL=True）
+此前首个失败固定在 absx215（0.999E-999），经上述三处修复后
+`abs.decTest` 在 TEST_ALL=True（绕过 90% 抽样）下**全部 case 通过**。
+验证：vm 单测 53/2 基线、rustpython-stdlib 8/0、decimal 冒烟（sNaN
+signal、sqrt）OK。其余 .decTest 文件（add/sub/...）的全量收敛为
+后续专职项（TEST_ALL=True 全量执行较慢；抽样模式失败数在 115-122
+波动区间，无回归迹象）。
 
 ## 根因方向
 - C 实现（`_decimal.rs`，Rust/mpdecimal 语义）与 P 实现（`_pydecimal`，纯 Python）
