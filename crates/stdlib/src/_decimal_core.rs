@@ -581,8 +581,12 @@ pub(crate) fn apply_context(
     }
     // exponent range check
     let etiny = ctx.emin - (ctx.prec as isize - 1);
-    if new_exp < etiny {
-        // Underflow / Subnormal
+    let adj_exp = (new_exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1;
+    if adj_exp < etiny as i128 {
+        // Underflow / Subnormal: mpdecimal decides Underflow on the *adjusted*
+        // exponent (exp + digits - 1) falling below Etiny, not the stored
+        // exponent. 100E-1002 (prec=3, Emin=-999) has adjusted -1000,
+        // Etiny -1001 -> no underflow, only Subnormal.
         ctx.set_flag(vm, "Subnormal")?;
         ctx.set_flag(vm, "Underflow")?;
         if ctx.trap(vm, "Underflow")? {
@@ -602,14 +606,14 @@ pub(crate) fn apply_context(
         if ctx.trap(vm, "Clamped")? {
             return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
         }
-    } else if (new_exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1 < ctx.emin as i128 {
+    } else if adj_exp < ctx.emin as i128 {
         // Subnormal: the *adjusted* exponent (exp + digits - 1) is below Emin
-        // but the stored exponent is at/above Etiny, so no underflow; the
-        // Subnormal signal is set. A zero coefficient is not subnormal
-        // (CPython: only nonzero values get the Subnormal flag). Using the
-        // adjusted exponent matters at the boundary: 1.00E-999 with
-        // prec=3/Emin=-999 has adjusted exponent -999 == Emin (not subnormal),
-        // while 1E-1000 has adjusted -1000 < Emin (subnormal).
+        // but at/above Etiny, so no underflow; the Subnormal signal is set. A
+        // zero coefficient is not subnormal (CPython: only nonzero values get
+        // the Subnormal flag). Using the adjusted exponent matters at the
+        // boundary: 1.00E-999 with prec=3/Emin=-999 has adjusted exponent -999
+        // == Emin (not subnormal), while 1E-1000 has adjusted -1000 < Emin
+        // (subnormal).
         if !dec.is_zero() {
             ctx.set_flag(vm, "Subnormal")?;
             if ctx.trap(vm, "Subnormal")? {
