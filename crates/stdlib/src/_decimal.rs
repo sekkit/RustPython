@@ -3776,25 +3776,90 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             self.to_integral_value(x, vm)
         }
 
+        /// to_integral_exact: like to_integral_value, but sets the Inexact and
+        /// Rounded signals when the fractional part is discarded.
         #[pymethod]
         fn to_integral_exact(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            self.to_integral_value(x, vm)
+            let xd = to_dec_ctx(&x, vm)?;
+            let ctx = self.ctx();
+            // A signaling-NaN operand signals InvalidOperation and becomes a
+            // quiet NaN (payload and sign preserved).
+            if xd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "to_integral_exact with sNaN"));
+                }
+                let mut n = xd.clone();
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
+            }
+            let r = if xd.exp < 0 {
+                let prec = _decimal_core::coeff_digits_of(&xd.coeff) as isize + xd.exp;
+                let (coeff, _exp, inexact) =
+                    _decimal_core::round_to_prec(vm, &ctx, xd.sign, &xd.coeff, xd.exp, prec)?;
+                if inexact {
+                    ctx.set_flag(vm, "Inexact")?;
+                    ctx.set_flag(vm, "Rounded")?;
+                    if ctx.trap(vm, "Inexact")? {
+                        return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                    }
+                }
+                _decimal_core::Dec {
+                    sign: xd.sign,
+                    coeff,
+                    exp: 0,
+                    special: xd.special,
+                }
+            } else {
+                _decimal_core::Dec { ..xd.clone() }
+            };
+            let r = _decimal_core::apply_context(vm, &ctx, r)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
         fn to_integral_value(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
-            let mut coeff = xd.coeff.clone();
-            if xd.exp < 0 {
-                let pow = BigInt::from(10).pow((-xd.exp) as u32);
-                coeff = &coeff / &pow;
-            } else if xd.exp > 0 {
-                coeff *= BigInt::from(10).pow(xd.exp as u32);
+            // A signaling-NaN operand signals InvalidOperation and becomes a
+            // quiet NaN (payload and sign preserved).
+            if xd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "to_integral with sNaN"));
+                }
+                let mut n = xd.clone();
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
             }
-            let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
-                sign: xd.sign, coeff, exp: 0, special: xd.special,
-            })?;
+            // Round the coefficient to an integral value following the
+            // context's rounding mode. For a negative exponent the fractional
+            // digits are discarded (round_to_prec with the integer-digit
+            // precision); the result exponent is 0. For a non-negative
+            // exponent the value is already integral: keep the original
+            // coefficient/exponent representation (56267E+3 -> 5.6267E+7,
+            // not a zero-padded plain integer).
+            let r = if xd.exp < 0 {
+                // Keep only the integer part: discard -exp fractional digits
+                // following the context rounding. round_to_prec with
+                // precision = digits + exp rounds away exactly the fractional
+                // digits (prec may be 0 when the whole value is fractional,
+                // e.g. 0.4 -> 0 with half_up); the result exponent is 0.
+                let prec = _decimal_core::coeff_digits_of(&xd.coeff) as isize + xd.exp;
+                let (coeff, _exp, _inexact) = _decimal_core::round_to_prec(
+                    vm, &ctx, xd.sign, &xd.coeff, xd.exp, prec,
+                )?;
+                _decimal_core::Dec {
+                    sign: xd.sign,
+                    coeff,
+                    exp: 0,
+                    special: xd.special,
+                }
+            } else {
+                // Already integral: keep the original representation.
+                _decimal_core::Dec { ..xd.clone() }
+            };
+            let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
