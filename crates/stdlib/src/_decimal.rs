@@ -3066,12 +3066,36 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            // sNaN should signal InvalidOperation
+            // A signaling NaN signals InvalidOperation; a quiet NaN does not,
+            // but either makes the result a NaN (payload preserved).
             if xd.special == Special::SignalingNaN || yd.special == Special::SignalingNaN {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "comparison with sNaN"));
                 }
+            }
+            if xd.special == Special::NaN
+                || xd.special == Special::SignalingNaN
+                || yd.special == Special::NaN
+                || yd.special == Special::SignalingNaN
+            {
+                // Result NaN payload/sign selection: a signaling NaN wins
+                // over a quiet NaN; otherwise any NaN operand's payload and
+                // sign are kept (a plain number does not contribute).
+                // CPython: compare(NaN85, sNaN83) -> NaN83;
+                // compare(NaN, -sNaN89) -> -NaN89; compare(-Inf, NaN) -> NaN.
+                let n = if xd.special == Special::SignalingNaN {
+                    xd.clone()
+                } else if yd.special == Special::SignalingNaN {
+                    yd.clone()
+                } else if xd.special == Special::NaN {
+                    xd.clone()
+                } else {
+                    yd.clone()
+                };
+                let mut n = n;
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
             }
             let r = dec_cmp(&xd, &yd);
             Ok(vm.ctx.new_int(BigInt::from(r)).into())
