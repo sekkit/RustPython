@@ -44,9 +44,22 @@
 此前首个失败固定在 absx215（0.999E-999），经上述三处修复后
 `abs.decTest` 在 TEST_ALL=True（绕过 90% 抽样）下**全部 case 通过**。
 验证：vm 单测 53/2 基线、rustpython-stdlib 8/0、decimal 冒烟（sNaN
-signal、sqrt）OK。其余 .decTest 文件（add/sub/...）的全量收敛为
-后续专职项（TEST_ALL=True 全量执行较慢；抽样模式失败数在 115-122
-波动区间，无回归迹象）。
+signal、sqrt）OK。
+
+## 文件级基线（TEST_ALL=True 快速扫描，2026-09-07）
+| 文件 | 失败/总 case | 判定 |
+|---|---|---|
+| abs.decTest | 0/all | ✅ 全过（修复覆盖） |
+| copy.decTest | 0/43 | ✅ 全过 |
+| rescale.decTest | 0/618 | ✅ 全过 |
+| compare.decTest | 59/639 | ⏳ 独立缺陷（比较语义） |
+| tointegral.decTest | 86/168 | ⏳ 独立缺陷（取整语义） |
+| quantize.decTest | 132/776 | ⏳ 独立缺陷（量化/舍入语义） |
+
+copy/rescale 与 abs 同领域（subnormal/特殊值处理），修复已迁移生效。
+compare/tointegral/quantize 暴露**独立语义领域**缺陷，需逐个专项诊断
+（每个是单独的 mpdecimal 语义对齐工作）。抽样模式 test_decimal 失败数
+在 115-122 波动区间（与这些文件的主要失败对应），无新增回归。
 
 ## 根因方向
 - C 实现（`_decimal.rs`，Rust/mpdecimal 语义）与 P 实现（`_pydecimal`，纯 Python）
