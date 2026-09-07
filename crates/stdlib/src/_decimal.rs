@@ -3603,28 +3603,51 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let ctx = self.ctx();
             if xd.is_special() {
                 if xd.special == Special::Infinity {
-                    return Ok(PyDecimal::to_py(vm, xd));
+                    // logb(Infinity) -> +Infinity (unsigned): the adjusted
+                    // exponent of any infinite value is +Infinity.
+                    return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                        sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
+                    }));
                 }
-                ctx.set_flag(vm, "InvalidOperation")?;
-                if ctx.trap(vm, "InvalidOperation")? {
-                    return Err(new_decimal_error(vm, "InvalidOperation", "logb of NaN"));
+                // NaN / sNaN: signal InvalidOperation on sNaN and return a
+                // quiet NaN (payload and sign preserved); a quiet NaN
+                // operand propagates without signaling.
+                if xd.special == Special::SignalingNaN {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "logb of sNaN"));
+                    }
                 }
-                return Ok(PyDecimal::to_py(vm, xd));
+                let mut n = xd.clone();
+                n.special = Special::NaN;
+                let digits = n.coeff_str();
+                let keep = (ctx.prec as usize).max(1);
+                if digits.len() > keep {
+                    n.coeff = digits[digits.len() - keep..]
+                        .parse::<BigInt>()
+                        .unwrap_or_else(|_| BigInt::from(0));
+                }
+                return Ok(PyDecimal::to_py(vm, n));
             }
             if xd.is_zero() {
                 ctx.set_flag(vm, "DivisionByZero")?;
                 if ctx.trap(vm, "DivisionByZero")? {
                     return Err(new_decimal_error(vm, "DivisionByZero", "logb of zero"));
                 }
+                // logb(0) -> -Infinity regardless of the zero's sign.
                 return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                    sign: xd.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
+                    sign: true, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
                 }));
             }
             let adj = xd.exp + _decimal_core::coeff_digits_of(&xd.coeff) as isize - 1;
-            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+            // Result is the adjusted exponent as a decimal integer; it is
+            // rounded to the context precision (logb(1E-999) at prec 2 ->
+            // -1.0E+3, i.e. 999 rounded to 1000).
+            let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
                 sign: adj < 0, coeff: BigInt::from(adj.unsigned_abs()), exp: 0,
                 special: Special::Finite,
-            }))
+            })?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
