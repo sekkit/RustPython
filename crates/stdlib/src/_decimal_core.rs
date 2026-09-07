@@ -1154,6 +1154,11 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
     } else if shift < 0 {
         coeff *= BigInt::from(10).pow((-shift) as u32);
     }
+    // Any *divisive* exponent adjustment (shift > 0, digits discarded)
+    // signals Rounded, even when the discarded portion is zero (CPython:
+    // quantize(12345678000, 1e+3) -> 1.2345678E+10 Rounded). Padding zeros
+    // (shift < 0, value unchanged: quantize(0.1, 1e-2) -> 0.10) does not.
+    // Inexact is set below alongside Rounded when digits were discarded.
     let mut result = Dec { sign: d.sign, coeff, exp, special: Special::Finite };
     // CPython: quantize raises InvalidOperation when the result would have
     // more digits than the context precision ('quantize result has too many
@@ -1167,7 +1172,24 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
         }
         return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
-    if inexact {
+    if shift > 0 && !d.is_zero() {
+        // Rounded whenever digits were discarded (divisive adjustment),
+        // even with a zero remainder; Inexact only when nonzero discarded.
+        // A zero coefficient never signals Rounded (quantize(0, 1e+5) ->
+        // 0E+5 has no flags).
+        ctx.set_flag(vm, "Rounded")?;
+        if ctx.trap(vm, "Rounded")? {
+            return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+        }
+        if inexact {
+            ctx.set_flag(vm, "Inexact")?;
+            if ctx.trap(vm, "Inexact")? {
+                return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+            }
+        }
+    } else if inexact {
+        // shift < 0 (padding) cannot be inexact; shift == 0 with inexact is
+        // impossible, but keep the guard for safety.
         ctx.set_flag(vm, "Inexact")?;
         ctx.set_flag(vm, "Rounded")?;
     }
