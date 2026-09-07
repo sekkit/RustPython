@@ -656,14 +656,16 @@ pub(crate) fn apply_context(
                 return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
             }
         }
-    } else if adj_exp < ctx.emin as i128 {
+    } else if (orig_exp as i128) + coeff_digits_of(&orig_coeff) as i128 - 1 < ctx.emin as i128 {
         // Subnormal: the *adjusted* exponent (exp + digits - 1) is below Emin
         // but at/above Etiny, so no underflow; the Subnormal signal is set. A
         // zero coefficient is not subnormal (CPython: only nonzero values get
         // the Subnormal flag). Using the adjusted exponent matters at the
         // boundary: 1.00E-999 with prec=3/Emin=-999 has adjusted exponent -999
         // == Emin (not subnormal), while 1E-1000 has adjusted -1000 < Emin
-        // (subnormal).
+        // (subnormal). Judged on the pre-rounding value: carry normalization
+        // may lift dec.exp to Etiny (addx6578: 99999999999999999e-400 rounds
+        // to 1000000000000000e-398) so the subnormal decision must use orig.
         if !dec.is_zero() {
             ctx.set_flag(vm, "Subnormal")?;
             if ctx.trap(vm, "Subnormal")? {
@@ -677,13 +679,16 @@ pub(crate) fn apply_context(
             // trailing zeros still leaves the exponent below Etiny, the value
             // cannot be represented exactly and it falls through to the
             // underflow/clamp handling below.
-            let k = trailing_zeros_of(&dec.coeff);
-            if (dec.exp + k as isize) < etiny {
+            let k = trailing_zeros_of(&orig_coeff);
+            if (orig_exp + k as isize) < etiny {
                 // Underflow: even at minimum precision the exponent is below
                 // Etiny; round to Etiny (inexact -> Inexact+Rounded). No
                 // Clamped here: the result is an ordinary rounding up into the
                 // subnormal Etiny range, not a zero clamp (CPython 0.999E-999
                 // -> 1.00E-999 with Inexact Rounded Subnormal Underflow).
+                // Judged on the pre-rounding value: carry normalization can
+                // lift dec.exp to Etiny (addx6580: 9999999999999999999e-402
+                // rounds to 1000000000000000e-398), hiding the underflow.
                 ctx.set_flag(vm, "Subnormal")?; // already set above
                 ctx.set_flag(vm, "Underflow")?;
                 if ctx.trap(vm, "Underflow")? {
@@ -843,8 +848,15 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
     // -0E-19). Both positive zeros -> +0.
     let sign = if sum == BigInt::from(0) {
         if ctx.rounding == Rounding::Floor {
-            (a.is_zero() && a.sign) || (b.is_zero() && b.sign)
+            // ROUND_FLOOR: a zero result from any negative contribution is
+            // negative (add(1E-401,-1E-401) -> -0E-398; add(-0,0E-19) ->
+            // -0E-19). The sum is zero only when operands cancel.
+            a.sign || b.sign
         } else {
+            // Other modes: only two negative zeros keep the sign
+            // (addx61501: add(-0, 0E-19) -> 0E-19; addx61503: add(-0, -0E-19)
+            // -> -0E-19); cancelling nonzero operands give +0
+            // (add(1,-1) -> 0 under ROUND_HALF_UP).
             a.is_zero() && a.sign && b.is_zero() && b.sign
         }
     } else {
