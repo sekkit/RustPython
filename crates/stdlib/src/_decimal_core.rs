@@ -1101,9 +1101,20 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
     let etiny = ctx.emin - (ctx.prec as isize - 1);
     let digits_now = coeff_digits_of(&d.coeff) as isize;
     let adj_before = d.exp + digits_now - 1;
-    let invalid = exp < etiny || exp > ctx.emax
-        || adj_before > ctx.emax
-        || (adj_before - exp + 1) > ctx.prec;
+    // A zero coefficient may be quantized to any exponent within the target
+    // exponent range [Etiny, Emax]; targets outside it are InvalidOperation
+    // (quantize(0, 1e-999) -> 0E-999 when Etiny <= -999; quantize(0,
+    // 1e-2000000000) -> NaN when the target is below Etiny).
+    // A zero coefficient may be quantized to any exponent within [Etiny, Emax]
+    // — the too-many-digits / self-adjusted checks do not apply (quantize(0,
+    // 1e-999) -> 0E-999; quantize(0, 1e-2000000000) -> NaN when below Etiny).
+    let invalid = if d.coeff == BigInt::from(0) {
+        exp < etiny || exp > ctx.emax
+    } else {
+        exp < etiny || exp > ctx.emax
+            || adj_before > ctx.emax
+            || (adj_before - exp + 1) > ctx.prec
+    };
     if invalid {
         ctx.set_flag(vm, "InvalidOperation")?;
         if ctx.trap(vm, "InvalidOperation")? {
@@ -1192,6 +1203,17 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
         // impossible, but keep the guard for safety.
         ctx.set_flag(vm, "Inexact")?;
         ctx.set_flag(vm, "Rounded")?;
+    }
+    // A nonzero quantized result whose adjusted exponent is below Emin is
+    // subnormal (flag only; the exact exponent is preserved):
+    // quantize(1E-1000, 1e-1005) -> 1.00000E-1000 Subnormal.
+    if !result.is_zero()
+        && (result.exp as i128) + coeff_digits_of(&result.coeff) as i128 - 1 < ctx.emin as i128
+    {
+        ctx.set_flag(vm, "Subnormal")?;
+        if ctx.trap(vm, "Subnormal")? {
+            return Err(ctx_trap_exc(vm, "Subnormal", "subnormal"));
+        }
     }
     Ok(result)
 }

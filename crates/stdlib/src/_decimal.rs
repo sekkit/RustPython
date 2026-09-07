@@ -3021,6 +3021,66 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 ctx.rounding = Rounding::from_str(&r.as_wtf8().to_string())
                     .ok_or_else(|| vm.new_value_error("invalid rounding mode".to_string()))?;
             }
+            // Operand special values:
+            //  - xd or yd signaling NaN -> InvalidOperation, result NaN
+            //  - yd quiet NaN -> NaN (no flag)
+            //  - xd Infinity or yd Infinity -> InvalidOperation (no finite
+            //    exponent to quantize to).
+            if xd.special == Special::SignalingNaN || yd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "quantize with sNaN"));
+                }
+                let mut n = if yd.special == Special::SignalingNaN && xd.special != Special::SignalingNaN {
+                    yd.clone()
+                } else {
+                    xd.clone()
+                };
+                n.special = Special::NaN;
+                // Payload truncated to context precision (sNaN1234567890 ->
+                // NaN67890 at prec 6).
+                let digits = n.coeff_str();
+                let keep = (ctx.prec as usize).max(1);
+                if digits.len() > keep {
+                    n.coeff = digits[digits.len() - keep..]
+                        .parse::<BigInt>()
+                        .unwrap_or_else(|_| BigInt::from(0));
+                }
+                return Ok(PyDecimal::to_py(vm, n));
+            }
+            if yd.special == Special::NaN || xd.special == Special::NaN {
+                // Any quiet-NaN operand yields the first operand's NaN
+                // (payload/sign from xd; quantize(NaN6, NaN5) -> NaN6).
+                let n = if xd.special == Special::NaN || xd.special == Special::SignalingNaN {
+                    xd.clone()
+                } else {
+                    yd.clone()
+                };
+                let mut n = n;
+                n.special = Special::NaN;
+                let digits = n.coeff_str();
+                let keep = (ctx.prec as usize).max(1);
+                if digits.len() > keep {
+                    n.coeff = digits[digits.len() - keep..]
+                        .parse::<BigInt>()
+                        .unwrap_or_else(|_| BigInt::from(0));
+                }
+                return Ok(PyDecimal::to_py(vm, n));
+            }
+            if xd.special == Special::Infinity || yd.special == Special::Infinity {
+                // Both infinite: result is the first operand's Infinity, no
+                // flag. Exactly one infinite operand: InvalidOperation -> NaN.
+                if xd.special == Special::Infinity && yd.special == Special::Infinity {
+                    return Ok(PyDecimal::to_py(vm, xd.clone()));
+                }
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "quantize of Infinity"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let r = _decimal_core::quantize(vm, &ctx, &xd, yd.exp)?;
             Ok(PyDecimal::to_py(vm, r))
         }
