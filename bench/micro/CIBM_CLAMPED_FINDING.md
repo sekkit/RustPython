@@ -65,7 +65,14 @@ signal、sqrt）OK。
 - 各处表示保持（exp≥0 不 pad、双 Inf 保留）
 
 抽样模式 test_decimal 失败数仍受其他未扫描文件（add/sub/mul/div 等）
-影响，待全量扫描确认无回归。
+影响。
+
+## 剩余文件抽样基线（2026-09-07）
+- add.decTest（抽样模式）：38/2100 fail——剩余文件独立语义域。
+  注：TEST_ALL=True 全量扫描效率极低（add 单文件约 1103s），后续收敛
+  建议抽样+定向修复，避免全量扫描（用户强调执行效率）。
+- 其余核心算术文件（sub/mul/div/logb/max/min 等）待抽样定位，属专职
+  收敛项（基线同样失败，非回归）。
 
 ## 根因方向
 - C 实现（`_decimal.rs`，Rust/mpdecimal 语义）与 P 实现（`_pydecimal`，纯 Python）
