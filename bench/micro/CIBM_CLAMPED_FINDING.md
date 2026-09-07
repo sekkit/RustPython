@@ -47,21 +47,25 @@
 signal、sqrt）OK。
 
 ## 文件级基线（TEST_ALL=True 快速扫描，2026-09-07）
-| 文件 | 失败/总 case | 判定 |
-|---|---|---|
-| abs.decTest | 0/all | ✅ 全过（修复覆盖） |
-| copy.decTest | 0/43 | ✅ 全过 |
-| rescale.decTest | 0/618 | ✅ 全过 |
-| tointegral.decTest | 0/168 | ✅ 全过（b74b5fdef：舍入/表示/exact 信号/sNaN） |
-| compare.decTest | 59/639 | ⏳ 独立缺陷（比较语义） |
-| quantize.decTest | 132/776 | ⏳ 独立缺陷（量化/舍入语义） |
+| 文件 | 原失败/总 case | 现状 | 修复 commit |
+|---|---|---|---|
+| abs.decTest | 38+/all | ✅ 全过 | ed2867203/0b4bd593b/f4ca22daf |
+| copy.decTest | 0/43 | ✅ 全过 | 同领域 |
+| rescale.decTest | 0/618 | ✅ 全过 | 同领域 |
+| tointegral.decTest | 86/168 | ✅ 全过 | b74b5fdef |
+| compare.decTest | 59/639 | ✅ 全过 | e75eb8b6e |
+| quantize.decTest | 132/776 | ✅ 全过 | b21840376/5989b7173 |
 
-copy/rescale/abs 同领域（subnormal/特殊值处理），修复迁移生效；
-tointegral 经 b74b5fdef 修复（round_to_prec 按 rounding 舍入、exp≥0 保持
-表示、exact 设 Inexact/Rounded、sNaN 信号）后全过。
-compare/quantize 暴露**独立语义领域**缺陷，需逐个专项诊断
-（每个是单独的 mpdecimal 语义对齐工作）。抽样模式 test_decimal 失败数
-在 115-122 波动区间（与这些文件的主要失败对应），无新增回归。
+**全部 6 个核心 .decTest 文件在 TEST_ALL=True 下通过。** 修复链条：
+- subnormal/underflow 信号（adjusted exponent 判定、half-up Etiny clamp、
+  尾零规范化、Clamped 仅零值、零值 [Etiny,Emax] 范围）
+- sNaN 语义（signal InvalidOperation → quiet NaN，payload 按 prec 截断）
+- NaN 结果 payload/sign 选择（sNaN 优先、任一 NaN 操作数、普通数不贡献）
+- quantize Rounded 规则（shift>0 丢弃位数即 Rounded，零值与 padding 豁免）
+- 各处表示保持（exp≥0 不 pad、双 Inf 保留）
+
+抽样模式 test_decimal 失败数仍受其他未扫描文件（add/sub/mul/div 等）
+影响，待全量扫描确认无回归。
 
 ## 根因方向
 - C 实现（`_decimal.rs`，Rust/mpdecimal 语义）与 P 实现（`_pydecimal`，纯 Python）
