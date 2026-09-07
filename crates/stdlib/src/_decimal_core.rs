@@ -831,13 +831,28 @@ pub(crate) fn special_binary(
     if a.special == Special::NaN || a.special == Special::SignalingNaN
         || b.special == Special::NaN || b.special == Special::SignalingNaN
     {
-        let s = if a.special == Special::SignalingNaN || b.special == Special::SignalingNaN {
-            Special::SignalingNaN
+        let signaling = a.special == Special::SignalingNaN || b.special == Special::SignalingNaN;
+        if signaling {
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(
+                    vm,
+                    "InvalidOperation",
+                    "operation with sNaN",
+                ));
+            }
+        }
+        // Payload/sign from the first NaN operand (sNaN wins over quiet).
+        let n = if a.special == Special::SignalingNaN {
+            a.clone()
+        } else if b.special == Special::SignalingNaN {
+            b.clone()
+        } else if a.special == Special::NaN {
+            a.clone()
         } else {
-            Special::NaN
+            b.clone()
         };
-        let sign = if a.special != Special::Finite { a.sign } else { b.sign };
-        return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: s });
+        return Ok(Dec { special: Special::NaN, ..n });
     }
     let inf_a = a.special == Special::Infinity;
     let inf_b = b.special == Special::Infinity;
