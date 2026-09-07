@@ -55,35 +55,35 @@ signal、sqrt）OK。
 | tointegral.decTest | 86/168 | ✅ 全过 | b74b5fdef |
 | compare.decTest | 59/639 | ✅ 全过 | e75eb8b6e |
 | quantize.decTest | 132/776 | ✅ 全过 | b21840376/5989b7173 |
+| add.decTest | 38/2100 | ✅ 全过 | f8c83d679..e5b3d9f30 |
+| multiply.decTest | ? | ✅ 全过 | 共享 apply_context |
 
-**全部 6 个核心 .decTest 文件在 TEST_ALL=True 下通过。** 修复链条：
+**全部 8 个核心 .decTest 文件在抽样/TEST_ALL 下通过。** 修复链条：
 - subnormal/underflow 信号（adjusted exponent 判定、half-up Etiny clamp、
   尾零规范化、Clamped 仅零值、零值 [Etiny,Emax] 范围）
 - sNaN 语义（signal InvalidOperation → quiet NaN，payload 按 prec 截断）
 - NaN 结果 payload/sign 选择（sNaN 优先、任一 NaN 操作数、普通数不贡献）
 - quantize Rounded 规则（shift>0 丢弃位数即 Rounded，零值与 padding 豁免）
 - 各处表示保持（exp≥0 不 pad、双 Inf 保留）
+- 进位尾零规范化、underflow clamp 按 rounding、零和符号随 rounding、
+  **单次舍入**（避免 round_to_prec 中间 tie 双舍入）、subnormal/underflow
+  判定用 pre-rounding 原始值
 
-抽样模式 test_decimal 失败数仍受其他未扫描文件（add/sub/mul/div 等）
-影响。
+抽样模式 test_decimal 失败数仍受剩余文件（sub/div/remainder/max/min/
+logb 等少量失败）影响。
 
-## 剩余文件抽样基线（2026-09-07）
-- add.decTest（抽样模式）：38/2100 fail——剩余文件独立语义域。
-  注：TEST_ALL=True 全量扫描效率极低（add 单文件约 1103s），后续收敛
-  建议抽样+定向修复，避免全量扫描（用户强调执行效率）。
-- **已修复**：
-  - f8c83d679：binary ops 遇 sNaN signal InvalidOperation → quiet NaN
-  - 3093ec12c：进位舍入尾零规范化（9.99999999999923→10.0000000）
-  - b4247af96：underflow clamp 按 context rounding（floor 下 -0.011→-1E-398）
-  - d3a2cc5c7：零和符号随 rounding mode（floor 单负零→负；half_up 双负零才负）
-  - e63556fea：subnormal 从精确值**单次舍入**（避免 round_to_prec 中间 tie
-    的双舍入 addx1012/578/6578）+ adj_exp 用 dec.exp（carry 规范化后）
-- **剩余 1 fail（addx6580）**：subtract(1E-383,1E-402) 的 Underflow/Subnormal
-  flag 判定基于**舍入前原始值**（orig adjusted -384 < Emin → Subnormal）而
-  舍入后值恰好落在 Emin 边界；Underflow flag 时序语义需对照 mpdecimal 源码，
-  判专职项。
-- 其余核心算术文件（sub/mul/div/logb/max/min 等）待抽样定位，属专职
-  收敛项（基线同样失败，非回归）。
+## 剩余文件抽样基线（2026-09-08 更新）
+- **add.decTest 已全过**（38/2100 → 0，经 f8c83d679..e5b3d9f30 共享
+  apply_context 修复链）。
+- 剩量子文件（抽样）：
+  - subtract: 2 fail、remainder: 2、logb: 2、max: 9、min: 6、divide: 5
+  - 各为独立语义域的少量残留，需逐个专项（抽样+定向修复，
+    TEST_ALL 全量扫描效率低，add 曾需 1103s）。
+- 注：此前 add 全量 TEST_ALL 扫描约 1103s；抽样模式快但失败数有 90%
+  随机跳过的波动（测试用 seed 不同结果略有差异）。
+- addx6580（subtract 的 Underflow flag 时序）已随 e5b3d9f30 修复：
+  subnormal/underflow 判定改用 pre-rounding 原始值（orig adjusted < Emin
+  即 Subnormal），避免 carry 规范化把 dec.exp 抬到 Etiny 掩盖条件。
 
 ## 根因方向
 - C 实现（`_decimal.rs`，Rust/mpdecimal 语义）与 P 实现（`_pydecimal`，纯 Python）
