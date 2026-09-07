@@ -71,13 +71,17 @@ signal、sqrt）OK。
 - add.decTest（抽样模式）：38/2100 fail——剩余文件独立语义域。
   注：TEST_ALL=True 全量扫描效率极低（add 单文件约 1103s），后续收敛
   建议抽样+定向修复，避免全量扫描（用户强调执行效率）。
-- **已修复（f8c83d679）**：binary ops（add/sub/mul 等）遇 sNaN 现在
-  signal InvalidOperation（trap 可 raise）并返回 quiet NaN（保留
-  payload/sign）——addx843/854 类失败消除。
-- **剩余主要模式**：add 结果尾零规范化差异——CPython 在舍入后把有效
-  数字规范化到 ≤ prec 位（add(10,-77e-11) -> 10.0000000 而非
-  10.00000000），我们的 apply_context 保留多余尾零。值相等仅表示
-  不同，属 apply_context 表示一致性专职项。
+- **已修复**：
+  - f8c83d679：binary ops 遇 sNaN signal InvalidOperation → quiet NaN
+  - 3093ec12c：进位舍入尾零规范化（9.99999999999923→10.0000000）
+  - b4247af96：underflow clamp 按 context rounding（floor 下 -0.011→-1E-398）
+  - d3a2cc5c7：零和符号随 rounding mode（floor 单负零→负；half_up 双负零才负）
+  - e63556fea：subnormal 从精确值**单次舍入**（避免 round_to_prec 中间 tie
+    的双舍入 addx1012/578/6578）+ adj_exp 用 dec.exp（carry 规范化后）
+- **剩余 1 fail（addx6580）**：subtract(1E-383,1E-402) 的 Underflow/Subnormal
+  flag 判定基于**舍入前原始值**（orig adjusted -384 < Emin → Subnormal）而
+  舍入后值恰好落在 Emin 边界；Underflow flag 时序语义需对照 mpdecimal 源码，
+  判专职项。
 - 其余核心算术文件（sub/mul/div/logb/max/min 等）待抽样定位，属专职
   收敛项（基线同样失败，非回归）。
 
