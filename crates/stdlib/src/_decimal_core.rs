@@ -822,10 +822,18 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
     let va = if a.sign { -&ca } else { ca.clone() };
     let vb = if b.sign { -&cb } else { cb.clone() };
     let sum = va + vb;
-    // Zero sign: -0 + -0 keeps the negative sign; any positive zero operand
-    // makes the result +0 (CPython addx735: add(-0,-0) -> -0; add(-0,0) -> 0).
+    // Zero sign (decTest 3.14 / IEEE 854): under ROUND_FLOOR a single
+    // negative-zero operand keeps the result negative (addx1621: add(-0,
+    // 0E-19) -> -0E-19; addx1625: add(-0E-400, 0E-19) -> -0E-398 Clamped).
+    // Under any other rounding mode only two negative zeros keep the sign
+    // (addx61501: add(-0, 0E-19) -> 0E-19; addx61503: add(-0, -0E-19) ->
+    // -0E-19). Both positive zeros -> +0.
     let sign = if sum == BigInt::from(0) {
-        a.sign && b.sign && a.is_zero() && b.is_zero()
+        if ctx.rounding == Rounding::Floor {
+            (a.is_zero() && a.sign) || (b.is_zero() && b.sign)
+        } else {
+            a.is_zero() && a.sign && b.is_zero() && b.sign
+        }
     } else {
         sum.sign() == Sign::Minus
     };
