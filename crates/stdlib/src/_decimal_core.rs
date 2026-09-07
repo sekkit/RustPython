@@ -463,52 +463,65 @@ pub(crate) fn round_to_prec(
     let discard = digits as isize - prec;
     let pow10 = BigInt::from(10).pow(discard as u32);
     let (q, r) = (coeff / &pow10, coeff % &pow10);
-    let two = BigInt::from(2);
     let inexact = r != BigInt::from(0);
 
-    let round_up = match ctx.rounding {
+    let round_up = round_up_decision(ctx.rounding, sign, &q, &r, &pow10);
+
+    let new_coeff = if round_up { q + BigInt::from(1) } else { q };
+    Ok((new_coeff, exp + discard, inexact))
+}
+
+/// Decide whether to round the quotient up, given the context rounding mode,
+/// the sign of the value, the kept part ``q`` and the discarded part ``r``
+/// divided by ``pow10``. Shared by round_to_prec and the underflow clamp.
+fn round_up_decision(
+    rounding: Rounding,
+    sign: bool,
+    q: &BigInt,
+    r: &BigInt,
+    pow10: &BigInt,
+) -> bool {
+    let two = BigInt::from(2);
+    match rounding {
         Rounding::Down => false,
         Rounding::Up => true,
         Rounding::Ceiling => !sign,
         Rounding::Floor => sign,
-        Rounding::HalfDown => (&r * &two) > pow10,
-        Rounding::HalfUp => (&r * &two) >= pow10,
+        Rounding::HalfDown => (r * &two) > *pow10,
+        Rounding::HalfUp => (r * &two) >= *pow10,
         Rounding::HalfEven => {
-            if (&r * &two) > pow10 {
+            if (r * &two) > *pow10 {
                 true
-            } else if (&r * &two) < pow10 {
+            } else if (r * &two) < *pow10 {
                 false
             } else {
                 // tie: round to even
-                (&q % &two) == BigInt::from(1)
+                (q % &two) == BigInt::from(1)
             }
         }
         Rounding::Half05Up => {
             // ROUND_05UP: round to nearest, ties away from zero, but if the
             // last kept digit is 0 or 5, round up regardless.
-            if (&r * &two) >= pow10 {
+            if (r * &two) >= *pow10 {
                 true
             } else {
-                let last = (&q % BigInt::from(10)) == BigInt::from(0)
-                    || (&q % BigInt::from(10)) == BigInt::from(5);
+                let last = (q % BigInt::from(10)) == BigInt::from(0)
+                    || (q % BigInt::from(10)) == BigInt::from(5);
                 last
             }
         }
         Rounding::Half01Up => {
             // ROUND_01UP: like HalfUp for ties, and rounds up when the last
             // digit is 0 or 1.
-            if (&r * &two) >= pow10 {
+            if (r * &two) >= *pow10 {
                 true
             } else {
-                let last = (&q % BigInt::from(10)) == BigInt::from(0)
-                    || (&q % BigInt::from(10)) == BigInt::from(1);
+                let last = (q % BigInt::from(10)) == BigInt::from(0)
+                    || (q % BigInt::from(10)) == BigInt::from(1);
                 last
             }
         }
-    };
-
-    let new_coeff = if round_up { q + BigInt::from(1) } else { q };
-    Ok((new_coeff, exp + discard, inexact))
+    }
 }
 
 pub(crate) fn coeff_digits_of(coeff: &BigInt) -> usize {
@@ -609,11 +622,13 @@ pub(crate) fn apply_context(
         if ctx.trap(vm, "Underflow")? {
             return Err(ctx_trap_exc(vm, "Underflow", "underflow"));
         }
-        // clamp to etiny (round-half-up the discarded part, mpdecimal-style)
+        // clamp to etiny (round per context mode, mpdecimal-style: 0.009E-999
+        // at Etiny rounds to 1E-1001 under half_up; -0.011 under floor sits
+        // at -1E-398, not flushed to zero)
         let shift = etiny - new_exp;
         let pow = BigInt::from(10).pow(shift as u32);
         let (q, r) = (&dec.coeff / &pow, &dec.coeff % &pow);
-        let round_up = (&r * BigInt::from(2)) >= pow;
+        let round_up = round_up_decision(ctx.rounding, dec.sign, &q, &r, &pow);
         dec.coeff = if round_up { q + BigInt::from(1) } else { q };
         dec.exp = etiny;
         if r != BigInt::from(0) {
@@ -665,9 +680,9 @@ pub(crate) fn apply_context(
                 let shift = (etiny - new_exp) as usize;
                 let pow = BigInt::from(10).pow(shift as u32);
                 let (q, r) = (&dec.coeff / &pow, &dec.coeff % &pow);
-                // Half-up rounding on the discarded part (mpdecimal rounds a
-                // subnormal to the closest representable; ties round up).
-                let round_up = (&r * BigInt::from(2)) >= pow;
+                // Round per the context mode (mpdecimal rounds a subnormal to
+                // the closest representable at Etiny).
+                let round_up = round_up_decision(ctx.rounding, dec.sign, &q, &r, &pow);
                 dec.coeff = if round_up { q + BigInt::from(1) } else { q };
                 dec.exp = etiny;
                 ctx.set_flag(vm, "Inexact")?;
@@ -807,7 +822,13 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
     let va = if a.sign { -&ca } else { ca.clone() };
     let vb = if b.sign { -&cb } else { cb.clone() };
     let sum = va + vb;
-    let sign = sum.sign() == Sign::Minus;
+    // Zero sign: -0 + -0 keeps the negative sign; any positive zero operand
+    // makes the result +0 (CPython addx735: add(-0,-0) -> -0; add(-0,0) -> 0).
+    let sign = if sum == BigInt::from(0) {
+        a.sign && b.sign && a.is_zero() && b.is_zero()
+    } else {
+        sum.sign() == Sign::Minus
+    };
     let coeff = sum.abs();
     apply_context(vm, ctx, Dec { sign, coeff, exp: e, special: Special::Finite })
 }
@@ -863,22 +884,94 @@ pub(crate) fn special_binary(
         } else {
             b.clone()
         };
-        return Ok(Dec { special: Special::NaN, ..n });
+        let mut n = n;
+        n.special = Special::NaN;
+        // Payload truncated to context precision (sNaN123456789 -> NaN56789
+        // at prec 6, addx62100).
+        let digits = n.coeff_str();
+        let keep = (ctx.prec as usize).max(1);
+        if digits.len() > keep {
+            n.coeff = digits[digits.len() - keep..]
+                .parse::<BigInt>()
+                .unwrap_or_else(|_| BigInt::from(0));
+        }
+        return Ok(n);
     }
     let inf_a = a.special == Special::Infinity;
     let inf_b = b.special == Special::Infinity;
-    if inf_a && inf_b {
-        // Inf op Inf
-        let neg = a.sign ^ b.sign;
-        return Ok(Dec { sign: neg, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
-    }
-    if inf_a {
-        let sign = a.sign ^ (b.sign && !b.is_zero());
-        return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
-    }
-    if inf_b {
-        let sign = (a.sign && !a.is_zero()) ^ b.sign;
-        return Ok(Dec { sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+    match op {
+        "add" => {
+            if inf_a && inf_b {
+                // Inf + Inf: same sign -> that Infinity; opposite signs ->
+                // InvalidOperation + NaN (addx6780: add(-Inf,-Inf) -> -Infinity).
+                if a.sign == b.sign {
+                    return Ok(Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+                }
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "Inf + -Inf"));
+                }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            }
+            if inf_a {
+                return Ok(Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+            if inf_b {
+                return Ok(Dec { sign: b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+        }
+        "mul" => {
+            if inf_a && inf_b {
+                return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+            if inf_a {
+                // Inf * 0 -> InvalidOperation + NaN; otherwise sign XOR.
+                if b.is_zero() {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "Inf * 0"));
+                    }
+                    return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+                }
+                return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+            if inf_b {
+                if a.is_zero() {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "0 * Inf"));
+                    }
+                    return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+                }
+                return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+        }
+        "div" => {
+            if inf_a && inf_b {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "Inf / Inf"));
+                }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            }
+            if inf_a {
+                return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+            if inf_b {
+                // finite / Inf -> zero with the sign of the division.
+                return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+            }
+        }
+        _ => {
+            // floordiv/mod with any Infinity -> InvalidOperation + NaN.
+            if inf_a || inf_b {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "Inf floor/mod"));
+                }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            }
+        }
     }
     Ok(Dec::zero())
 }
