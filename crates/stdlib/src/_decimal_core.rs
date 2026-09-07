@@ -570,6 +570,17 @@ pub(crate) fn apply_context(
     }
     dec.coeff = new_coeff;
     dec.exp = new_exp;
+    // Carry rounding may push the coefficient to prec+1 digits (e.g.
+    // 9.99999999923 at prec 9 -> 10.00000000); CPython normalizes the
+    // trailing carry zeros back to prec digits (10.0000000, exponent +1).
+    // The value is unchanged; only the representation is adjusted.
+    while coeff_digits_of(&dec.coeff) > ctx.prec as usize
+        && dec.coeff != BigInt::from(0)
+        && (&dec.coeff % BigInt::from(10)) == BigInt::from(0)
+    {
+        dec.coeff = &dec.coeff / BigInt::from(10);
+        dec.exp += 1;
+    }
     // clamp=1: when the exponent exceeds etop (Emax - prec + 1), the
     // coefficient is padded with zeros down to etop (Clamped signal).
     // e.g. plus(1E+99) with clamp=1, Emax=99, prec=28 ->
