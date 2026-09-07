@@ -581,6 +581,13 @@ pub(crate) fn apply_context(
             }
         }
     }
+    // Remember the pre-rounding value: underflow clamps must round from the
+    // exact value in one step, otherwise a tie created by the precision
+    // rounding can be double-rounded (addx1012: 152445000000000000001e-100
+    // at prec 5 rounds to 15245e-84, then a second clamp at Etiny rounds
+    // 1524|5 up to 1525 instead of the single-round 1524|45 -> 1524).
+    let orig_coeff = dec.coeff.clone();
+    let orig_exp = dec.exp;
     dec.coeff = new_coeff;
     dec.exp = new_exp;
     // Carry rounding may push the coefficient to prec+1 digits (e.g.
@@ -611,7 +618,11 @@ pub(crate) fn apply_context(
     }
     // exponent range check
     let etiny = ctx.emin - (ctx.prec as isize - 1);
-    let adj_exp = (new_exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1;
+    // Use dec.exp (post carry-normalization) for the adjusted exponent; the
+    // carry loop above can move trailing zeros into the exponent (addx578:
+    // 99999999999999999e-400 rounds to 1000000000000000e-398 whose adjusted
+    // exponent is -383 == Emin, not subnormal).
+    let adj_exp = (dec.exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1;
     if adj_exp < etiny as i128 {
         // Underflow / Subnormal: mpdecimal decides Underflow on the *adjusted*
         // exponent (exp + digits - 1) falling below Etiny, not the stored
@@ -624,10 +635,11 @@ pub(crate) fn apply_context(
         }
         // clamp to etiny (round per context mode, mpdecimal-style: 0.009E-999
         // at Etiny rounds to 1E-1001 under half_up; -0.011 under floor sits
-        // at -1E-398, not flushed to zero)
-        let shift = etiny - new_exp;
+        // at -1E-398, not flushed to zero). Round from the exact pre-rounding
+        // value in a single step to avoid double rounding.
+        let shift = etiny - orig_exp;
         let pow = BigInt::from(10).pow(shift as u32);
-        let (q, r) = (&dec.coeff / &pow, &dec.coeff % &pow);
+        let (q, r) = (&orig_coeff / &pow, &orig_coeff % &pow);
         let round_up = round_up_decision(ctx.rounding, dec.sign, &q, &r, &pow);
         dec.coeff = if round_up { q + BigInt::from(1) } else { q };
         dec.exp = etiny;
@@ -666,7 +678,7 @@ pub(crate) fn apply_context(
             // cannot be represented exactly and it falls through to the
             // underflow/clamp handling below.
             let k = trailing_zeros_of(&dec.coeff);
-            if (new_exp + k as isize) < etiny {
+            if (dec.exp + k as isize) < etiny {
                 // Underflow: even at minimum precision the exponent is below
                 // Etiny; round to Etiny (inexact -> Inexact+Rounded). No
                 // Clamped here: the result is an ordinary rounding up into the
@@ -677,19 +689,20 @@ pub(crate) fn apply_context(
                 if ctx.trap(vm, "Underflow")? {
                     return Err(ctx_trap_exc(vm, "Underflow", "underflow"));
                 }
-                let shift = (etiny - new_exp) as usize;
+                let shift = (etiny - orig_exp) as usize;
                 let pow = BigInt::from(10).pow(shift as u32);
-                let (q, r) = (&dec.coeff / &pow, &dec.coeff % &pow);
+                let (q, r) = (&orig_coeff / &pow, &orig_coeff % &pow);
                 // Round per the context mode (mpdecimal rounds a subnormal to
-                // the closest representable at Etiny).
+                // the closest representable at Etiny); single-step from the
+                // exact value to avoid double rounding (addx1012).
                 let round_up = round_up_decision(ctx.rounding, dec.sign, &q, &r, &pow);
                 dec.coeff = if round_up { q + BigInt::from(1) } else { q };
                 dec.exp = etiny;
                 ctx.set_flag(vm, "Inexact")?;
                 ctx.set_flag(vm, "Rounded")?;
-            } else if new_exp < etiny {
+            } else if dec.exp < etiny {
                 // Strip trailing zeros up to Etiny (value-preserving), Rounded.
-                let strip = (etiny - new_exp) as usize;
+                let strip = (etiny - dec.exp) as usize;
                 let strip = strip.min(k);
                 if strip > 0 {
                     let pow = BigInt::from(10).pow(strip as u32);
