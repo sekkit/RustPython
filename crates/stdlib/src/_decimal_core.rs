@@ -892,7 +892,10 @@ pub(crate) fn special_binary(
     op: &str,
 ) -> PyResult<Dec> {
     let _ = op;
-    // NaN dominates
+    // NaN dominates. Result sign follows the first operand a; payload comes
+    // from a signaling NaN (a's if present, else b's), then a's quiet NaN
+    // payload (CPython: subtract(-Inf,-sNaN) -> -NaN; subtract(1000,sNaN) ->
+    // NaN; subtract(sNaN,1000) -> NaN).
     if a.special == Special::NaN || a.special == Special::SignalingNaN
         || b.special == Special::NaN || b.special == Special::SignalingNaN
     {
@@ -907,8 +910,9 @@ pub(crate) fn special_binary(
                 ));
             }
         }
-        // Payload/sign from the first NaN operand (sNaN wins over quiet).
-        let n = if a.special == Special::SignalingNaN {
+        // Payload from the sNaN operand (a's if present, else b's), then a's
+        // quiet NaN; the sign always follows operand a.
+        let mut n = if a.special == Special::SignalingNaN {
             a.clone()
         } else if b.special == Special::SignalingNaN {
             b.clone()
@@ -917,7 +921,7 @@ pub(crate) fn special_binary(
         } else {
             b.clone()
         };
-        let mut n = n;
+        n.sign = a.sign;
         n.special = Special::NaN;
         // Payload truncated to context precision (sNaN123456789 -> NaN56789
         // at prec 6, addx62100).
