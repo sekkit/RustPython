@@ -3424,7 +3424,15 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 n.special = Special::NaN;
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let r = _decimal_core::apply_context(vm, &ctx, xd)?;
+            // -(-0) = +0 (zero loses the sign); a NaN keeps its sign
+            // (minus(-NaN22) == -NaN22).
+            let mut d = xd.clone();
+            if d.is_zero() {
+                d.sign = false;
+            } else if d.special != Special::NaN {
+                d.sign = !d.sign;
+            }
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -3441,7 +3449,13 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 n.special = Special::NaN;
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let r = _decimal_core::apply_context(vm, &ctx, xd)?;
+            // Unary plus clears a negative zero (plus(-0E2) -> 0E+2) but
+            // keeps a NaN's sign.
+            let mut d = xd.clone();
+            if d.is_zero() {
+                d.sign = false;
+            }
+            let r = _decimal_core::apply_context(vm, &ctx, d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
