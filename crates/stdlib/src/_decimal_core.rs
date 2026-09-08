@@ -991,8 +991,20 @@ pub(crate) fn special_binary(
                 return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
             }
             if inf_b {
-                // finite / Inf -> zero with the sign of the division.
-                return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+                // finite / Inf -> zero at the smallest exponent with the
+                // sign of the division (divide(1, Inf) -> 0E-398 Clamped at
+                // Emin=-383/prec=16); Clamped is signaled.
+                let etiny = ctx.emin - (ctx.prec as isize - 1);
+                ctx.set_flag(vm, "Clamped")?;
+                if ctx.trap(vm, "Clamped")? {
+                    return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+                }
+                return Ok(Dec {
+                    sign: a.sign ^ b.sign,
+                    coeff: BigInt::from(0),
+                    exp: etiny,
+                    special: Special::Finite,
+                });
             }
         }
         "mod" => {
@@ -1026,13 +1038,24 @@ pub(crate) fn special_binary(
 
 /// True division with context precision (long division to prec+1 digits).
 pub(crate) fn dec_div(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyResult<Dec> {
+    // Specials first: a NaN/Infinity operand wins over division-by-zero
+    // (divide(NaN, 0) -> NaN; divide(Inf, 0) -> Infinity via special_binary).
+    if a.is_special() || b.is_special() {
+        return special_binary(vm, ctx, a, b, "div");
+    }
     if b.is_zero() {
+        if a.is_zero() {
+            // 0 / 0 -> Division_undefined (InvalidOperation) + NaN
+            // (divx736: divide(-0,-0) -> NaN Division_undefined).
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "division undefined"));
+            }
+            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+        }
         ctx.set_flag(vm, "DivisionByZero")?;
         if ctx.trap(vm, "DivisionByZero")? {
             return Err(ctx_trap_exc(vm, "DivisionByZero", "division by zero"));
-        }
-        if a.is_zero() {
-            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
         }
         return Ok(Dec {
             sign: a.sign ^ b.sign,
@@ -1040,9 +1063,6 @@ pub(crate) fn dec_div(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
             exp: 0,
             special: Special::Infinity,
         });
-    }
-    if a.is_special() || b.is_special() {
-        return special_binary(vm, ctx, a, b, "div");
     }
     // a / b = (ca * 10^ea) / (cb * 10^eb)
     // long division producing the exact terminating form (keeps trailing
