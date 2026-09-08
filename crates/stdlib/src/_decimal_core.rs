@@ -995,8 +995,23 @@ pub(crate) fn special_binary(
                 return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
             }
         }
+        "mod" => {
+            // remainder/mod: a finite operand with an infinite divisor is the
+            // result (remainder(1, Inf) -> 1); an infinite operand is
+            // InvalidOperation (remainder(Inf, 2) raises).
+            if inf_b && !inf_a {
+                return Ok(a.clone());
+            }
+            if inf_a || inf_b {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "Inf floor/mod"));
+                }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            }
+        }
         _ => {
-            // floordiv/mod with any Infinity -> InvalidOperation + NaN.
+            // floordiv with any Infinity -> InvalidOperation + NaN.
             if inf_a || inf_b {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
@@ -1619,7 +1634,9 @@ pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
     let prod_sign = b.sign ^ floor.sign;
     let vb = if prod_sign { -mb } else { mb };
     let rv = va - vb;
-    let msign = rv.sign() == Sign::Minus;
+    // CPython: a zero remainder takes the sign of the dividend
+    // (remainder(-0.0, -1) -> -0.0; remainder(-0.00, 1) -> -0.00).
+    let msign = if rv == BigInt::from(0) { a.sign } else { rv.sign() == Sign::Minus };
     let mcoeff = rv.abs();
     let m = Dec { sign: msign, coeff: mcoeff, exp: me, special: Special::Finite };
     (floor, m)
@@ -1643,6 +1660,11 @@ pub(crate) fn dec_floordiv(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> 
 
 /// modulo a % b (sign of divisor)
 pub(crate) fn dec_mod(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyResult<Dec> {
+    // Specials first: a NaN operand wins over division-by-zero checks
+    // (remainder(NaN, -0) -> NaN).
+    if a.is_special() || b.is_special() {
+        return special_binary(vm, ctx, a, b, "mod");
+    }
     if b.is_zero() {
         ctx.set_flag(vm, "InvalidOperation")?;
         if ctx.trap(vm, "InvalidOperation")? {
@@ -1650,10 +1672,24 @@ pub(crate) fn dec_mod(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
         }
         return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
-    if a.is_special() || b.is_special() {
-        return special_binary(vm, ctx, a, b, "mod");
+    let (floor, m) = floor_div_mod(a, b);
+    // CPython: if the integer quotient's adjusted exponent reaches the
+    // context precision, the remainder cannot be computed exactly ->
+    // DivisionImpossible (remainder(100000000.5, 1) at prec 8 has quotient
+    // 100000000 with adjusted 8 >= 8; remainder(9.9e999999999, 1) has
+    // adjusted 999999999).
+    let q_adj = if floor.coeff == BigInt::from(0) {
+        -1
+    } else {
+        coeff_digits_of(&floor.coeff) as isize - 1
+    };
+    if q_adj >= ctx.prec as isize {
+        ctx.set_flag(vm, "InvalidOperation")?;
+        if ctx.trap(vm, "InvalidOperation")? {
+            return Err(new_decimal_error(vm, "InvalidOperation", "division impossible"));
+        }
+        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
-    let (_, m) = floor_div_mod(a, b);
     apply_context(vm, ctx, m)
 }
 
