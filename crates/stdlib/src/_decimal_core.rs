@@ -730,10 +730,14 @@ pub(crate) fn apply_context(
         if ctx.trap(vm, "Overflow")? {
             return Err(ctx_trap_exc(vm, "Overflow", "overflow"));
         }
-        // represent as Inf (with sign) per spec
-        dec.special = Special::Infinity;
-        dec.coeff = BigInt::from(0);
-        dec.exp = 0;
+        // Non-trapping overflow clamps to the largest representable value:
+        // prec nines with exponent Emax (subtract(1E+999999999,
+        // -9E+999999999) at prec 9/Emax 999999999 -> 9.99999999E+999999999,
+        // not Infinity).
+        let nines = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
+        dec.special = Special::Finite;
+        dec.coeff = nines;
+        dec.exp = ctx.emax - ctx.prec as isize + 1;
     }
     Ok(dec)
 }
