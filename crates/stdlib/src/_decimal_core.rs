@@ -730,14 +730,24 @@ pub(crate) fn apply_context(
         if ctx.trap(vm, "Overflow")? {
             return Err(ctx_trap_exc(vm, "Overflow", "overflow"));
         }
-        // Non-trapping overflow clamps to the largest representable value:
-        // prec nines with exponent Emax (subtract(1E+999999999,
-        // -9E+999999999) at prec 9/Emax 999999999 -> 9.99999999E+999999999,
-        // not Infinity).
-        let nines = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
-        dec.special = Special::Finite;
-        dec.coeff = nines;
-        dec.exp = ctx.emax - ctx.prec as isize + 1;
+        // Non-trapping overflow: round-half-* / up / ceiling yield Infinity;
+        // down / floor clamp to the largest representable value (prec nines
+        // at Emax). subx710 (round down): subtract(1E+999999999,
+        // -9E+999999999) at prec 9/Emax 999999999 -> 9.99999999E+999999999;
+        // addx6975 (round half_up): -> Infinity.
+        match ctx.rounding {
+            Rounding::Down | Rounding::Floor => {
+                let nines = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
+                dec.special = Special::Finite;
+                dec.coeff = nines;
+                dec.exp = ctx.emax - ctx.prec as isize + 1;
+            }
+            _ => {
+                dec.special = Special::Infinity;
+                dec.coeff = BigInt::from(0);
+                dec.exp = 0;
+            }
+        }
     }
     Ok(dec)
 }
@@ -872,7 +882,14 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
 
 /// Subtract (a - b).
 pub(crate) fn dec_sub(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyResult<Dec> {
-    let neg = Dec { sign: !b.sign, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
+    // A NaN operand keeps its original sign through the negation: CPython
+    // subtract(-1,-sNaN) -> -NaN (the sNaN's negative sign survives), while
+    // a finite b is negated normally.
+    let neg = if b.special == Special::NaN || b.special == Special::SignalingNaN {
+        b.clone()
+    } else {
+        Dec { sign: !b.sign, coeff: b.coeff.clone(), exp: b.exp, special: b.special }
+    };
     dec_add(ctx, vm, a, &neg)
 }
 
@@ -915,7 +932,10 @@ pub(crate) fn special_binary(
             }
         }
         // Payload from the sNaN operand (a's if present, else b's), then a's
-        // quiet NaN; the sign always follows operand a.
+        // quiet NaN; the result sign follows the first operand if it is a
+        // NaN, otherwise the second operand's sign (CPython:
+        // divide(-Inf,-NaN90) -> -NaN90; divide(NaN,-NaN) -> NaN;
+        // divide(Inf,-sNaN90) -> -NaN90; subtract(-1,-sNaN) -> -NaN).
         let mut n = if a.special == Special::SignalingNaN {
             a.clone()
         } else if b.special == Special::SignalingNaN {
@@ -925,7 +945,11 @@ pub(crate) fn special_binary(
         } else {
             b.clone()
         };
-        n.sign = a.sign;
+        n.sign = if a.special == Special::NaN || a.special == Special::SignalingNaN {
+            a.sign
+        } else {
+            b.sign
+        };
         n.special = Special::NaN;
         // Payload truncated to context precision (sNaN123456789 -> NaN56789
         // at prec 6, addx62100).
@@ -1074,8 +1098,12 @@ pub(crate) fn dec_div(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
     }
     // a / b = (ca * 10^ea) / (cb * 10^eb)
     // long division producing the exact terminating form (keeps trailing
-    // zeros like CPython: 2.0/2 -> 1.0), capped at prec+1 digits for
-    // non-terminating quotients (apply_context rounds to prec).
+    // zeros like CPython: 2.0/2 -> 1.0). For non-terminating quotients,
+    // generate prec+2 digits so the rounding in apply_context sees more
+    // than one discarded digit: 5/11 = 0.45454545... at prec 7 would
+    // otherwise truncate to 4545454|5 (a false half-tie -> 4545454);
+    // with the 9th digit 4 the discarded part 54 > 50 rounds up
+    // (divx1051 -> 0.4545455).
     let prec = ctx.prec as usize;
     let mut num = a.coeff.clone();
     let den = b.coeff.clone();
@@ -1084,7 +1112,7 @@ pub(crate) fn dec_div(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
     let mut coeff = ip.clone();
     let mut exp = a.exp - b.exp;
     let mut coeff_digits = if ip == BigInt::from(0) { 0 } else { coeff_digits_of(&ip) };
-    while rem != BigInt::from(0) && coeff_digits <= prec {
+    while rem != BigInt::from(0) && coeff_digits <= prec + 1 {
         rem *= BigInt::from(10);
         let d = &rem / &den;
         rem = &rem % &den;
