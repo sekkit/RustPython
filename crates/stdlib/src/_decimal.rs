@@ -3655,6 +3655,40 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
+            // NaN handling: a signaling NaN always signals InvalidOperation
+            // and yields a quiet NaN (payload kept) even when the other
+            // operand is a number (min(sNaN99,-Inf) -> NaN99); a quiet NaN
+            // is ignored when the other operand is a number (max(NaN,1000)
+            // -> 1000); both quiet NaN -> NaN.
+            let x_snan = xd.special == Special::SignalingNaN;
+            let y_snan = yd.special == Special::SignalingNaN;
+            let x_qnan = xd.special == Special::NaN;
+            let y_qnan = yd.special == Special::NaN;
+            if x_snan || y_snan {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "max with sNaN"));
+                }
+                let mut n = if x_snan {
+                    xd.clone()
+                } else {
+                    yd.clone()
+                };
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
+            }
+            if x_qnan || y_qnan {
+                let n = if x_qnan && y_qnan {
+                    let mut n = xd.clone();
+                    n.special = Special::NaN;
+                    n
+                } else if x_qnan {
+                    yd.clone()
+                } else {
+                    xd.clone()
+                };
+                return Ok(PyDecimal::to_py(vm, n));
+            }
             let r = if dec_cmp(&xd, &yd) >= 0 { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -3665,6 +3699,36 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
+            // NaN handling mirrors max (sNaN signals; quiet NaN ignored).
+            let x_snan = xd.special == Special::SignalingNaN;
+            let y_snan = yd.special == Special::SignalingNaN;
+            let x_qnan = xd.special == Special::NaN;
+            let y_qnan = yd.special == Special::NaN;
+            if x_snan || y_snan {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "max_mag with sNaN"));
+                }
+                let mut n = if x_snan {
+                    xd.clone()
+                } else {
+                    yd.clone()
+                };
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
+            }
+            if x_qnan || y_qnan {
+                let n = if x_qnan && y_qnan {
+                    let mut n = xd.clone();
+                    n.special = Special::NaN;
+                    n
+                } else if x_qnan {
+                    yd.clone()
+                } else {
+                    xd.clone()
+                };
+                return Ok(PyDecimal::to_py(vm, n));
+            }
             let xa = _decimal_core::Dec { sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special };
             let ya = _decimal_core::Dec { sign: false, coeff: yd.coeff.clone(), exp: yd.exp, special: yd.special };
             let r = if dec_cmp(&xa, &ya) >= 0 { xd } else { yd };
@@ -3677,6 +3741,39 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
+            // NaN handling mirrors max: sNaN signals InvalidOperation and yields a
+            // quiet NaN (payload kept) even with a numeric operand; a quiet
+            // NaN is ignored when the other operand is a number; both quiet
+            // NaN -> NaN.
+            let x_snan = xd.special == Special::SignalingNaN;
+            let y_snan = yd.special == Special::SignalingNaN;
+            let x_qnan = xd.special == Special::NaN;
+            let y_qnan = yd.special == Special::NaN;
+            if x_snan || y_snan {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "min with sNaN"));
+                }
+                let mut n = if x_snan {
+                    xd.clone()
+                } else {
+                    yd.clone()
+                };
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
+            }
+            if x_qnan || y_qnan {
+                let n = if x_qnan && y_qnan {
+                    let mut n = xd.clone();
+                    n.special = Special::NaN;
+                    n
+                } else if x_qnan {
+                    yd.clone()
+                } else {
+                    xd.clone()
+                };
+                return Ok(PyDecimal::to_py(vm, n));
+            }
             let r = if dec_cmp(&xd, &yd) <= 0 { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
@@ -3687,6 +3784,36 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
+            // NaN handling mirrors min (sNaN signals; quiet NaN ignored).
+            let x_snan = xd.special == Special::SignalingNaN;
+            let y_snan = yd.special == Special::SignalingNaN;
+            let x_qnan = xd.special == Special::NaN;
+            let y_qnan = yd.special == Special::NaN;
+            if x_snan || y_snan {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "min_mag with sNaN"));
+                }
+                let mut n = if x_snan {
+                    xd.clone()
+                } else {
+                    yd.clone()
+                };
+                n.special = Special::NaN;
+                return Ok(PyDecimal::to_py(vm, n));
+            }
+            if x_qnan || y_qnan {
+                let n = if x_qnan && y_qnan {
+                    let mut n = xd.clone();
+                    n.special = Special::NaN;
+                    n
+                } else if x_qnan {
+                    yd.clone()
+                } else {
+                    xd.clone()
+                };
+                return Ok(PyDecimal::to_py(vm, n));
+            }
             let xa = _decimal_core::Dec { sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special };
             let ya = _decimal_core::Dec { sign: false, coeff: yd.coeff.clone(), exp: yd.exp, special: yd.special };
             let r = if dec_cmp(&xa, &ya) <= 0 { xd } else { yd };
