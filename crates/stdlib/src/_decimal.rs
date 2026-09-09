@@ -115,80 +115,43 @@ mod _decimal {
             }
             return if b.sign { 1 } else { -1 };
         }
+        // Both finite. Zeros compare equal regardless of sign.
+        let az = a.is_zero();
+        let bz = b.is_zero();
+        if az && bz {
+            return 0;
+        }
+        if az {
+            // 0 vs nonzero: less than a positive, greater than a negative.
+            return if b.sign { 1 } else { -1 };
+        }
+        if bz {
+            return if a.sign { -1 } else { 1 };
+        }
+        // Both nonzero: differing signs decide immediately.
+        if a.sign != b.sign {
+            return if a.sign { -1 } else { 1 };
+        }
+        // Same sign: compare by adjusted exponent first so that operands with
+        // wildly differing exponents (e.g. 1E-391 vs 1E-999999999) never need
+        // to align their coefficients (which would materialise 10^n).
+        let adj_a = a.exp + _decimal_core::coeff_digits_of(&a.coeff) as isize - 1;
+        let adj_b = b.exp + _decimal_core::coeff_digits_of(&b.coeff) as isize - 1;
+        if adj_a != adj_b {
+            let a_bigger = adj_a > adj_b;
+            let pos = !a.sign;
+            return if pos == a_bigger { 1 } else { -1 };
+        }
+        // Adjusted exponents match: align and compare coefficients. The powers
+        // involved are bounded by the digit-count difference, so never huge.
         let ne = a.exp.min(b.exp);
         let ca = &a.coeff * BigInt::from(10).pow((a.exp - ne) as u32);
         let cb = &b.coeff * BigInt::from(10).pow((b.exp - ne) as u32);
-        let va = if a.sign { -&ca } else { ca };
-        let vb = if b.sign { -&cb } else { cb };
         use core::cmp::Ordering;
-        match va.cmp(&vb) {
-            Ordering::Less => -1,
+        match ca.cmp(&cb) {
+            Ordering::Less => if a.sign { 1 } else { -1 },
             Ordering::Equal => 0,
-            Ordering::Greater => 1,
-        }
-    }
-
-    /// CPython tie-break for `max`: when two operands are numerically equal,
-    /// the chosen operand depends on representation (sign and exponent), not
-    /// on argument order. Returns true when the first operand `a` is the one
-    /// CPython selects. Same rule is reused by `max_mag` on a magnitude tie.
-    fn max_picks_a(a: &Dec, b: &Dec) -> bool {
-        match dec_cmp(a, b) {
-            1 => true,
-            -1 => false,
-            _ => {
-                if a.sign != b.sign {
-                    // +0 vs -0 (only equal values with differing sign): max
-                    // prefers the positive one.
-                    !a.sign
-                } else if a.sign {
-                    // both negative: smaller exponent wins.
-                    a.exp <= b.exp
-                } else {
-                    // both positive: larger exponent wins.
-                    a.exp >= b.exp
-                }
-            }
-        }
-    }
-
-    /// CPython tie-break for `min` (mirror of `max`).
-    fn min_picks_a(a: &Dec, b: &Dec) -> bool {
-        match dec_cmp(a, b) {
-            -1 => true,
-            1 => false,
-            _ => {
-                if a.sign != b.sign {
-                    a.sign
-                } else if a.sign {
-                    a.exp >= b.exp
-                } else {
-                    a.exp <= b.exp
-                }
-            }
-        }
-    }
-
-    /// `max_mag` selects the larger-magnitude operand; on a magnitude tie it
-    /// applies the same representation-based selection as `max`.
-    fn max_mag_picks_a(a: &Dec, b: &Dec) -> bool {
-        let xa = Dec { sign: false, coeff: a.coeff.clone(), exp: a.exp, special: a.special };
-        let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
-        match dec_cmp(&xa, &ya) {
-            1 => true,
-            -1 => false,
-            _ => max_picks_a(a, b),
-        }
-    }
-
-    /// `min_mag` (mirror of `max_mag`).
-    fn min_mag_picks_a(a: &Dec, b: &Dec) -> bool {
-        let xa = Dec { sign: false, coeff: a.coeff.clone(), exp: a.exp, special: a.special };
-        let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
-        match dec_cmp(&xa, &ya) {
-            -1 => true,
-            1 => false,
-            _ => min_picks_a(a, b),
+            Ordering::Greater => if a.sign { -1 } else { 1 },
         }
     }
 
@@ -234,6 +197,207 @@ mod _decimal {
         }
         // CPython: Context methods reject float and str (TypeError).
         Err(vm.new_type_error(format!("conversion from {} to Decimal is not supported", obj.class().name())))
+    }
+
+    /// Quiet a NaN (signaling or not), truncating the payload to the context's
+    /// maximum length (prec - clamp), matching CPython's `_fix_nan`.
+    fn quiet_nan(x: &Dec, ctx: &Ctx) -> Dec {
+        let max_len = (ctx.prec - ctx.clamp).max(1) as usize;
+        let digits = _decimal_core::coeff_digits_of(&x.coeff);
+        let coeff = if digits > max_len {
+            let s = x.coeff.to_string();
+            let start = s.len().saturating_sub(max_len);
+            let stripped = s[start..].trim_start_matches('0');
+            if stripped.is_empty() {
+                BigInt::from(0)
+            } else {
+                stripped.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(0))
+            }
+        } else {
+            x.coeff.clone()
+        };
+        Dec { sign: x.sign, coeff, exp: 0, special: Special::NaN }
+    }
+
+    /// CPython `Decimal._check_nans`: a signaling NaN operand signals
+    /// InvalidOperation and returns a quiet NaN (self before other); a quiet
+    /// NaN propagates (self before other). Returns Some(result) when a NaN was
+    /// handled, else None.
+    fn check_nans(
+        vm: &VirtualMachine,
+        ctx: &Ctx,
+        x: &Dec,
+        y: Option<&Dec>,
+    ) -> PyResult<Option<Dec>> {
+        let x_nan = x.special == Special::NaN || x.special == Special::SignalingNaN;
+        let y_nan = y.map_or(false, |d| {
+            d.special == Special::NaN || d.special == Special::SignalingNaN
+        });
+        if !x_nan && !y_nan {
+            return Ok(None);
+        }
+        if x.special == Special::SignalingNaN {
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "sNaN"));
+            }
+            return Ok(Some(quiet_nan(x, ctx)));
+        }
+        if let Some(d) = y {
+            if d.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "sNaN"));
+                }
+                return Ok(Some(quiet_nan(d, ctx)));
+            }
+        }
+        if x_nan {
+            return Ok(Some(quiet_nan(x, ctx)));
+        }
+        Ok(Some(quiet_nan(y.unwrap(), ctx)))
+    }
+
+    /// Next representable value from `x` in direction `dir` (+1 up, -1 down),
+    /// matching CPython `next_plus`/`next_minus`. The caller must already have
+    /// handled NaN operands. Computation runs on a scratch context where all
+    /// flags and traps are ignored (CPython context.copy()._ignore_all_flags),
+    /// so no flags are raised on the real context here.
+    fn next_value(vm: &VirtualMachine, ctx: &Ctx, x: &Dec, dir: i8) -> PyResult<Dec> {
+        // +/-Infinity: moving in the same direction returns self; the opposite
+        // direction returns the largest finite value (prec nines at Etop),
+        // preserving self's sign.
+        if x.special == Special::Infinity {
+            if (dir > 0 && !x.sign) || (dir < 0 && x.sign) {
+                return Ok(x.clone());
+            }
+            let etop = ctx.emax - (ctx.prec - 1);
+            let nines = "9".repeat(ctx.prec.max(1) as usize);
+            return Ok(Dec {
+                sign: x.sign,
+                coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
+                exp: etop,
+                special: Special::Finite,
+            });
+        }
+        let rctx = Ctx::from_parts(
+            ctx.prec,
+            if dir < 0 { Rounding::Floor } else { Rounding::Ceiling },
+            ctx.emax,
+            ctx.emin,
+            ctx.clamp,
+            vm.ctx.new_dict(),
+            vm.ctx.new_dict(),
+        );
+        // Zero: _fix leaves it zero, so move straight to the tiny increment
+        // (0 +/- 1E(Etiny-1)), avoiding a pointless 10^(exp-e) alignment.
+        if x.is_zero() {
+            let etiny = ctx.emin - (ctx.prec - 1);
+            let shifted = Dec {
+                sign: dir < 0,
+                coeff: BigInt::from(1),
+                exp: etiny - 1,
+                special: Special::Finite,
+            };
+            return _decimal_core::apply_context(vm, &rctx, shifted);
+        }
+        // _fix(self): rounding to the precision may itself yield the next
+        // representable value (operands beyond precision, e.g. 1.00000010998).
+        let new_self = _decimal_core::apply_context(vm, &rctx, x.clone())?;
+        if dec_cmp(&new_self, x) != 0 {
+            return Ok(new_self);
+        }
+        // Self is on the lattice: move by 10^(Etiny-1) and re-round.
+        let etiny = ctx.emin - (ctx.prec - 1);
+        let tiny_exp = etiny - 1;
+        let e = tiny_exp.min(x.exp);
+        let d_shift = BigInt::from(10).pow((x.exp - e) as u32);
+        let inc_shift = BigInt::from(10).pow((tiny_exp - e) as u32);
+        let signed_x = if x.sign { -(&x.coeff * &d_shift) } else { &x.coeff * &d_shift };
+        let inc = BigInt::from(1) * &inc_shift;
+        let new_signed: BigInt = if dir < 0 { signed_x - inc } else { signed_x + inc };
+        let (coeff, sign) = if new_signed < BigInt::from(0) {
+            (-new_signed.clone(), true)
+        } else {
+            (new_signed.clone(), false)
+        };
+        let shifted = Dec { sign, coeff, exp: e, special: Special::Finite };
+        _decimal_core::apply_context(vm, &rctx, shifted)
+    }
+
+    /// next_plus: smallest representable larger than self. Raises only
+    /// InvalidOperation for a signaling NaN (CPython ignores all other flags).
+    fn next_plus_core(vm: &VirtualMachine, ctx: &Ctx, x: &Dec) -> PyResult<Dec> {
+        if let Some(nan) = check_nans(vm, ctx, x, None)? {
+            return Ok(nan);
+        }
+        next_value(vm, ctx, x, 1)
+    }
+
+    /// next_minus: largest representable smaller than self.
+    fn next_minus_core(vm: &VirtualMachine, ctx: &Ctx, x: &Dec) -> PyResult<Dec> {
+        if let Some(nan) = check_nans(vm, ctx, x, None)? {
+            return Ok(nan);
+        }
+        next_value(vm, ctx, x, -1)
+    }
+
+    /// next_toward: closest number to self in the direction of y. Equal
+    /// operands return self with y's sign; otherwise next_plus/next_minus is
+    /// used and the CPython-mandated flags are raised on the real context
+    /// (Overflow/Inexact/Rounded for an infinite result; Underflow/Subnormal/
+    /// Inexact/Rounded, plus Clamped when the result is zero, for a subnormal).
+    fn next_toward_core(vm: &VirtualMachine, ctx: &Ctx, x: &Dec, y: &Dec) -> PyResult<Dec> {
+        if let Some(nan) = check_nans(vm, ctx, x, Some(y))? {
+            return Ok(nan);
+        }
+        if dec_cmp(x, y) == 0 {
+            // copy_sign(self, other): self's coefficient/exponent, other's sign.
+            return Ok(Dec { sign: y.sign, coeff: x.coeff.clone(), exp: x.exp, special: x.special });
+        }
+        let dir = if dec_cmp(y, x) < 0 { -1i8 } else { 1i8 };
+        let ans = next_value(vm, ctx, x, dir)?;
+        if ans.special == Special::Infinity {
+            ctx.set_flag(vm, "Overflow")?;
+            if ctx.trap(vm, "Overflow")? {
+                return Err(new_decimal_error(vm, "Overflow", "Infinite result from next_toward"));
+            }
+            ctx.set_flag(vm, "Inexact")?;
+            if ctx.trap(vm, "Inexact")? {
+                return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+            }
+            ctx.set_flag(vm, "Rounded")?;
+            if ctx.trap(vm, "Rounded")? {
+                return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+            }
+        } else if !ans.is_special() {
+            let adj = ans.exp + _decimal_core::coeff_digits_of(&ans.coeff) as isize - 1;
+            if adj < ctx.emin {
+                ctx.set_flag(vm, "Underflow")?;
+                if ctx.trap(vm, "Underflow")? {
+                    return Err(new_decimal_error(vm, "Underflow", "underflow"));
+                }
+                ctx.set_flag(vm, "Subnormal")?;
+                if ctx.trap(vm, "Subnormal")? {
+                    return Err(new_decimal_error(vm, "Subnormal", "subnormal"));
+                }
+                ctx.set_flag(vm, "Inexact")?;
+                if ctx.trap(vm, "Inexact")? {
+                    return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                }
+                ctx.set_flag(vm, "Rounded")?;
+                if ctx.trap(vm, "Rounded")? {
+                    return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+                }
+                if ans.is_zero() {
+                    ctx.set_flag(vm, "Clamped")?;
+                    if ctx.trap(vm, "Clamped")? {
+                        return Err(new_decimal_error(vm, "Clamped", "clamped"));
+                    }
+                }
+            }
+        }
+        Ok(ans)
     }
 
     /// Resolve the context for a Decimal method call: an explicit
@@ -796,175 +960,13 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             ctx: &Ctx,
             dir: i8,
         ) -> PyResult<Dec> {
-            // CPython (_pydecimal): next_plus uses ROUND_CEILING, next_minus
-            // uses ROUND_FLOOR. Round self to the context; if that changes the
-            // value, it IS the next representable. Otherwise add/subtract the
-            // smallest lattice increment 10^(Etiny-1) and re-round.
-            let d = &self.d;
-            if d.is_zero() {
-                // 0 -> +/- 10^Etiny (smallest representable increment)
-                let etiny = ctx.emin - (ctx.prec as isize - 1);
-                return Ok(Dec {
-                    sign: dir < 0,
-                    coeff: BigInt::from(1),
-                    exp: etiny,
-                    special: Special::Finite,
-                });
+            // next_plus/next_minus: a signaling NaN signals InvalidOperation and
+            // quiets; otherwise compute the next representable value (the real
+            // flag raising for next_toward is done by next_toward_core).
+            if let Some(nan) = check_nans(vm, ctx, &self.d, None)? {
+                return Ok(nan);
             }
-            if d.is_special() {
-                // sNaN signals InvalidOperation (raises when trapped).
-                if d.special == Special::SignalingNaN {
-                    ctx.set_flag(vm, "InvalidOperation")?;
-                    if ctx.trap(vm, "InvalidOperation")? {
-                        return Err(new_decimal_error(vm, "InvalidOperation", "next with sNaN"));
-                    }
-                    return Ok(Dec { sign: d.sign, coeff: d.coeff.clone(), exp: 0, special: Special::NaN });
-                }
-                // next_plus(+Inf) = +Inf; next_minus(-Inf) = -Inf (extreme).
-                // next_plus(-Inf) = largest negative finite; next_minus(+Inf) = largest positive finite.
-                if d.special == Special::Infinity {
-                    let is_extreme = (dir > 0 && !d.sign) || (dir < 0 && d.sign);
-                    if is_extreme {
-                        return Ok(d.clone());
-                    }
-                    let etop = ctx.emax - (ctx.prec - 1);
-                    let nines = "9".repeat(ctx.prec.max(1) as usize);
-                    return Ok(Dec {
-                        sign: d.sign,
-                        coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
-                        exp: etop,
-                        special: Special::Finite,
-                    });
-                }
-                return Ok(d.clone());
-            }
-            // A finite value above Emax behaves like ±Inf for next_*.
-            let adj = d.exp + _decimal_core::coeff_digits_of(&d.coeff) as isize - 1;
-            if adj > ctx.emax {
-                let is_extreme = (dir > 0 && !d.sign) || (dir < 0 && d.sign);
-                if is_extreme {
-                    return Ok(Dec {
-                        sign: d.sign,
-                        coeff: BigInt::from(0),
-                        exp: 0,
-                        special: Special::Infinity,
-                    });
-                }
-                let etop = ctx.emax - (ctx.prec - 1);
-                let nines = "9".repeat(ctx.prec.max(1) as usize);
-                return Ok(Dec {
-                    sign: d.sign,
-                    coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
-                    exp: etop,
-                    special: Special::Finite,
-                });
-            }
-            let dir_rounding = if dir < 0 { Rounding::Floor } else { Rounding::Ceiling };
-            // Clone the context with the directional rounding.
-            let rctx = Ctx::from_parts(
-                ctx.prec,
-                dir_rounding,
-                ctx.emax,
-                ctx.emin,
-                ctx.clamp,
-                ctx.flags.clone(),
-                ctx.traps.clone(),
-            );
-            // Round self to precision with that rounding.
-            let rounded = _decimal_core::round_to_prec(
-                vm, &rctx, d.sign, &d.coeff, d.exp, ctx.prec,
-            )?;
-            let rounded_dec = Dec {
-                sign: d.sign,
-                coeff: rounded.0,
-                exp: rounded.1,
-                special: Special::Finite,
-            };
-            // Compare by VALUE, not representation ((10, 0) == (1, 1)).
-            if dec_cmp(&rounded_dec, d) != 0 {
-                return Ok(rounded_dec);
-            }
-            // Self is already on the lattice: move by 10^(Etiny-1). Work in the
-            // signed value domain so -1 - tiny = -1.01 (not -0.99).
-            let etiny = ctx.emin - (ctx.prec as isize - 1);
-            let tiny_exp = etiny - 1;
-            let e = tiny_exp.min(d.exp);
-            let d_shift = BigInt::from(10).pow((d.exp - e) as u32);
-            let signed = if d.sign {
-                -(&d.coeff * &d_shift)
-            } else {
-                &d.coeff * &d_shift
-            };
-            let new_signed: BigInt = if dir < 0 { signed - BigInt::from(1) } else { signed + BigInt::from(1) };
-            let coeff = if new_signed < BigInt::from(0) {
-                -new_signed.clone()
-            } else {
-                new_signed.clone()
-            };
-            let shifted = Dec {
-                sign: new_signed < BigInt::from(0),
-                coeff,
-                exp: e,
-                special: Special::Finite,
-            };
-            // Re-round with the directional rounding. Unlike normal
-            // arithmetic, next_plus/next_minus must NOT set Rounded,
-            // Inexact, Subnormal, or Overflow flags (CPython parity).
-            // We manually handle overflow (-> Infinity) and subnormal
-            // clamp (-> Etiny) without signalling.
-            let r2 = _decimal_core::round_to_prec(
-                vm, &rctx, shifted.sign, &shifted.coeff, shifted.exp, ctx.prec,
-            )?;
-            let mut candidate = Dec {
-                sign: shifted.sign,
-                coeff: r2.0,
-                exp: r2.1,
-                special: Special::Finite,
-            };
-            // Carry normalization: strip trailing zeros if coeff exceeds prec.
-            while _decimal_core::coeff_digits_of(&candidate.coeff) > ctx.prec as usize
-                && candidate.coeff != BigInt::from(0)
-                && (&candidate.coeff % BigInt::from(10)) == BigInt::from(0)
-            {
-                candidate.coeff = &candidate.coeff / BigInt::from(10);
-                candidate.exp += 1;
-            }
-            // Overflow: adjusted exponent exceeds Emax -> Infinity.
-            let cand_adj = candidate.exp
-                + _decimal_core::coeff_digits_of(&candidate.coeff) as isize
-                - 1;
-            if cand_adj > ctx.emax {
-                return Ok(Dec {
-                    sign: candidate.sign,
-                    coeff: BigInt::from(0),
-                    exp: 0,
-                    special: Special::Infinity,
-                });
-            }
-            // Subnormal clamp: stored exponent below Etiny -> round to Etiny
-            // using the directional rounding (CEILING for next_plus, FLOOR for
-            // next_minus). Only round up when there is a nonzero remainder.
-            if candidate.exp < etiny && !candidate.is_zero() {
-                let shift = etiny - candidate.exp;
-                let pow = BigInt::from(10).pow(shift as u32);
-                let (q, r) = (&candidate.coeff / &pow, &candidate.coeff % &pow);
-                let round_up = if r != BigInt::from(0) {
-                    match dir_rounding {
-                        Rounding::Ceiling => !candidate.sign,
-                        Rounding::Floor => candidate.sign,
-                        _ => (&r * BigInt::from(2)) >= pow,
-                    }
-                } else {
-                    false
-                };
-                candidate.coeff = if round_up { q + BigInt::from(1) } else { q };
-                candidate.exp = etiny;
-            }
-            // Zero result from clamping: preserve sign, set exp to Etiny.
-            if candidate.is_zero() {
-                candidate.exp = etiny;
-            }
-            Ok(candidate)
+            next_value(vm, ctx, &self.d, dir)
         }
 
         #[pymethod]
@@ -980,14 +982,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("next_toward requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec(&other, vm)?;
-            // If equal (value-wise), return self.
-            if dec_cmp(&self.d, &b) == 0 && self.d.special == b.special {
-                return Ok(PyDecimal::to_py(vm, self.d.clone()));
-            }
-            // Move one ulp toward b: toward -Inf if b < self, else +Inf.
-            let dir = if dec_cmp(&b, &self.d) < 0 { -1i8 } else { 1i8 };
-            let r = self.next_step(vm, &ctx, dir)?;
-            Ok(PyDecimal::to_py(vm, r))
+            Ok(PyDecimal::to_py(vm, next_toward_core(vm, &ctx, &self.d, &b)?))
         }
 
         #[pymethod]
@@ -1010,7 +1005,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
-            let chosen = if max_picks_a(&self.d, &b) { self.d.clone() } else { b };
+            let chosen = if dec_cmp(&self.d, &b) >= 0 { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -1033,7 +1028,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
-            let chosen = if min_picks_a(&self.d, &b) { self.d.clone() } else { b };
+            let chosen = if dec_cmp(&self.d, &b) <= 0 { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -1056,7 +1051,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
-            let chosen = if max_mag_picks_a(&self.d, &b) { self.d.clone() } else { b };
+            let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
+            let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
+            let chosen = if dec_cmp(&xa, &ya) >= 0 { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -1079,7 +1076,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
-            let chosen = if min_mag_picks_a(&self.d, &b) { self.d.clone() } else { b };
+            let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
+            let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
+            let chosen = if dec_cmp(&xa, &ya) <= 0 { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3836,7 +3835,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 };
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let r = if max_picks_a(&xd, &yd) { xd } else { yd };
+            let r = if dec_cmp(&xd, &yd) >= 0 { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3876,7 +3875,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 };
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let r = if max_mag_picks_a(&xd, &yd) { xd } else { yd };
+            let xa = _decimal_core::Dec { sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special };
+            let ya = _decimal_core::Dec { sign: false, coeff: yd.coeff.clone(), exp: yd.exp, special: yd.special };
+            let r = if dec_cmp(&xa, &ya) >= 0 { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3919,7 +3920,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 };
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let r = if min_picks_a(&xd, &yd) { xd } else { yd };
+            let r = if dec_cmp(&xd, &yd) <= 0 { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3959,7 +3960,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 };
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let r = if min_mag_picks_a(&xd, &yd) { xd } else { yd };
+            let xa = _decimal_core::Dec { sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special };
+            let ya = _decimal_core::Dec { sign: false, coeff: yd.coeff.clone(), exp: yd.exp, special: yd.special };
+            let r = if dec_cmp(&xa, &ya) <= 0 { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -4076,18 +4079,14 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         fn next_minus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
-            let pd = PyDecimal { d: xd };
-            let r = pd.next_step(vm, &ctx, -1)?;
-            Ok(PyDecimal::to_py(vm, r))
+            Ok(PyDecimal::to_py(vm, next_minus_core(vm, &ctx, &xd)?))
         }
 
         #[pymethod]
         fn next_plus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
-            let pd = PyDecimal { d: xd };
-            let r = pd.next_step(vm, &ctx, 1)?;
-            Ok(PyDecimal::to_py(vm, r))
+            Ok(PyDecimal::to_py(vm, next_plus_core(vm, &ctx, &xd)?))
         }
 
         #[pymethod]
@@ -4095,15 +4094,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            // If equal (value-wise), return self.
-            if dec_cmp(&xd, &yd) == 0 && xd.special == yd.special {
-                return Ok(PyDecimal::to_py(vm, xd));
-            }
-            // Move one ulp toward y: toward -Inf if y < x, else +Inf.
-            let dir = if dec_cmp(&yd, &xd) < 0 { -1i8 } else { 1i8 };
-            let pd = PyDecimal { d: xd };
-            let r = pd.next_step(vm, &ctx, dir)?;
-            Ok(PyDecimal::to_py(vm, r))
+            Ok(PyDecimal::to_py(vm, next_toward_core(vm, &ctx, &xd, &yd)?))
         }
 
         #[pymethod]

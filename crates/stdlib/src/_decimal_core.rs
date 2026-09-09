@@ -638,22 +638,57 @@ pub(crate) fn apply_context(
         // at -1E-398, not flushed to zero). Round from the exact pre-rounding
         // value in a single step to avoid double rounding.
         let shift = etiny - orig_exp;
-        let pow = BigInt::from(10).pow(shift as u32);
-        let (q, r) = (&orig_coeff / &pow, &orig_coeff % &pow);
-        let round_up = round_up_decision(ctx.rounding, dec.sign, &q, &r, &pow);
-        dec.coeff = if round_up { q + BigInt::from(1) } else { q };
-        dec.exp = etiny;
-        if r != BigInt::from(0) {
-            ctx.set_flag(vm, "Inexact")?;
-            ctx.set_flag(vm, "Rounded")?;
-        }
-        // Clamped only when the clamped result is zero (the value was flushed
-        // to zero at Etiny): 0.001E-999 -> 0E-1001 is Clamped, while
-        // 0.009E-999 -> 1E-1001 (rounds up to a nonzero subnormal) is not.
-        if dec.coeff == BigInt::from(0) {
-            ctx.set_flag(vm, "Clamped")?;
-            if ctx.trap(vm, "Clamped")? {
-                return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+        let digits = coeff_digits_of(&orig_coeff) as isize;
+        // Fast path: when shift exceeds the operand's digit count the quotient
+        // is zero (the whole coefficient is the remainder), so 10^shift is
+        // never needed as a divisor. This matters for ultra-tiny operands such
+        // as 1E-999999999, where 10^shift would otherwise materialise a number
+        // with ~10^9 digits. Here r < 10^digits and pow = 10^shift with
+        // shift > digits, so r*2 < pow holds for every half-* mode.
+        if shift > digits {
+            let r = orig_coeff.clone();
+            let round_up = match ctx.rounding {
+                Rounding::Down => false,
+                Rounding::Up => true,
+                Rounding::Ceiling => !dec.sign,
+                Rounding::Floor => dec.sign,
+                Rounding::HalfDown | Rounding::HalfUp | Rounding::HalfEven => false,
+                // q == 0, last kept digit is 0: 05up/01up round up regardless.
+                Rounding::Half05Up | Rounding::Half01Up => true,
+            };
+            dec.coeff = if round_up { BigInt::from(1) } else { BigInt::from(0) };
+            dec.exp = etiny;
+            if r != BigInt::from(0) {
+                ctx.set_flag(vm, "Inexact")?;
+                ctx.set_flag(vm, "Rounded")?;
+            }
+            // Clamped only when the clamped result is zero (the value was
+            // flushed to zero at Etiny).
+            if dec.coeff == BigInt::from(0) {
+                ctx.set_flag(vm, "Clamped")?;
+                if ctx.trap(vm, "Clamped")? {
+                    return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+                }
+            }
+        } else {
+            let pow = BigInt::from(10).pow(shift as u32);
+            let (q, r) = (&orig_coeff / &pow, &orig_coeff % &pow);
+            let round_up = round_up_decision(ctx.rounding, dec.sign, &q, &r, &pow);
+            dec.coeff = if round_up { q + BigInt::from(1) } else { q };
+            dec.exp = etiny;
+            if r != BigInt::from(0) {
+                ctx.set_flag(vm, "Inexact")?;
+                ctx.set_flag(vm, "Rounded")?;
+            }
+            // Clamped only when the clamped result is zero (the value was
+            // flushed to zero at Etiny): 0.001E-999 -> 0E-1001 is Clamped,
+            // while 0.009E-999 -> 1E-1001 (rounds up to a nonzero subnormal)
+            // is not.
+            if dec.coeff == BigInt::from(0) {
+                ctx.set_flag(vm, "Clamped")?;
+                if ctx.trap(vm, "Clamped")? {
+                    return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+                }
             }
         }
     } else if (orig_exp as i128) + coeff_digits_of(&orig_coeff) as i128 - 1 < ctx.emin as i128 {
@@ -730,23 +765,28 @@ pub(crate) fn apply_context(
         if ctx.trap(vm, "Overflow")? {
             return Err(ctx_trap_exc(vm, "Overflow", "overflow"));
         }
-        // Non-trapping overflow: round-half-* / up / ceiling yield Infinity;
-        // down / floor clamp to the largest representable value (prec nines
-        // at Emax). subx710 (round down): subtract(1E+999999999,
-        // -9E+999999999) at prec 9/Emax 999999999 -> 9.99999999E+999999999;
-        // addx6975 (round half_up): -> Infinity.
-        match ctx.rounding {
-            Rounding::Down | Rounding::Floor => {
-                let nines = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
-                dec.special = Special::Finite;
-                dec.coeff = nines;
-                dec.exp = ctx.emax - ctx.prec as isize + 1;
-            }
-            _ => {
-                dec.special = Special::Infinity;
-                dec.coeff = BigInt::from(0);
-                dec.exp = 0;
-            }
+        // Non-trapping overflow: the clamped value depends on rounding AND
+        // sign, matching CPython's Overflow.handle. half_up/even/down and
+        // up -> ±Infinity; ceiling overflows to +Infinity only for a positive
+        // result (negative clamps to the largest finite); floor overflows to
+        // -Infinity only for a negative result (positive clamps to finite);
+        // down/05up/01up always clamp to the largest finite (prec nines at
+        // Emax, sign preserved).
+        let to_inf = match ctx.rounding {
+            Rounding::HalfUp | Rounding::HalfEven | Rounding::HalfDown | Rounding::Up => true,
+            Rounding::Ceiling => !dec.sign,
+            Rounding::Floor => dec.sign,
+            Rounding::Down | Rounding::Half05Up | Rounding::Half01Up => false,
+        };
+        if to_inf {
+            dec.special = Special::Infinity;
+            dec.coeff = BigInt::from(0);
+            dec.exp = 0;
+        } else {
+            let nines = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
+            dec.special = Special::Finite;
+            dec.coeff = nines;
+            dec.exp = ctx.emax - ctx.prec as isize + 1;
         }
     }
     Ok(dec)
