@@ -501,8 +501,12 @@ fn round_up_decision(
         }
         Rounding::Half05Up => {
             // ROUND_05UP: round to nearest, ties away from zero, but if the
-            // last kept digit is 0 or 5, round up regardless.
-            if (r * &two) >= *pow10 {
+            // last kept digit is 0 or 5, round up regardless. An exact
+            // division (r == 0) never rounds up even when the kept digit is
+            // 0/5: add(12345, 0.000) at prec 5 -> 12345 Rounded, not 12346.
+            if *r == BigInt::from(0) {
+                false
+            } else if (r * &two) >= *pow10 {
                 true
             } else {
                 let last = (q % BigInt::from(10)) == BigInt::from(0)
