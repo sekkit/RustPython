@@ -1740,15 +1740,32 @@ pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
 
 /// floor division a // b (context applied)
 pub(crate) fn dec_floordiv(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyResult<Dec> {
+    // Specials first: NaN/Infinity operands win over division-by-zero.
+    if a.is_special() || b.is_special() {
+        return special_binary(vm, ctx, a, b, "floordiv");
+    }
     if b.is_zero() {
+        if a.is_zero() {
+            // 0 // 0 -> Division_undefined (InvalidOperation) + NaN
+            // (dvix202: divideint(0.0E5, 0) -> NaN Division_undefined).
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "division undefined"));
+            }
+            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+        }
         ctx.set_flag(vm, "DivisionByZero")?;
         if ctx.trap(vm, "DivisionByZero")? {
             return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
         }
-        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
-    }
-    if a.is_special() || b.is_special() {
-        return special_binary(vm, ctx, a, b, "floordiv");
+        // x // 0 -> Infinity with the sign of the dividend
+        // (dvix205: divideint(0.01, 0) -> Infinity Division_by_zero).
+        return Ok(Dec {
+            sign: a.sign,
+            coeff: BigInt::from(0),
+            exp: 0,
+            special: Special::Infinity,
+        });
     }
     let (floor, _) = floor_div_mod(a, b);
     apply_context(vm, ctx, floor)

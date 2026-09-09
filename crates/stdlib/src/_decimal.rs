@@ -3703,17 +3703,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            let div = _decimal_core::dec_div(&ctx, vm, &xd, &yd)?;
-            let mut coeff = div.coeff.clone();
-            if div.exp < 0 {
-                let pow = BigInt::from(10).pow((-div.exp) as u32);
-                coeff = &coeff / &pow;
-            } else if div.exp > 0 {
-                coeff *= BigInt::from(10).pow(div.exp as u32);
-            }
-            let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
-                sign: div.sign, coeff, exp: 0, special: Special::Finite,
-            })?;
+            // CPython divideint/floordiv: exact floor division (no Rounded/
+            // Inexact from a true division: 1 // 7 -> 0 with no flags).
+            let r = _decimal_core::dec_floordiv(&ctx, vm, &xd, &yd)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
