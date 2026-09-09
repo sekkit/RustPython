@@ -4469,7 +4469,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         #[pymethod]
         fn to_eng_string(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let d = to_dec_ctx(&x, vm)?;
-            Ok(vm.ctx.new_str(d.to_string()).into())
+            Ok(vm.ctx.new_str(d.to_eng_string()).into())
         }
     }
 
