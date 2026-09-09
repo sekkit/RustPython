@@ -1097,8 +1097,26 @@ pub(crate) fn special_binary(
                 return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
             }
         }
+        "floordiv" => {
+            // floordiv: finite // Inf -> zero with the quotient sign
+            // (divideint(-1000, Inf) -> -0); ±Inf // finite -> ±Infinity
+            // (divideint(-Inf, 1000) -> -Infinity); Inf // Inf -> NaN.
+            if inf_b && !inf_a {
+                return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+            }
+            if inf_a && !inf_b {
+                return Ok(Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+            if inf_a || inf_b {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "Inf // Inf"));
+                }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            }
+        }
         _ => {
-            // floordiv with any Infinity -> InvalidOperation + NaN.
+            // other ops with any Infinity -> InvalidOperation + NaN.
             if inf_a || inf_b {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
@@ -1697,8 +1715,15 @@ pub(crate) fn dec_pow_mod(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec, m: &
 }
 
 /// floor division a // b and modulo a % b, computed exactly (sign of divisor
-/// for modulo, floor for division). Returns (floor, mod).
-pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
+/// for modulo, floor for division). Returns (floor, mod), or `None` when the
+/// integer quotient needs more than `prec` digits (CPython's
+/// DivisionImpossible).
+///
+/// The size guards mirror `_pydecimal._divide` and run before any 10^N
+/// scaling, so an extreme exponent difference can never materialise a giant
+/// intermediate integer: divideint.decTest dvix274 (9e999999999 // 1) must
+/// report Division_impossible instead of building 10^999999999.
+pub(crate) fn floor_div_mod(a: &Dec, b: &Dec, prec: isize) -> Option<(Dec, Dec)> {
     // Specials per CPython:
     //   divmod(inf, finite)   = (Inf, NaN)
     //   divmod(finite, inf)   = (0, a)
@@ -1708,7 +1733,7 @@ pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
     let nan = Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN };
     let is_nan = |d: &Dec| d.special == Special::NaN || d.special == Special::SignalingNaN;
     if is_nan(a) || is_nan(b) {
-        return (nan.clone(), nan.clone());
+        return Some((nan.clone(), nan.clone()));
     }
     let zero = Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite };
     if b.is_zero() {
@@ -1716,28 +1741,59 @@ pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
         //   a == 0 -> (NaN, NaN) [InvalidOperation]
         //   a != 0 -> (Infinity, NaN) [InvalidOperation + DivisionByZero]
         if a.is_zero() {
-            return (nan.clone(), nan.clone());
+            return Some((nan.clone(), nan.clone()));
         }
-        return (
+        return Some((
             Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity },
             nan.clone(),
-        );
+        ));
     }
     if a.is_special() {
         // a == Infinity
         if b.is_special() {
             // inf / inf -> (NaN, NaN)
-            return (nan.clone(), nan.clone());
+            return Some((nan.clone(), nan.clone()));
         }
         // inf / finite -> (Inf, NaN)
-        return (
+        return Some((
             Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity },
             nan.clone(),
-        );
+        ));
     }
     if b.is_special() {
         // finite / inf -> (0, a)
-        return (zero, a.clone());
+        return Some((zero, a.clone()));
+    }
+    // CPython `_divide` size bounds, decided before any scaling. The digit
+    // count of the quotient is bounded by the adjusted-exponent difference,
+    // so both "the quotient is zero" and "the quotient is too large" are
+    // settled without building 10^|a.exp - b.exp|, which for an operand like
+    // 1e999999999 would be a ~10^9-digit integer.
+    let expdiff = (a.exp + coeff_digits_of(&a.coeff) as isize)
+        - (b.exp + coeff_digits_of(&b.coeff) as isize);
+    if a.is_zero() || expdiff <= -2 {
+        // |a| < |b| / 10 (or a == 0): quotient 0, remainder is the dividend
+        // rescaled to min(a.exp, b.exp). The rescale factor stays below b's
+        // digit count because expdiff <= -2 bounds a.exp - b.exp by it.
+        let ideal_exp = a.exp.min(b.exp);
+        let m = if a.is_zero() || a.exp == ideal_exp {
+            Dec { sign: a.sign, coeff: a.coeff.clone(), exp: ideal_exp, special: Special::Finite }
+        } else {
+            Dec {
+                sign: a.sign,
+                coeff: &a.coeff * BigInt::from(10).pow((a.exp - ideal_exp) as u32),
+                exp: ideal_exp,
+                special: Special::Finite,
+            }
+        };
+        return Some((
+            Dec { sign: a.sign ^ b.sign, coeff: BigInt::from(0), exp: 0, special: Special::Finite },
+            m,
+        ));
+    }
+    if expdiff > prec {
+        // The quotient needs at least prec+1 digits -> DivisionImpossible.
+        return None;
     }
     // value = ca*10^ea / (cb*10^eb)
     let e = a.exp - b.exp;
@@ -1747,6 +1803,10 @@ pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
         (a.coeff.clone(), &b.coeff * BigInt::from(10).pow((-e) as u32))
     };
     let q = &num / &den;
+    if coeff_digits_of(&q) > prec as usize {
+        // CPython `_divide`: q < 10**prec, otherwise DivisionImpossible.
+        return None;
+    }
     let neg = a.sign ^ b.sign;
     // CPython Decimal uses TRUNCATED division for // and % (sign of dividend
     // for %), unlike int which uses floor. -10//4 = -2, -10%4 = -2.
@@ -1766,7 +1826,7 @@ pub(crate) fn floor_div_mod(a: &Dec, b: &Dec) -> (Dec, Dec) {
     let msign = if rv == BigInt::from(0) { a.sign } else { rv.sign() == Sign::Minus };
     let mcoeff = rv.abs();
     let m = Dec { sign: msign, coeff: mcoeff, exp: me, special: Special::Finite };
-    (floor, m)
+    Some((floor, m))
 }
 
 /// floor division a // b (context applied)
@@ -1789,17 +1849,28 @@ pub(crate) fn dec_floordiv(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> 
         if ctx.trap(vm, "DivisionByZero")? {
             return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
         }
-        // x // 0 -> Infinity with the sign of the dividend
-        // (dvix205: divideint(0.01, 0) -> Infinity Division_by_zero).
+        // x // 0 -> Infinity; the sign follows the quotient's sign
+        // (a.sign XOR b.sign): divideint(1,-0.0) -> -Infinity,
+        // divideint(-1,-0.0) -> Infinity (CPython).
         return Ok(Dec {
-            sign: a.sign,
+            sign: a.sign ^ b.sign,
             coeff: BigInt::from(0),
             exp: 0,
             special: Special::Infinity,
         });
     }
-    let (floor, _) = floor_div_mod(a, b);
-    apply_context(vm, ctx, floor)
+    match floor_div_mod(a, b, ctx.prec) {
+        Some((floor, _)) => apply_context(vm, ctx, floor),
+        None => {
+            // CPython: the quotient needs more than prec digits ->
+            // DivisionImpossible (dvix274: divideint(9e999999999, 1)).
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "division impossible"));
+            }
+            Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN })
+        }
+    }
 }
 
 /// modulo a % b (sign of divisor)
@@ -1816,25 +1887,19 @@ pub(crate) fn dec_mod(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
         }
         return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
-    let (floor, m) = floor_div_mod(a, b);
-    // CPython: if the integer quotient's adjusted exponent reaches the
-    // context precision, the remainder cannot be computed exactly ->
-    // DivisionImpossible (remainder(100000000.5, 1) at prec 8 has quotient
-    // 100000000 with adjusted 8 >= 8; remainder(9.9e999999999, 1) has
-    // adjusted 999999999).
-    let q_adj = if floor.coeff == BigInt::from(0) {
-        -1
-    } else {
-        coeff_digits_of(&floor.coeff) as isize - 1
-    };
-    if q_adj >= ctx.prec as isize {
-        ctx.set_flag(vm, "InvalidOperation")?;
-        if ctx.trap(vm, "InvalidOperation")? {
-            return Err(new_decimal_error(vm, "InvalidOperation", "division impossible"));
+    match floor_div_mod(a, b, ctx.prec) {
+        Some((_, m)) => apply_context(vm, ctx, m),
+        None => {
+            // CPython: if the integer quotient needs more than prec digits,
+            // the remainder cannot be computed exactly -> DivisionImpossible
+            // (remainder(100000000.5, 1) at prec 8; remainder(9.9e999999999, 1)).
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "division impossible"));
+            }
+            Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN })
         }
-        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
-    apply_context(vm, ctx, m)
 }
 
 /// Format a finite decimal for `format()` / `__format__`.

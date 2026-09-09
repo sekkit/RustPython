@@ -2572,13 +2572,16 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     } else {
                         return Ok(vm.ctx.not_implemented());
                     };
-                    let (floor, m) = _decimal_core::floor_div_mod(&ad, &bd);
+                    let ctx = current_ctx(vm)?;
+                    // A quotient needing more than prec digits is CPython's
+                    // DivisionImpossible, reported through InvalidOperation.
+                    let divided = _decimal_core::floor_div_mod(&ad, &bd, ctx.prec);
                     // Set InvalidOperation flag if either operand was NaN.
                     // Set flags per CPython divmod semantics:
                     //   NaN/Inf operand or 0/0   -> InvalidOperation
                     //   nonzero / 0              -> InvalidOperation + DivisionByZero
-                    let ctx = current_ctx(vm)?;
-                    if ad.is_special() || bd.is_special() || bd.is_zero() {
+                    //   quotient too large       -> InvalidOperation
+                    if ad.is_special() || bd.is_special() || bd.is_zero() || divided.is_none() {
                         ctx.set_flag(vm, "InvalidOperation")?;
                     }
                     if !ad.is_special() && !bd.is_special() && !ad.is_zero() && bd.is_zero() {
@@ -2592,6 +2595,18 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     if ctx.trap(vm, "DivisionByZero")? {
                         return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
                     }
+                    let (floor, m) = match divided {
+                        Some(rm) => rm,
+                        None => {
+                            let nan = _decimal_core::Dec {
+                                sign: false,
+                                coeff: BigInt::from(0),
+                                exp: 0,
+                                special: Special::NaN,
+                            };
+                            (nan.clone(), nan)
+                        }
+                    };
                     Ok(vm.ctx.new_tuple(vec![
                         PyDecimal::to_py(vm, floor),
                         PyDecimal::to_py(vm, m),
@@ -3715,7 +3730,8 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             // CPython divmod flag semantics (see AsNumber divmod slot).
-            if xd.is_special() || yd.is_special() || yd.is_zero() {
+            let divided = _decimal_core::floor_div_mod(&xd, &yd, ctx.prec);
+            if xd.is_special() || yd.is_special() || yd.is_zero() || divided.is_none() {
                 ctx.set_flag(vm, "InvalidOperation")?;
             }
             if !xd.is_special() && !yd.is_special() && !xd.is_zero() && yd.is_zero() {
@@ -3729,7 +3745,18 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             if ctx.trap(vm, "DivisionByZero")? {
                 return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
             }
-            let (floor, m) = _decimal_core::floor_div_mod(&xd, &yd);
+            let (floor, m) = match divided {
+                Some(rm) => rm,
+                None => {
+                    let nan = _decimal_core::Dec {
+                        sign: false,
+                        coeff: BigInt::from(0),
+                        exp: 0,
+                        special: Special::NaN,
+                    };
+                    (nan.clone(), nan)
+                }
+            };
             let f = _decimal_core::apply_context(vm, &ctx, floor)?;
             let r = _decimal_core::apply_context(vm, &ctx, m)?;
             Ok(vm.ctx.new_tuple(vec![PyDecimal::to_py(vm, f), PyDecimal::to_py(vm, r)]).into())
