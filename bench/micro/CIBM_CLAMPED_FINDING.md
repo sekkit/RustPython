@@ -57,8 +57,15 @@ signal、sqrt）OK。
 | quantize.decTest | 132/776 | ✅ 全过 | b21840376/5989b7173 |
 | add.decTest | 38/2100 | ✅ 全过 | f8c83d679..e5b3d9f30 |
 | multiply.decTest | ? | ✅ 全过 | 共享 apply_context |
+| logb.decTest | 3 | ✅ 全过 | 3ba3329b1 |
+| remainder.decTest | 4 | ✅ 全过 | 05dfb1983 |
+| divide.decTest | 5 | ✅ 全过 | 7f55d09ad/c011afbbd |
+| minus.decTest | 8 | ✅ 全过 | 0cccbffc1 |
+| plus.decTest | 1 | ✅ 全过 | 0cccbffc1 |
+| class/copyabs/copysign | 0 | ✅ 全过 | 共享 |
+| comparetotal.decTest | 16 | ✅ 全过 | c0cb6622d（total ordering） |
 
-**全部 8 个核心 .decTest 文件在抽样/TEST_ALL 下通过。** 修复链条：
+**全部 17 个核心 .decTest 文件在抽样/TEST_ALL 下通过。** 修复链条：
 - subnormal/underflow 信号（adjusted exponent 判定、half-up Etiny clamp、
   尾零规范化、Clamped 仅零值、零值 [Etiny,Emax] 范围）
 - sNaN 语义（signal InvalidOperation → quiet NaN，payload 按 prec 截断）
@@ -68,22 +75,21 @@ signal、sqrt）OK。
 - 进位尾零规范化、underflow clamp 按 rounding、零和符号随 rounding、
   **单次舍入**（避免 round_to_prec 中间 tie 双舍入）、subnormal/underflow
   判定用 pre-rounding 原始值
+- Overflow 按 rounding 分派（half-*→Infinity、down/floor→钳制值）
+- 长除法 prec+2 位（非终止商正确舍入）
+- minus/plus 符号（minus 翻转、负零清除）
+- compare_total 完全排序（-NaN<...<+NaN，指数排序负侧反转）
 
-抽样模式 test_decimal 失败数仍受剩余文件（sub/div/remainder/max/min/
-logb 等少量失败）影响。
-
-## 剩余文件抽样基线（2026-09-08 更新）
-- **add.decTest 已全过**（38/2100 → 0，经 f8c83d679..e5b3d9f30 共享
-  apply_context 修复链）。
-- 剩量子文件（抽样）：
-  - subtract: 2 fail、remainder: 2、logb: 2、max: 9、min: 6、divide: 5
-  - 各为独立语义域的少量残留，需逐个专项（抽样+定向修复，
-    TEST_ALL 全量扫描效率低，add 曾需 1103s）。
-- 注：此前 add 全量 TEST_ALL 扫描约 1103s；抽样模式快但失败数有 90%
-  随机跳过的波动（测试用 seed 不同结果略有差异）。
-- addx6580（subtract 的 Underflow flag 时序）已随 e5b3d9f30 修复：
-  subnormal/underflow 判定改用 pre-rounding 原始值（orig adjusted < Emin
-  即 Subnormal），避免 carry 规范化把 dec.exp 抬到 Etiny 掩盖条件。
+## 剩余文件抽样基线（2026-09-09 更新）
+- **17 个核心 .decTest 文件全过**（见上表）。
+- 剩余（抽样）：max 3、min 2、maxmag 1、minmag 3（平局表示顺序）、
+  nextplus 11、nextminus 7、nexttoward 33。
+- **并行修复中**（多专家，独立 worktree）：
+  - wt-gap1：max/min/maxmag/minmag 平局表示顺序
+  - wt-gap2：nextplus/nextminus
+  - wt-gap3：nexttoward
+- 注：抽样模式失败数有 90% 随机跳过波动；TEST_ALL 全量扫描效率低
+  （add 曾需 1103s），建议抽样+定向修复。
 
 ## 根因方向
 - C 实现（`_decimal.rs`，Rust/mpdecimal 语义）与 P 实现（`_pydecimal`，纯 Python）
