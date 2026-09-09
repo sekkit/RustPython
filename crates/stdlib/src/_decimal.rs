@@ -738,11 +738,12 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             // smallest lattice increment 10^(Etiny-1) and re-round.
             let d = &self.d;
             if d.is_zero() {
-                // 0 -> +/- 0.1 (smallest representable 1-digit increment)
+                // 0 -> +/- 10^Etiny (smallest representable increment)
+                let etiny = ctx.emin - (ctx.prec as isize - 1);
                 return Ok(Dec {
                     sign: dir < 0,
                     coeff: BigInt::from(1),
-                    exp: -1,
+                    exp: etiny,
                     special: Special::Finite,
                 });
             }
@@ -755,27 +756,13 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     }
                     return Ok(Dec { sign: d.sign, coeff: d.coeff.clone(), exp: 0, special: Special::NaN });
                 }
-                // next_plus(inf) = inf; next_minus(inf) = largest finite.
+                // next_plus(+Inf) = +Inf; next_minus(-Inf) = -Inf (extreme).
+                // next_plus(-Inf) = largest negative finite; next_minus(+Inf) = largest positive finite.
                 if d.special == Special::Infinity {
-                    if dir > 0 {
+                    let is_extreme = (dir > 0 && !d.sign) || (dir < 0 && d.sign);
+                    if is_extreme {
                         return Ok(d.clone());
                     }
-                    let etop = ctx.emax - (ctx.prec - 1);
-                    let nines = "9".repeat(ctx.prec.max(1) as usize);
-                    return Ok(Dec {
-                        sign: false,
-                        coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
-                        exp: etop,
-                        special: Special::Finite,
-                    });
-                }
-                return Ok(d.clone());
-            }
-            // A finite value above Emax behaves like +Inf for next_*:
-            // next_minus -> largest finite; next_plus -> stays huge (Inf).
-            let adj = d.exp + _decimal_core::coeff_digits_of(&d.coeff) as isize - 1;
-            if adj > ctx.emax {
-                if dir < 0 {
                     let etop = ctx.emax - (ctx.prec - 1);
                     let nines = "9".repeat(ctx.prec.max(1) as usize);
                     return Ok(Dec {
@@ -785,17 +772,32 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                         special: Special::Finite,
                     });
                 }
-                // next_plus of a value above Emax -> Infinity (CPython).
+                return Ok(d.clone());
+            }
+            // A finite value above Emax behaves like ±Inf for next_*.
+            let adj = d.exp + _decimal_core::coeff_digits_of(&d.coeff) as isize - 1;
+            if adj > ctx.emax {
+                let is_extreme = (dir > 0 && !d.sign) || (dir < 0 && d.sign);
+                if is_extreme {
+                    return Ok(Dec {
+                        sign: d.sign,
+                        coeff: BigInt::from(0),
+                        exp: 0,
+                        special: Special::Infinity,
+                    });
+                }
+                let etop = ctx.emax - (ctx.prec - 1);
+                let nines = "9".repeat(ctx.prec.max(1) as usize);
                 return Ok(Dec {
                     sign: d.sign,
-                    coeff: BigInt::from(0),
-                    exp: 0,
-                    special: Special::Infinity,
+                    coeff: nines.parse::<BigInt>().unwrap_or_else(|_| BigInt::from(9)),
+                    exp: etop,
+                    special: Special::Finite,
                 });
             }
             let dir_rounding = if dir < 0 { Rounding::Floor } else { Rounding::Ceiling };
             // Clone the context with the directional rounding.
-            let mut rctx = Ctx::from_parts(
+            let rctx = Ctx::from_parts(
                 ctx.prec,
                 dir_rounding,
                 ctx.emax,
@@ -841,19 +843,64 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 exp: e,
                 special: Special::Finite,
             };
-            // Re-round with the directional rounding, then apply the full
-            // context (Emax/Emin clamping) like CPython's _fix+_check for
-            // next_minus(inf-like) cases (e.g. 1e9999 -> 9.999999E+999).
+            // Re-round with the directional rounding. Unlike normal
+            // arithmetic, next_plus/next_minus must NOT set Rounded,
+            // Inexact, Subnormal, or Overflow flags (CPython parity).
+            // We manually handle overflow (-> Infinity) and subnormal
+            // clamp (-> Etiny) without signalling.
             let r2 = _decimal_core::round_to_prec(
                 vm, &rctx, shifted.sign, &shifted.coeff, shifted.exp, ctx.prec,
             )?;
-            let candidate = Dec {
+            let mut candidate = Dec {
                 sign: shifted.sign,
                 coeff: r2.0,
                 exp: r2.1,
                 special: Special::Finite,
             };
-            _decimal_core::apply_context(vm, ctx, candidate)
+            // Carry normalization: strip trailing zeros if coeff exceeds prec.
+            while _decimal_core::coeff_digits_of(&candidate.coeff) > ctx.prec as usize
+                && candidate.coeff != BigInt::from(0)
+                && (&candidate.coeff % BigInt::from(10)) == BigInt::from(0)
+            {
+                candidate.coeff = &candidate.coeff / BigInt::from(10);
+                candidate.exp += 1;
+            }
+            // Overflow: adjusted exponent exceeds Emax -> Infinity.
+            let cand_adj = candidate.exp
+                + _decimal_core::coeff_digits_of(&candidate.coeff) as isize
+                - 1;
+            if cand_adj > ctx.emax {
+                return Ok(Dec {
+                    sign: candidate.sign,
+                    coeff: BigInt::from(0),
+                    exp: 0,
+                    special: Special::Infinity,
+                });
+            }
+            // Subnormal clamp: stored exponent below Etiny -> round to Etiny
+            // using the directional rounding (CEILING for next_plus, FLOOR for
+            // next_minus). Only round up when there is a nonzero remainder.
+            if candidate.exp < etiny && !candidate.is_zero() {
+                let shift = etiny - candidate.exp;
+                let pow = BigInt::from(10).pow(shift as u32);
+                let (q, r) = (&candidate.coeff / &pow, &candidate.coeff % &pow);
+                let round_up = if r != BigInt::from(0) {
+                    match dir_rounding {
+                        Rounding::Ceiling => !candidate.sign,
+                        Rounding::Floor => candidate.sign,
+                        _ => (&r * BigInt::from(2)) >= pow,
+                    }
+                } else {
+                    false
+                };
+                candidate.coeff = if round_up { q + BigInt::from(1) } else { q };
+                candidate.exp = etiny;
+            }
+            // Zero result from clamping: preserve sign, set exp to Etiny.
+            if candidate.is_zero() {
+                candidate.exp = etiny;
+            }
+            Ok(candidate)
         }
 
         #[pymethod]
@@ -3973,13 +4020,8 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         fn next_minus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
-            // next value toward -Inf: subtract 1 ulp
-            let ulp = BigInt::from(10).pow(xd.exp.max(0) as u32);
-            let coeff = &xd.coeff - &ulp;
-            let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
-                sign: true, coeff: xd.coeff.clone(), exp: xd.exp, special: Special::Finite,
-            })?;
-            let _ = coeff;
+            let pd = PyDecimal { d: xd };
+            let r = pd.next_step(vm, &ctx, -1)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -3987,9 +4029,8 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         fn next_plus(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
-            let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
-                sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: Special::Finite,
-            })?;
+            let pd = PyDecimal { d: xd };
+            let r = pd.next_step(vm, &ctx, 1)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -3998,9 +4039,14 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            let r = _decimal_core::apply_context(vm, &ctx, _decimal_core::Dec {
-                sign: yd.sign, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special,
-            })?;
+            // If equal (value-wise), return self.
+            if dec_cmp(&xd, &yd) == 0 && xd.special == yd.special {
+                return Ok(PyDecimal::to_py(vm, xd));
+            }
+            // Move one ulp toward y: toward -Inf if y < x, else +Inf.
+            let dir = if dec_cmp(&yd, &xd) < 0 { -1i8 } else { 1i8 };
+            let pd = PyDecimal { d: xd };
+            let r = pd.next_step(vm, &ctx, dir)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
