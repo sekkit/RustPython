@@ -500,14 +500,13 @@ fn round_up_decision(
             }
         }
         Rounding::Half05Up => {
-            // ROUND_05UP: round to nearest, ties away from zero, but if the
-            // last kept digit is 0 or 5, round up regardless. An exact
-            // division (r == 0) never rounds up even when the kept digit is
-            // 0/5: add(12345, 0.000) at prec 5 -> 12345 Rounded, not 12346.
+            // ROUND_05UP: round toward zero, then round away from zero (up)
+            // if the last retained digit is 0 or 5. An exact division
+            // (r == 0) never rounds up: add(12345, 0.000) -> 12345, while
+            // add(12345, 0.901) -> 12346 (12345 ends in 5) and
+            // add(12341, 0.901) -> 12341 (ends in 1, rounds toward zero).
             if *r == BigInt::from(0) {
                 false
-            } else if (r * &two) >= *pow10 {
-                true
             } else {
                 let last = (q % BigInt::from(10)) == BigInt::from(0)
                     || (q % BigInt::from(10)) == BigInt::from(5);
@@ -515,10 +514,10 @@ fn round_up_decision(
             }
         }
         Rounding::Half01Up => {
-            // ROUND_01UP: like HalfUp for ties, and rounds up when the last
-            // digit is 0 or 1.
-            if (r * &two) >= *pow10 {
-                true
+            // ROUND_01UP: like 05UP but the last retained digit 0 or 1
+            // triggers the away-from-zero rounding.
+            if *r == BigInt::from(0) {
+                false
             } else {
                 let last = (q % BigInt::from(10)) == BigInt::from(0)
                     || (q % BigInt::from(10)) == BigInt::from(1);
@@ -1603,14 +1602,28 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         n = -n;
     }
     if n < 0 {
-        let base = dec_pow_int(
-            ctx,
-            vm,
-            a,
-            &Dec { sign: false, coeff: BigInt::from(n.unsigned_abs()), exp: 0, special: Special::Finite },
-        )?;
+        // Negative exponent: a^-m = 1 / a^m, computed from the exact power
+        // (never the context-rounded base: dec_pow_int at prec 5 rounds
+        // 12345^3 to 1.8814E+12, losing the precision needed for 1/a^3 ->
+        // 5.3153E-13).
+        let m = n.unsigned_abs() as i64;
+        let mut rp = Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite };
+        let mut coeff = a.coeff.clone();
+        let mut exp = a.exp;
+        let mut be = m;
+        while be > 0 {
+            if be & 1 == 1 {
+                rp.coeff *= &coeff;
+                rp.exp += exp;
+            }
+            be >>= 1;
+            if be > 0 {
+                coeff = &coeff * &coeff;
+                exp *= 2;
+            }
+        }
         let one = Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite };
-        return dec_div(ctx, vm, &one, &base);
+        return dec_div(ctx, vm, &one, &rp);
     }
     let mut result = Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite };
     // Exact integer power: multiply coefficients with plain BigInt and only
