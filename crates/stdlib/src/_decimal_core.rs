@@ -1584,13 +1584,16 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         let d = parse_decimal(&s).unwrap_or(Dec::zero());
         return apply_context(vm, ctx, d);
     }
-    let n: i64 = if b.exp < 0 {
+    let mut n: i64 = if b.exp < 0 {
         let pow = BigInt::from(10).pow((-b.exp) as u32);
         let q = &b.coeff / &pow;
         q.to_string().parse().unwrap_or(0)
     } else {
         (&b.coeff * BigInt::from(10).pow(b.exp as u32)).to_string().parse().unwrap_or(0)
     };
+    if b.sign {
+        n = -n;
+    }
     if n < 0 {
         let base = dec_pow_int(
             ctx,
