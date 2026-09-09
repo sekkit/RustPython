@@ -128,6 +128,70 @@ mod _decimal {
         }
     }
 
+    /// CPython tie-break for `max`: when two operands are numerically equal,
+    /// the chosen operand depends on representation (sign and exponent), not
+    /// on argument order. Returns true when the first operand `a` is the one
+    /// CPython selects. Same rule is reused by `max_mag` on a magnitude tie.
+    fn max_picks_a(a: &Dec, b: &Dec) -> bool {
+        match dec_cmp(a, b) {
+            1 => true,
+            -1 => false,
+            _ => {
+                if a.sign != b.sign {
+                    // +0 vs -0 (only equal values with differing sign): max
+                    // prefers the positive one.
+                    !a.sign
+                } else if a.sign {
+                    // both negative: smaller exponent wins.
+                    a.exp <= b.exp
+                } else {
+                    // both positive: larger exponent wins.
+                    a.exp >= b.exp
+                }
+            }
+        }
+    }
+
+    /// CPython tie-break for `min` (mirror of `max`).
+    fn min_picks_a(a: &Dec, b: &Dec) -> bool {
+        match dec_cmp(a, b) {
+            -1 => true,
+            1 => false,
+            _ => {
+                if a.sign != b.sign {
+                    a.sign
+                } else if a.sign {
+                    a.exp >= b.exp
+                } else {
+                    a.exp <= b.exp
+                }
+            }
+        }
+    }
+
+    /// `max_mag` selects the larger-magnitude operand; on a magnitude tie it
+    /// applies the same representation-based selection as `max`.
+    fn max_mag_picks_a(a: &Dec, b: &Dec) -> bool {
+        let xa = Dec { sign: false, coeff: a.coeff.clone(), exp: a.exp, special: a.special };
+        let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
+        match dec_cmp(&xa, &ya) {
+            1 => true,
+            -1 => false,
+            _ => max_picks_a(a, b),
+        }
+    }
+
+    /// `min_mag` (mirror of `max_mag`).
+    fn min_mag_picks_a(a: &Dec, b: &Dec) -> bool {
+        let xa = Dec { sign: false, coeff: a.coeff.clone(), exp: a.exp, special: a.special };
+        let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
+        match dec_cmp(&xa, &ya) {
+            -1 => true,
+            1 => false,
+            _ => min_picks_a(a, b),
+        }
+    }
+
     /// Convert a Python object (Decimal/int/float/str) to Dec.
     /// Used by Decimal constructor ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
@@ -946,7 +1010,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
-            let chosen = if dec_cmp(&self.d, &b) >= 0 { self.d.clone() } else { b };
+            let chosen = if max_picks_a(&self.d, &b) { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -969,7 +1033,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
-            let chosen = if dec_cmp(&self.d, &b) <= 0 { self.d.clone() } else { b };
+            let chosen = if min_picks_a(&self.d, &b) { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -992,9 +1056,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
-            let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
-            let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
-            let chosen = if dec_cmp(&xa, &ya) >= 0 { self.d.clone() } else { b };
+            let chosen = if max_mag_picks_a(&self.d, &b) { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -1017,9 +1079,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
-            let xa = Dec { sign: false, coeff: self.d.coeff.clone(), exp: self.d.exp, special: self.d.special };
-            let ya = Dec { sign: false, coeff: b.coeff.clone(), exp: b.exp, special: b.special };
-            let chosen = if dec_cmp(&xa, &ya) <= 0 { self.d.clone() } else { b };
+            let chosen = if min_mag_picks_a(&self.d, &b) { self.d.clone() } else { b };
             let r = _decimal_core::apply_context(vm, &ctx, chosen)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3776,7 +3836,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 };
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let r = if dec_cmp(&xd, &yd) >= 0 { xd } else { yd };
+            let r = if max_picks_a(&xd, &yd) { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3816,9 +3876,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 };
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let xa = _decimal_core::Dec { sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special };
-            let ya = _decimal_core::Dec { sign: false, coeff: yd.coeff.clone(), exp: yd.exp, special: yd.special };
-            let r = if dec_cmp(&xa, &ya) >= 0 { xd } else { yd };
+            let r = if max_mag_picks_a(&xd, &yd) { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3861,7 +3919,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 };
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let r = if dec_cmp(&xd, &yd) <= 0 { xd } else { yd };
+            let r = if min_picks_a(&xd, &yd) { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -3901,9 +3959,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 };
                 return Ok(PyDecimal::to_py(vm, n));
             }
-            let xa = _decimal_core::Dec { sign: false, coeff: xd.coeff.clone(), exp: xd.exp, special: xd.special };
-            let ya = _decimal_core::Dec { sign: false, coeff: yd.coeff.clone(), exp: yd.exp, special: yd.special };
-            let r = if dec_cmp(&xa, &ya) <= 0 { xd } else { yd };
+            let r = if min_mag_picks_a(&xd, &yd) { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
             Ok(PyDecimal::to_py(vm, r))
         }
