@@ -80,14 +80,17 @@ signal、sqrt）OK。
 - minus/plus 符号（minus 翻转、负零清除）
 - compare_total 完全排序（-NaN<...<+NaN，指数排序负侧反转）
 
-## 剩余文件抽样基线（2026-09-09 更新）
-- **17 个核心 .decTest 文件全过**（见上表）。
-- 剩余（抽样）：max 3、min 2、maxmag 1、minmag 3（平局表示顺序）、
-  nextplus 11、nextminus 7、nexttoward 33。
-- **并行修复中**（多专家，独立 worktree）：
-  - wt-gap1：max/min/maxmag/minmag 平局表示顺序
-  - wt-gap2：nextplus/nextminus
-  - wt-gap3：nexttoward
+## 剩余文件抽样基线（2026-09-10 更新）
+- **19+ 个 .decTest 文件全过**（含并行修复后）：
+  - max/min/maxmag/minmag 平局表示顺序 ✅（f38aaae14）
+  - nextplus/nextminus ✅（f4c205205）
+  - nexttoward ✅（f0a813ee2，含 next_value 统一语义、apply_context 下溢
+    快速路径、dec_cmp adjusted 短路、overflow handle 精确分派）
+- 并行修复完成（3 子代理、独立 worktree，cherry-pick 合并验证，worktree
+  已清理）。nexttoward TEST_ALL=True 全量 292 → 0；vm 53/2、stdlib 8/0
+  基线不变。
+- 已发现待后续项：divideint 27 fail（新扫描）、剩余未扫描文件
+  （tosci/toeng/normalize/trim 等抽样 0 fail 或未确认）。
 - 注：抽样模式失败数有 90% 随机跳过波动；TEST_ALL 全量扫描效率低
   （add 曾需 1103s），建议抽样+定向修复。
 
