@@ -1605,18 +1605,25 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         return dec_div(ctx, vm, &one, &base);
     }
     let mut result = Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite };
-    let mut base = a.clone();
-    let mut exp = n;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = dec_mul(ctx, vm, &result, &base)?;
+    // Exact integer power: multiply coefficients with plain BigInt and only
+    // apply the context once at the end (dec_mul would round at every step,
+    // accumulating error: 12345^5 at prec 5 -> 2.8671E+20, not 2.8667E+20).
+    let mut coeff = a.coeff.clone();
+    let mut exp = a.exp;
+    let mut base_exp = n;
+    while base_exp > 0 {
+        if base_exp & 1 == 1 {
+            result.coeff *= &coeff;
+            result.exp += exp;
         }
-        exp >>= 1;
-        if exp > 0 {
-            base = dec_mul(ctx, vm, &base, &base)?;
+        base_exp >>= 1;
+        if base_exp > 0 {
+            coeff = &coeff * &coeff;
+            exp *= 2;
         }
     }
-    Ok(result)
+    result.sign = a.sign && (n % 2 == 1);
+    apply_context(vm, ctx, result)
 }
 
 /// Compute a ** b % m (modular exponentiation) for integer operands.
