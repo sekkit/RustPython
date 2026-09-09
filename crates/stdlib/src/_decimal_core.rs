@@ -1289,6 +1289,10 @@ pub(crate) fn parse_decimal(s: &str) -> Result<Dec, String> {
         Some(idx) => (&mantissa[..idx], &mantissa[idx + 1..]),
         None => (mantissa, ""),
     };
+    // No digits at all ('.', '+.e+1') is a ConversionSyntax error, not 0.
+    if int_part.is_empty() && frac_part.is_empty() {
+        return Err("invalid literal".to_string());
+    }
     if !int_part.chars().all(|c| c.is_ascii_digit()) || !frac_part.chars().all(|c| c.is_ascii_digit())
     {
         return Err("invalid literal".to_string());

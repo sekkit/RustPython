@@ -4226,6 +4226,10 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         fn to_sci_string(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             // CPython: str input raises TypeError (exact object conversion).
             let d = to_dec_ctx(&x, vm)?;
+            let ctx = self.ctx();
+            // Apply the context first (rounds to precision and sets
+            // Rounded/Inexact): toSci(1.23450) at prec 5 -> 1.2345 Rounded.
+            let d = _decimal_core::apply_context(vm, &ctx, d)?;
             let mut s = d.to_string();
             // capitals=0 renders exponents with lowercase 'e'.
             if *self.capitals.lock() == 0 {
