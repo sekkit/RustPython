@@ -3512,12 +3512,15 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let yd = to_dec_ctx(&y, vm)?;
             let order = |d: &Dec| -> i64 {
                 match d.special {
-                    Special::SignalingNaN => if d.sign { 0 } else { 9 },
-                    Special::NaN => if d.sign { 1 } else { 10 },
+                    // Total order (CPython):
+                    // -NaN < -sNaN < -Inf < 负有限 < -0 < +0 < 正有限 < +Inf
+                    // < +sNaN < +NaN.
+                    Special::NaN => if d.sign { 0 } else { 10 },
+                    Special::SignalingNaN => if d.sign { 1 } else { 9 },
                     Special::Infinity => if d.sign { 2 } else { 8 },
                     Special::Finite => {
-                        if d.is_zero() { if d.sign { 3 } else { 7 } }
-                        else { if d.sign { 4 } else { 6 } }
+                        if d.is_zero() { if d.sign { 4 } else { 5 } }
+                        else { if d.sign { 3 } else { 6 } }
                     }
                 }
             };
@@ -3528,6 +3531,19 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     core::cmp::Ordering::Less => -1,
                     core::cmp::Ordering::Equal => 0,
                     core::cmp::Ordering::Greater => 1,
+                }
+            } else if xd.exp != yd.exp {
+                // Same class: compare numerically first; only equal values
+                // fall through to the exponent ordering. A larger exponent
+                // sorts first for positives, last for negatives
+                // (comparetotal(12, 12.00) -> 1; comparetotal(-0, -0.0)
+                // -> -1).
+                let c = dec_cmp(&xd, &yd);
+                if c != 0 {
+                    c
+                } else {
+                    let bigger = if xd.exp > yd.exp { 1 } else { -1 };
+                    if xd.sign { -bigger } else { bigger }
                 }
             } else {
                 dec_cmp(&xd, &yd)
@@ -3543,12 +3559,13 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             yd.sign = false;
             let order = |d: &Dec| -> i64 {
                 match d.special {
-                    Special::SignalingNaN => if d.sign { 0 } else { 9 },
-                    Special::NaN => if d.sign { 1 } else { 10 },
-                    Special::Infinity => if d.sign { 2 } else { 8 },
+                    // Magnitude total order (signs cleared): zero < finite <
+                    // +Inf < +sNaN < +NaN.
+                    Special::NaN => 10,
+                    Special::SignalingNaN => 9,
+                    Special::Infinity => 8,
                     Special::Finite => {
-                        if d.is_zero() { if d.sign { 3 } else { 7 } }
-                        else { if d.sign { 4 } else { 6 } }
+                        if d.is_zero() { 5 } else { 6 }
                     }
                 }
             };
@@ -3559,6 +3576,15 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     core::cmp::Ordering::Less => -1,
                     core::cmp::Ordering::Equal => 0,
                     core::cmp::Ordering::Greater => 1,
+                }
+            } else if xd.exp != yd.exp {
+                let c = dec_cmp(&xd, &yd);
+                if c != 0 {
+                    c
+                } else if xd.exp > yd.exp {
+                    1
+                } else {
+                    -1
                 }
             } else {
                 dec_cmp(&xd, &yd)
