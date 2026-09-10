@@ -500,11 +500,9 @@ fn round_up_decision(
             }
         }
         Rounding::Half05Up => {
-            // ROUND_05UP: round toward zero, then round away from zero (up)
-            // if the last retained digit is 0 or 5. An exact division
-            // (r == 0) never rounds up: add(12345, 0.000) -> 12345, while
-            // add(12345, 0.901) -> 12346 (12345 ends in 5) and
-            // add(12341, 0.901) -> 12341 (ends in 1, rounds toward zero).
+            // ROUND_05UP: round toward zero; if the last retained digit is 0
+            // or 5, round away from zero instead. An exact division never
+            // rounds up: add(12345, 0.000) -> 12345.
             if *r == BigInt::from(0) {
                 false
             } else {
@@ -561,12 +559,16 @@ pub(crate) fn apply_context(
             }
             dec.exp = etiny;
         } else if dec.exp > ctx.emax {
-            // Clamp huge positive exponent of a zero to Emax (CPython).
+            // Clamp a huge positive exponent of a zero: with clamp=1 the
+            // target is etop (Emax - prec + 1; clam412: plus(0E+400) ->
+            // 0E+369 at prec 16/Emax 384), otherwise Emax (CPython:
+            // plus(0E+400) at clamp=0 -> 0E+384, Clamped).
+            let cap = if ctx.clamp == 1 { ctx.emax - ctx.prec + 1 } else { ctx.emax };
             ctx.set_flag(vm, "Clamped")?;
             if ctx.trap(vm, "Clamped")? {
                 return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
             }
-            dec.exp = ctx.emax;
+            dec.exp = cap;
         }
         return Ok(dec);
     }
@@ -608,15 +610,22 @@ pub(crate) fn apply_context(
     // coefficient is padded with zeros down to etop (Clamped signal).
     // e.g. plus(1E+99) with clamp=1, Emax=99, prec=28 ->
     // 1.000000000000000000000000000E+99.
+    // Clamp applies only to values that still fit within Emax: an overflow
+    // (adjusted exponent > Emax) is decided below instead of signaling
+    // Clamped (CPython: ddadd81621 add -9999999999999999E+369 -9E+369 ->
+    // -9.999999999999999E+384 Overflow, no Clamped).
     if ctx.clamp == 1 && new_exp > ctx.emax - ctx.prec + 1 {
-        let etop = ctx.emax - ctx.prec + 1;
-        let shift = new_exp - etop;
-        let pow = BigInt::from(10).pow(shift as u32);
-        dec.coeff = &dec.coeff * &pow;
-        dec.exp = etop;
-        ctx.set_flag(vm, "Clamped")?;
-        if ctx.trap(vm, "Clamped")? {
-            return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+        let adj_after = (dec.exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1;
+        if adj_after <= ctx.emax as i128 {
+            let etop = ctx.emax - ctx.prec + 1;
+            let shift = new_exp - etop;
+            let pow = BigInt::from(10).pow(shift as u32);
+            dec.coeff = &dec.coeff * &pow;
+            dec.exp = etop;
+            ctx.set_flag(vm, "Clamped")?;
+            if ctx.trap(vm, "Clamped")? {
+                return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+            }
         }
     }
     // exponent range check
@@ -1430,8 +1439,8 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
                 else { (&q % &two) == BigInt::from(1) }
             }
             Rounding::Half05Up => {
-                if (&r * &two) >= pow {
-                    true
+                if r == BigInt::from(0) {
+                    false
                 } else {
                     let last = (&q % BigInt::from(10)) == BigInt::from(0)
                         || (&q % BigInt::from(10)) == BigInt::from(5);
@@ -1439,8 +1448,8 @@ pub(crate) fn quantize(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize) -> P
                 }
             }
             Rounding::Half01Up => {
-                if (&r * &two) >= pow {
-                    true
+                if r == BigInt::from(0) {
+                    false
                 } else {
                     let last = (&q % BigInt::from(10)) == BigInt::from(0)
                         || (&q % BigInt::from(10)) == BigInt::from(1);
@@ -1548,11 +1557,11 @@ fn quantize_inner(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize, exact: bo
                 else { (&q % &two) == BigInt::from(1) }
             }
             Rounding::Half05Up => {
-                if (&r * &two) >= pow { true }
+                if r == BigInt::from(0) { false }
                 else { (&q % BigInt::from(10)) == BigInt::from(0) || (&q % BigInt::from(10)) == BigInt::from(5) }
             }
             Rounding::Half01Up => {
-                if (&r * &two) >= pow { true }
+                if r == BigInt::from(0) { false }
                 else { (&q % BigInt::from(10)) == BigInt::from(0) || (&q % BigInt::from(10)) == BigInt::from(1) }
             }
         };
@@ -1564,15 +1573,19 @@ fn quantize_inner(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize, exact: bo
     let result = Dec { sign: d.sign, coeff, exp, special: Special::Finite };
     // Maintain Inexact/Rounded flags; to_integral_exact (exact=true) also
     // traps them, to_integral/to_integral_value (exact=false) do not.
-    if inexact {
-        ctx.set_flag(vm, "Inexact")?;
+    // Rounded is signaled when fractional digits were discarded even with a
+    // zero remainder (to_integral_exact(-1.0) -> -1, Rounded), matching the C
+    // implementation; a zero operand never signals it (to_integral_exact(
+    // -0E-3) -> -0, no flags; 0.0 -> 0, no flags).
+    if shift > 0 && (!d.is_zero() || inexact) {
         ctx.set_flag(vm, "Rounded")?;
-        if exact {
-            if ctx.trap(vm, "Inexact")? {
+        if exact && ctx.trap(vm, "Rounded")? {
+            return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+        }
+        if inexact {
+            ctx.set_flag(vm, "Inexact")?;
+            if exact && ctx.trap(vm, "Inexact")? {
                 return Err(new_decimal_error(vm, "Inexact", "inexact result"));
-            }
-            if ctx.trap(vm, "Rounded")? {
-                return Err(new_decimal_error(vm, "Rounded", "rounded result"));
             }
         }
     }
@@ -2598,11 +2611,11 @@ fn format_sci(d: &Dec, precision: Option<usize>, upper: bool, rounding: Rounding
                         else { (&q % &two) == BigInt::from(1) }
                     }
                     Rounding::Half05Up => {
-                        if (&r * &two) >= pow { true }
+                        if r == BigInt::from(0) { false }
                         else { (&q % BigInt::from(10)) == BigInt::from(0) || (&q % BigInt::from(10)) == BigInt::from(5) }
                     }
                     Rounding::Half01Up => {
-                        if (&r * &two) >= pow { true }
+                        if r == BigInt::from(0) { false }
                         else { (&q % BigInt::from(10)) == BigInt::from(0) || (&q % BigInt::from(10)) == BigInt::from(1) }
                     }
                 };

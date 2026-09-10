@@ -93,6 +93,19 @@ mod _decimal {
     }
 
     /// compare two decimals (sign*coeff*10^exp). NaN sorts before everything.
+    /// Total-order payload tiebreak for NaN values (CPython compare_total):
+    /// within the same NaN kind and sign, a larger payload sorts larger
+    /// (NaN42 > NaN01; -NaN42 < -NaN01). Applies to compare_total_mag too
+    /// (signs cleared): NaN42 > NaN01.
+    fn nan_payload_cmp(a: &Dec, b: &Dec) -> i8 {
+        let c = match a.coeff.cmp(&b.coeff) {
+            core::cmp::Ordering::Less => -1,
+            core::cmp::Ordering::Equal => 0,
+            core::cmp::Ordering::Greater => 1,
+        };
+        if a.sign { -c } else { c }
+    }
+
     fn dec_cmp(a: &Dec, b: &Dec) -> i8 {
         use Special::*;
         let is_nan = |d: &Dec| d.special == NaN || d.special == SignalingNaN;
@@ -1205,13 +1218,24 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("compare_signal requires an argument".to_string()))?;
             let b = to_dec_ctx(&other, vm)?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            if self.d.special == Special::NaN || self.d.special == Special::SignalingNaN
-                || b.special == Special::NaN || b.special == Special::SignalingNaN
-            {
+            let is_nan = |d: &Dec| {
+                d.special == Special::NaN || d.special == Special::SignalingNaN
+            };
+            if is_nan(&self.d) || is_nan(&b) {
+                // compare_signal: a NaN operand signals InvalidOperation and,
+                // when not trapped, yields a quiet NaN with that operand's
+                // sign/payload (compare_signal(-NaN, +NaN) -> -NaN).
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "comparison with NaN"));
                 }
+                let src = if is_nan(&self.d) { &self.d } else { &b };
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: src.sign,
+                    coeff: src.coeff.clone(),
+                    exp: 0,
+                    special: Special::NaN,
+                }));
             }
             let r = dec_cmp(&self.d, &b);
             Ok(vm.ctx.new_int(BigInt::from(r)).into())
@@ -1232,7 +1256,16 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let oy = order(&b);
             let r = if ox != oy {
                 match ox.cmp(&oy) { core::cmp::Ordering::Less => -1, core::cmp::Ordering::Equal => 0, core::cmp::Ordering::Greater => 1 }
-            } else { dec_cmp(&self.d, &b) };
+            } else {
+                let is_nan = |d: &Dec| {
+                    d.special == Special::NaN || d.special == Special::SignalingNaN
+                };
+                if is_nan(&self.d) && is_nan(&b) {
+                    nan_payload_cmp(&self.d, &b)
+                } else {
+                    dec_cmp(&self.d, &b)
+                }
+            };
             Ok(vm.ctx.new_int(BigInt::from(r)).into())
         }
 
@@ -1252,7 +1285,16 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let oy = order(&yd);
             let r = if ox != oy {
                 match ox.cmp(&oy) { core::cmp::Ordering::Less => -1, core::cmp::Ordering::Equal => 0, core::cmp::Ordering::Greater => 1 }
-            } else { dec_cmp(&xd, &yd) };
+            } else {
+                let is_nan = |d: &Dec| {
+                    d.special == Special::NaN || d.special == Special::SignalingNaN
+                };
+                if is_nan(&xd) && is_nan(&yd) {
+                    nan_payload_cmp(&xd, &yd)
+                } else {
+                    dec_cmp(&xd, &yd)
+                }
+            };
             Ok(vm.ctx.new_int(BigInt::from(r)).into())
         }
 
@@ -3615,13 +3657,26 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            if xd.special == Special::NaN || xd.special == Special::SignalingNaN
-                || yd.special == Special::NaN || yd.special == Special::SignalingNaN
-            {
+            let is_nan = |d: &Dec| {
+                d.special == Special::NaN || d.special == Special::SignalingNaN
+            };
+            if is_nan(&xd) || is_nan(&yd) {
+                // compare_signal: any NaN operand signals InvalidOperation and,
+                // when not trapped, yields a quiet NaN (not a numeric order).
+                // The sign/payload follow the first NaN operand (dqcms840:
+                // compare_signal(-NaN, +NaN) -> -NaN; ddcms824: (NaN, -0) ->
+                // NaN).
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "comparison with NaN"));
                 }
+                let src = if is_nan(&xd) { &xd } else { &yd };
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: src.sign,
+                    coeff: src.coeff.clone(),
+                    exp: 0,
+                    special: Special::NaN,
+                }));
             }
             let r = dec_cmp(&xd, &yd);
             Ok(vm.ctx.new_int(BigInt::from(r)).into())
@@ -3667,7 +3722,16 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     if xd.sign { -bigger } else { bigger }
                 }
             } else {
-                dec_cmp(&xd, &yd)
+                let is_nan = |d: &Dec| {
+                    d.special == Special::NaN || d.special == Special::SignalingNaN
+                };
+                // Same NaN class: order by the diagnostic payload
+                // (comparetotal(NaN42, NaN01) -> 1).
+                if is_nan(&xd) && is_nan(&yd) {
+                    nan_payload_cmp(&xd, &yd)
+                } else {
+                    dec_cmp(&xd, &yd)
+                }
             };
             Ok(vm.ctx.new_int(BigInt::from(r)).into())
         }
@@ -3708,7 +3772,16 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     -1
                 }
             } else {
-                dec_cmp(&xd, &yd)
+                let is_nan = |d: &Dec| {
+                    d.special == Special::NaN || d.special == Special::SignalingNaN
+                };
+                // Signs are cleared above: same NaN class orders by payload
+                // (comparetotmag(-NaN42, NaN01) -> 1; -sNaN771, sNaN772 -> -1).
+                if is_nan(&xd) && is_nan(&yd) {
+                    nan_payload_cmp(&xd, &yd)
+                } else {
+                    dec_cmp(&xd, &yd)
+                }
             };
             Ok(vm.ctx.new_int(BigInt::from(r)).into())
         }
@@ -4183,11 +4256,21 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 let prec = _decimal_core::coeff_digits_of(&xd.coeff) as isize + xd.exp;
                 let (coeff, _exp, inexact) =
                     _decimal_core::round_to_prec(vm, &ctx, xd.sign, &xd.coeff, xd.exp, prec)?;
-                if inexact {
-                    ctx.set_flag(vm, "Inexact")?;
+                // CPython signals Rounded whenever fractional digits were
+                // discarded, even when the discard is exact
+                // (to_integral_exact(-1.0) -> -1, Rounded; 5.0 -> 5, Rounded)
+                // — but a zero operand never does (to_integral_exact(-0E-3)
+                // -> -0 has no flags; only an inexact zero like -0.001 does).
+                if !xd.is_zero() || inexact {
                     ctx.set_flag(vm, "Rounded")?;
-                    if ctx.trap(vm, "Inexact")? {
-                        return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                    if ctx.trap(vm, "Rounded")? {
+                        return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+                    }
+                    if inexact {
+                        ctx.set_flag(vm, "Inexact")?;
+                        if ctx.trap(vm, "Inexact")? {
+                            return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                        }
                     }
                 }
                 _decimal_core::Dec {
