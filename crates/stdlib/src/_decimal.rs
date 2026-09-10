@@ -1949,7 +1949,36 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("scaleb requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let n_obj = to_dec_ctx(&n_argv, vm)?;
-            if n_obj.special != Special::Finite || n_obj.exp != 0 {
+            // Any NaN operand signals InvalidOperation and yields a quiet NaN
+            // (payload from the sNaN operand if present: scaleb(NaN016,
+            // sNaN191) -> NaN191; scaleb(Inf, -sNaN) -> -NaN).
+            if self.d.special == Special::SignalingNaN || n_obj.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb with sNaN"));
+                }
+                let src = if self.d.special == Special::SignalingNaN { &self.d } else { &n_obj };
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: src.sign,
+                    coeff: src.coeff.clone(),
+                    exp: 0,
+                    special: Special::NaN,
+                }));
+            }
+            if self.d.special == Special::NaN || n_obj.special == Special::NaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb with NaN"));
+                }
+                let src = if self.d.special == Special::NaN { &self.d } else { &n_obj };
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: src.sign,
+                    coeff: src.coeff.clone(),
+                    exp: 0,
+                    special: Special::NaN,
+                }));
+            }
+            if n_obj.exp != 0 {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "scaleb requires an integer"));
@@ -1961,10 +1990,13 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let n: isize = n_obj.coeff.to_string().parse().unwrap_or(isize::MAX);
             let n = if n_obj.sign { -n } else { n };
             // CPython: liminf/limsup = +/-2*(Emax+prec); out of range is
-            // InvalidOperation (the exponent isn't even representable).
+            // InvalidOperation (scbx127: -2018 at prec 9/Emax 999 -> -2018
+            // < -2016 is InvalidOperation; -2016/-2015 are legal underflows).
+            // Exponents inside the range flow through apply_context, so a
+            // large positive n overflows to Infinity rather than raising.
             let limsup = 2isize.checked_mul(ctx.emax + ctx.prec).unwrap_or(isize::MAX);
             let liminf = -2isize.checked_mul(ctx.emax + ctx.prec).unwrap_or(isize::MIN);
-            if !(liminf <= n && n <= limsup) {
+            if n < liminf || n > limsup {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "scaleb exponent out of range"));
@@ -4168,8 +4200,55 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            let n: isize = yd.coeff.to_string().parse().unwrap_or(0);
+            // Any NaN operand signals InvalidOperation and yields a quiet NaN
+            // (payload from the sNaN operand: scaleb(NaN016, sNaN191) ->
+            // NaN191; scaleb(Inf, -sNaN) -> -NaN).
+            let x_nan = xd.special == Special::NaN || xd.special == Special::SignalingNaN;
+            let y_nan = yd.special == Special::NaN || yd.special == Special::SignalingNaN;
+            if x_nan || y_nan {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb with NaN"));
+                }
+                let src = if xd.special == Special::SignalingNaN { &xd }
+                    else if yd.special == Special::SignalingNaN { &yd }
+                    else if xd.special == Special::NaN { &xd }
+                    else { &yd };
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: src.sign,
+                    coeff: src.coeff.clone(),
+                    exp: 0,
+                    special: Special::NaN,
+                }));
+            }
+            // The exponent must be an integer in bare form (y.exp == 0):
+            // scaleb(1.23, 2.0) and scaleb(1.23, 0E+2) are InvalidOperation.
+            if yd.exp != 0 {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb requires an integer"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
+            let n: isize = yd.coeff.to_string().parse().unwrap_or(isize::MAX);
             let n = if yd.sign { -n } else { n };
+            // CPython: liminf/limsup = +/-2*(Emax+prec); out of range is
+            // InvalidOperation (scbx127: -2018 at prec 9/Emax 999 is below
+            // -2016). Inside the range the result flows through
+            // apply_context, so a large positive n overflows to Infinity.
+            let limsup = 2isize.checked_mul(ctx.emax + ctx.prec).unwrap_or(isize::MAX);
+            let liminf = -2isize.checked_mul(ctx.emax + ctx.prec).unwrap_or(isize::MIN);
+            if n < liminf || n > limsup {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb exponent out of range"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let result = _decimal_core::Dec {
                 sign: xd.sign, coeff: xd.coeff.clone(), exp: xd.exp + n,
                 special: xd.special,
