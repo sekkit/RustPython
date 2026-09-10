@@ -109,3 +109,57 @@ signal、sqrt）OK。
 - 修复方案建议：以固定 seed（1635165126）跑 test_decimal 复现，定位 abs/subnormal
   的 Clamped 置位逻辑，与 CPython mpdecimal 对照修正。
 - 排期：优先级低于 numpy/code-extra（已完成的推进项），作为 _decimal 补齐项记录。
+
+---
+
+## 全量 .decTest 扫描审计 + 低垂果实修复（2026-09-10，commit cab5022ef）
+
+### 扫描审计（143 文件全跑，5 个超时）
+驱动脚本逐文件独立进程 + 超时保护（temp/run_scan.sh，输出 temp/scan_sample/）。
+73 个文件存在失败，分类：
+- **逻辑函数**（深水区）：and/or/xor/invert 普通 27/27/27/11，dd/dq 变体 17–33
+- **rotate/shift**（16–19）、**remainderNear**（19–26）、**fma**（8–15）
+- **数学函数**（文档已知未处理）：exp 32、ln 29、log10 23、powersqrt 10
+- **squareroot.decTest Rust panic**：malachite-nz div.rs division by zero（深水区）
+- 5 个超时未完全扫描：add、power、subtract、randoms、randomBound32
+
+### 本轮修复（cab5022ef，全部经 CPython 3.12 实测对齐）
+1. **05up/01up HALF_UP 残留**：quantize/quantize_inner/format_sci 三处内联舍入
+   分支混入 `r*2>=pow → up`；改与 round_up_decision 一致（r==0 不 up；q 末位
+   0/5 或 0/1 才 up）。修复 ddqua1907/1908、r05up 系列 format 路径。
+2. **to_integral_exact Rounded flag**（quantize_inner + Context 版本）：精确丢弃
+   小数位也设 Rounded（intxx043: -1.0 → -1 Rounded）；**零值豁免**
+   （-0E-3 → -0 无 flag，仅 inexact 零如 -0.001 设 Inexact+Rounded；intxx143/144）。
+3. **clamp zero 钳制目标**：clamp=1 时钳到 etop（Emax-prec+1，clam412: 0E+400 →
+   0E+369），clamp=0 时 Emax（0E+384）。
+4. **clamp 分支溢出跳过**：adjusted > Emax 时不再误设 Clamped（ddadd81621 →
+   -9.999999999999999E+384 Overflow；ddmul870 → Infinity Overflow）。
+5. **comparetotal NaN payload 排序**：Decimal + Context 两个版本各 2 处，同类
+   NaN 按 payload 排序（NaN42 > NaN01；-NaN42 < -NaN01；mag 模式符号清除后
+   仍按 payload）。修复 ddcot977/dqcot977/ddctm977/982/dqctm977/982 等。
+6. **compare_signal NaN 结果**：任意 NaN 操作数 → InvalidOperation + 安静 NaN
+   （sign/payload 跟第一 NaN 操作数；dqcms840: -NaN+NaN → -NaN；ddcms824 等）。
+   原实现误返回数值比较。
+
+### 修复后归零（抽样 seed 1635165126）
+clamp / tointegralx / tointegral / ddAdd / ddMultiply / ddCompareSig /
+dqCompareSig / ddCompareTotal / ddCompareTotalMag / dqCompareTotal /
+dqCompareTotalMag / comparetotal / comparetotmag / divide 全部 0 fail；
+rounding 0 fail（波动消除）；base 仅剩 bsrx510（见下）。
+
+### 已知 CPython 与 decTest 字面期望差异（RustPython 跟随 CPython）
+- **base bsrx510**：decTest 期望 toSci(-1.23450) → '-1.2345 Rounded'，CPython 实际
+  返回 '-1.23450'（无 flag）——RustPython 现与 CPython 一致，此用例"失败"为
+  decTest 期望与 CPython 实现固有差异。
+- **divide divx287-288**：0.1/9999e-999999997 期望 E+999999992 有限值，但上下文
+  emax=384 → CPython 溢出为 Infinity（Overflow Inexact Rounded）；RustPython 一致。
+- **rounding rmux518**：multiply 12355×12 055E-1 舍入差异，CPython half_even
+  得 1.4826E+5，RustPython 跟随。
+
+### 深水区（后续专职，按优先级）
+1. squareroot/powersqrt Rust panic（除零，需定位 dec_sqrt 或 power 路径）
+2. 数学函数 exp/ln/log10（高精度级数/Taylor 未实现，32/29/23 fail）
+3. 逻辑函数 and/or/xor/invert（需按 numtheory 编码实现）
+4. rotate/shift、remainderNear、fma（Rounded trap 顺序）
+5. 超时大文件 add/power/subtract/randoms/randomBound32 全量确认
+6. 全量 TEST_ALL=True 复扫（当前核对受 90% 抽样波动影响）
