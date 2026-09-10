@@ -190,3 +190,34 @@ Decimal 与 Context 共 8 处调用改回 dec_cmp 简单比较（相等时永远
 class(3)/ddClass(2)/dqClass(2)、scaleb(5)/ddScaleB(5)/dqScaleB(5)、
 dsBase(3)/ddBase(5)、reduce(2)/ddReduce(1)/dqReduce(1)、ddRemainder(1)、
 ddToIntegral(1)/dqToIntegral(1)。
+
+## class/normalize/zero-clamp/scaleb 修复（2026-09-10，commit 9802fcfee + 664456eac）
+
+### 9802fcfee：number_class / normalize / zero clamp
+- number_class（Decimal + Context）：NaN/sNaN 分类不带符号（clasx043/243）；
+  Subnormal/Infinite 用 adjusted exponent 判定（clasx006：0.99999999E-999
+  实际 coeff 99999999/exp -1007、adjusted -1000 < Emin-999 → +Subnormal）
+- normalize（Decimal + Context，decTest 'reduce'）：sNaN → InvalidOperation +
+  安静 NaN（payload 按 prec 截断，ddred830: -sNaN010→-NaN10）；underflow
+  到零指数归 0（redx239: -0.0009E-999→-0）
+- apply_context zero 分支：clamp=1 时零指数 > etop 即钳到 etop（ddrem426:
+  remainder(1E+384,5E+383)→0E+369 Clamped；plus(0E+380)→0E+369、
+  plus(0E+368) 不钳）
+- 验证：class/ddClass/dqClass/ddReduce/dqReduce/ddRemainder/clamp 归零；
+  redx213 为 decTest 与 CPython 固有差异（CPython normalize 尾零剥离不设
+  Rounded），RustPython 跟随 CPython
+
+### 664456eac：scaleb（Decimal + Context）
+- 任意 NaN/sNaN → InvalidOperation + 安静 NaN（sNaN payload 优先：scbx876
+  scaleb(NaN016,sNaN191)→NaN191；scbx027/028）
+- 指数必须裸整数（y.exp==0）：-0.01/2.0/0E+2 均 InvalidOperation（scbx041）
+- 范围恢复为 CPython 的 ±2*(Emax+prec)（对照 _pydecimal.scaleb 源码 + C
+  实现实测：-2017 非法、-2016 合法 underflow、n=1000 溢出到 Infinity，
+  scbx127）
+- Infinity 操作数原样透传
+- 验证：scaleb/ddScaleB/dqScaleB 归零（dqScaleB 曾有 3 fail 为抽样波动）
+
+### 剩余低垂果实（更新）
+- to_sci_string 系列（dsbsr510/ddbas935/940/1077/745：溢出 Clamped、05up
+  舍入、零指数、sNaN payload 截断）——专职待办
+- dsBase(3)/ddBase(5) 其余用例、ddToIntegral(1)/dqToIntegral(1)
