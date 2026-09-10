@@ -163,3 +163,30 @@ rounding 0 fail（波动消除）；base 仅剩 bsrx510（见下）。
 4. rotate/shift、remainderNear、fma（Rounded trap 顺序）
 5. 超时大文件 add/power/subtract/randoms/randomBound32 全量确认
 6. 全量 TEST_ALL=True 复扫（当前核对受 90% 抽样波动影响）
+
+## max/min 平局回退修复（2026-09-10，commit 08b9e5a10）
+
+### 根因
+f0a813ee2（nexttoward 合并）误将 f38aaae14 的 max/min 平局修复整体回退：
+删除 max_picks_a/min_picks_a/max_mag_picks_a/min_mag_picks_a 四个辅助函数，
+Decimal 与 Context 共 8 处调用改回 dec_cmp 简单比较（相等时永远选左操作数），
+导致扫描中 max/min/maxmag/minmag 系列（普通 2–5、dd/dq 3–4 fail）重新失败。
+
+### 修复（_decimal.rs，73+/16-）
+- 恢复四个辅助函数（f38aaae14 原文）：平局时 max 选 +0 优先、同正选 exp 大、
+  同负选 exp 小（min 镜像）；max_mag/min_mag 平局委托给 max/min
+- Decimal 版 max/min/max_mag/min_mag 与 Context 版 4 方法（decTest 路径）
+  全部改回辅助函数
+
+### 验证
+- 44 个平局用例与 CPython 实测逐一一致（max(0E1,0E2)→0E+2、
+  max(-1,-1.0)→-1.0、min(0,-0)→-0、min(-1000,-1E+3)→-1E+3、
+  max_mag(-Inf,Inf)→Infinity、-0E+5 系列等）
+- 12 个 decTest 文件抽样重扫全部归零：max/maxmag/min/minmag +
+  ddMax/ddMaxMag/ddMin/ddMinMag/dqMax/dqMaxMag/dqMin/dqMinMag
+- 回归：vm 53/2（基线一致）、stdlib 8/0
+
+### 剩余低垂果实（未处理）
+class(3)/ddClass(2)/dqClass(2)、scaleb(5)/ddScaleB(5)/dqScaleB(5)、
+dsBase(3)/ddBase(5)、reduce(2)/ddReduce(1)/dqReduce(1)、ddRemainder(1)、
+ddToIntegral(1)/dqToIntegral(1)。
