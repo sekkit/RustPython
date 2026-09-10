@@ -558,17 +558,21 @@ pub(crate) fn apply_context(
                 return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
             }
             dec.exp = etiny;
-        } else if dec.exp > ctx.emax {
-            // Clamp a huge positive exponent of a zero: with clamp=1 the
-            // target is etop (Emax - prec + 1; clam412: plus(0E+400) ->
-            // 0E+369 at prec 16/Emax 384), otherwise Emax (CPython:
-            // plus(0E+400) at clamp=0 -> 0E+384, Clamped).
+        } else {
+            // Clamp a too-large positive exponent of a zero: with clamp=1 the
+            // cap is etop (Emax - prec + 1; clam412: plus(0E+400) -> 0E+369,
+            // ddrem426: remainder(1E+384, 5E+383) -> 0E+369 at prec 16/Emax
+            // 384), otherwise Emax (CPython: plus(0E+400) at clamp=0 ->
+            // 0E+384, Clamped). A zero below the cap keeps its exponent
+            // (plus(0E+368) at clamp=1 -> 0E+368, no flags).
             let cap = if ctx.clamp == 1 { ctx.emax - ctx.prec + 1 } else { ctx.emax };
-            ctx.set_flag(vm, "Clamped")?;
-            if ctx.trap(vm, "Clamped")? {
-                return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+            if dec.exp > cap {
+                ctx.set_flag(vm, "Clamped")?;
+                if ctx.trap(vm, "Clamped")? {
+                    return Err(ctx_trap_exc(vm, "Clamped", "clamped"));
+                }
+                dec.exp = cap;
             }
-            dec.exp = cap;
         }
         return Ok(dec);
     }

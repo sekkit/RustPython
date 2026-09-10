@@ -918,20 +918,25 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         #[pymethod]
         fn number_class(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<String> {
             let ctx = ctx_from_noargs(&args, vm)?;
-            let sign = if self.d.sign { "-" } else { "+" };
             match self.d.special {
-                Special::NaN => return Ok(format!("{sign}NaN")),
-                Special::SignalingNaN => return Ok(format!("{sign}sNaN")),
-                Special::Infinity => return Ok(format!("{sign}Infinity")),
+                // NaN/sNaN classes carry no sign (class(+NaN12345) -> 'NaN').
+                Special::NaN => return Ok("NaN".to_string()),
+                Special::SignalingNaN => return Ok("sNaN".to_string()),
+                Special::Infinity => return Ok(format!("{}Infinity", if self.d.sign { "-" } else { "+" })),
                 Special::Finite => {}
             }
+            let sign = if self.d.sign { "-" } else { "+" };
             if self.d.is_zero() {
                 return Ok(format!("{sign}Zero"));
             }
+            // Subnormal/Infinite are judged on the *adjusted* exponent
+            // (exp + digits - 1): 0.99999999E-999 (coeff 99999999, exp -1007,
+            // adjusted -1000) is Subnormal at Emin=-999 (clasx006).
             let etiny = ctx.emin - (ctx.prec - 1);
-            if self.d.exp < etiny {
+            let adj = self.d.exp + self.d.coeff_digits() as isize - 1;
+            if adj < ctx.emin {
                 Ok(format!("{sign}Subnormal"))
-            } else if self.d.exp > ctx.emax {
+            } else if adj > ctx.emax {
                 Ok(format!("{sign}Infinite"))
             } else {
                 Ok(format!("{sign}Normal"))
@@ -941,6 +946,24 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         #[pymethod]
         fn normalize(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
             let ctx = ctx_from_noargs(&args, vm)?;
+            // sNaN signals InvalidOperation and becomes a quiet NaN with the
+            // payload truncated to the context precision (mirrors Context).
+            if self.d.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "normalize with sNaN"));
+                }
+                let mut n = self.d.clone();
+                n.special = Special::NaN;
+                let keep = (ctx.prec as usize).max(1);
+                let digits = n.coeff_str();
+                if digits.len() > keep {
+                    n.coeff = digits[digits.len() - keep..]
+                        .parse::<BigInt>()
+                        .unwrap_or_else(|_| BigInt::from(0));
+                }
+                return Ok(PyDecimal::to_py(vm, n));
+            }
             let mut d = self.d.clone();
             if d.is_zero() {
                 d.exp = 0;
@@ -4249,6 +4272,26 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         #[pymethod]
         fn normalize(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
+            let ctx = self.ctx();
+            // A signaling-NaN signals InvalidOperation and becomes a quiet
+            // NaN, payload truncated to the context precision
+            // (normalize(-sNaN010) -> -NaN10 at prec 16, ddred830).
+            if xd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "normalize with sNaN"));
+                }
+                let mut n = xd.clone();
+                n.special = Special::NaN;
+                let keep = (ctx.prec as usize).max(1);
+                let digits = n.coeff_str();
+                if digits.len() > keep {
+                    n.coeff = digits[digits.len() - keep..]
+                        .parse::<BigInt>()
+                        .unwrap_or_else(|_| BigInt::from(0));
+                }
+                return Ok(PyDecimal::to_py(vm, n));
+            }
             let mut d = xd.clone();
             if d.is_zero() {
                 d.exp = 0;
@@ -4258,29 +4301,35 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     d.exp += 1;
                 }
             }
-            let ctx = self.ctx();
-            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            let mut r = _decimal_core::apply_context(vm, &ctx, d)?;
+            // Underflow to zero: CPython normalizes to plain '0' (exp 0).
+            if r.is_zero() {
+                r.exp = 0;
+            }
             Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
         fn number_class(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult<String> {
             let xd = to_dec_ctx(&x, vm)?;
-            let sign = if xd.sign { "-" } else { "+" };
             match xd.special {
-                Special::NaN => return Ok(format!("{sign}NaN")),
-                Special::SignalingNaN => return Ok(format!("{sign}sNaN")),
-                Special::Infinity => return Ok(format!("{sign}Infinity")),
+                // NaN/sNaN classes carry no sign (class(+NaN12345) -> 'NaN').
+                Special::NaN => return Ok("NaN".to_string()),
+                Special::SignalingNaN => return Ok("sNaN".to_string()),
+                Special::Infinity => return Ok(format!("{}Infinity", if xd.sign { "-" } else { "+" })),
                 Special::Finite => {}
             }
+            let sign = if xd.sign { "-" } else { "+" };
             if xd.is_zero() {
                 return Ok(format!("{sign}Zero"));
             }
             let ctx = self.ctx();
-            let etiny = ctx.emin - (ctx.prec - 1);
-            if xd.exp < etiny {
+            // Subnormal/Infinite are judged on the *adjusted* exponent
+            // (exp + digits - 1), matching apply_context and clasx006.
+            let adj = xd.exp + _decimal_core::coeff_digits_of(&xd.coeff) as isize - 1;
+            if adj < ctx.emin {
                 Ok(format!("{sign}Subnormal"))
-            } else if xd.exp > ctx.emax {
+            } else if adj > ctx.emax {
                 Ok(format!("{sign}Infinite"))
             } else {
                 Ok(format!("{sign}Normal"))
