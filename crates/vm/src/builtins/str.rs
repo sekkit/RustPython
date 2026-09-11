@@ -2837,9 +2837,9 @@ mod tests {
             ("Format,This-As*Title;String", "fOrMaT,thIs-aS*titLe;String"),
             ("Getint", "getInt"),
             // spell-checker:disable-next-line
-            ("Greek Î©ppercases ...", "greek Ï‰ppercases ..."),
+            ("Greek Ωppercases ...", "greek ωppercases ..."),
             // spell-checker:disable-next-line
-            ("Greek á¿¼itlecases ...", "greek á¿³itlecases ..."),
+            ("Greek ῼitlecases ...", "greek ῳitlecases ..."),
             // Latin Extended-B digraphs: uppercase forms map to titlecase forms
             // (e.g. U+01F1 'DZ' -> U+01F2 'Dz', U+01C4 'DÅ½' -> U+01C5 'DÅ¾').
             ("\u{01F2}", "\u{01F1}"),
@@ -2858,9 +2858,9 @@ mod tests {
             "A\nTitlecased Line",
             "A Titlecased, Line",
             // spell-checker:disable-next-line
-            "Greek Î©ppercases ...",
+            "Greek Ωppercases ...",
             // spell-checker:disable-next-line
-            "Greek á¿¼itlecases ...",
+            "Greek ῼitlecases ...",
         ];
 
         for s in pos {
