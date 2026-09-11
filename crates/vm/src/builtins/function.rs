@@ -352,6 +352,22 @@ impl PyFunction {
         };
 
         let mut posonly_passed_as_kwarg = Vec::new();
+        // Number of keywords that will hit the "unexpected keyword" error
+        // (matches neither a keyword-accepting parameter nor a positional-only
+        // parameter). CPython only appends a "Did you mean" suggestion when
+        // exactly one unexpected keyword was supplied.
+        let num_unexpected_kwargs = func_args
+            .kwargs
+            .keys()
+            .filter(|name| {
+                let Some(s) = name.as_str().ok() else {
+                    return true;
+                };
+                let is_param = arg_pos(code.posonlyarg_count as usize..total_args, s).is_some();
+                let is_posonly = arg_pos(0..code.posonlyarg_count as usize, s).is_some();
+                !is_param && !is_posonly
+            })
+            .count();
         // Handle keyword arguments
         for (name, value) in func_args.kwargs {
             // Parameter names are plain identifiers, so a non-UTF-8 (surrogate) key
@@ -377,11 +393,28 @@ impl PyFunction {
             {
                 posonly_passed_as_kwarg.push(name);
             } else {
-                return Err(vm.new_type_error(format!(
+                // CPython raises `f() got an unexpected keyword argument
+                // 'X'` with a "Did you mean 'Y'?" suggestion when exactly one
+                // unexpected keyword remains and a close parameter name
+                // exists (Objects/call.c).
+                let mut msg = format!(
                     "{}() got an unexpected keyword argument '{}'",
                     self.__qualname__(),
                     name
-                )));
+                );
+                if num_unexpected_kwargs == 1
+                    && let Some(suggestion) = name_str.and_then(|n| {
+                        crate::utils::suggest_keyword(
+                            n,
+                            code.varnames[code.posonlyarg_count as usize..total_args]
+                                .iter()
+                                .map(|s| s.as_str()),
+                        )
+                    })
+                {
+                    msg.push_str(&format!(" Did you mean '{suggestion}'?"));
+                }
+                return Err(vm.new_type_error(msg));
             }
         }
         if !posonly_passed_as_kwarg.is_empty() {
