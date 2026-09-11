@@ -1,12 +1,16 @@
 pub(crate) use _contextvars::module_def;
 
-use crate::vm::PyRef;
+use crate::vm::{PyObjectRef, PyRef};
 use _contextvars::PyContext;
 use core::cell::RefCell;
 
 thread_local! {
     // TODO: Vec doesn't seem to match copy behavior
     static CONTEXTS: RefCell<Vec<PyRef<PyContext>>> = RefCell::default();
+    // The `Token.MISSING` sentinel singleton, shared by the `Token.MISSING`
+    // class attribute and the `old_value` getter so identity holds
+    // (`token.old_value is Token.MISSING`), like CPython's token_missing.
+    static TOKEN_MISSING: RefCell<Option<PyObjectRef>> = RefCell::new(None);
 }
 
 #[pymodule]
@@ -14,7 +18,6 @@ mod _contextvars {
     use crate::vm::{
         AsObject, Py, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine, atomic_func,
         builtins::{PyGenericAlias, PyList, PyStrRef, PyType, PyTypeRef},
-        class::StaticType,
         common::{
             hash::PyHash,
             lock::{LazyLock, PyMutex},
@@ -554,7 +557,13 @@ mod _contextvars {
         fn old_value(&self, _vm: &VirtualMachine) -> PyObjectRef {
             match &self.old_value {
                 Some(value) => value.clone(),
-                None => ContextTokenMissing::static_type().to_owned().into(),
+                None => super::TOKEN_MISSING.with(|cell| {
+                    cell.borrow_mut()
+                        .get_or_insert_with(|| {
+                            PyObjectRef::from(ContextTokenMissing {}.into_ref(&_vm.ctx))
+                        })
+                        .clone()
+                }),
             }
         }
 
@@ -638,8 +647,20 @@ mod _contextvars {
     ) -> PyResult<()> {
         __module_exec(vm, module);
 
+        // Install `Token.MISSING` as a class attribute and record the canonical
+        // singleton so `token.old_value is Token.MISSING` identity holds. The
+        // protocol `set_attr` goes through the metaclass setattro which rejects
+        // assignments to immutable static types; write directly into the type's
+        // attribute table (PyType::set_attr) like CPython inserts into tp_dict
+        // during module init.
+        let missing = PyObjectRef::from(ContextTokenMissing {}.into_ref(&vm.ctx));
+        super::TOKEN_MISSING.with(|cell| {
+            *cell.borrow_mut() = Some(missing.clone());
+        });
         let token_type = module.get_attr("Token", vm)?;
-        token_type.set_attr("MISSING", ContextTokenMissing::static_type().to_owned(), vm)?;
+        if let Ok(token_type) = token_type.try_downcast::<PyType>(vm) {
+            token_type.set_attr(vm.ctx.intern_str("MISSING"), missing);
+        }
 
         Ok(())
     }
