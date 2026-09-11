@@ -217,6 +217,15 @@ ddToIntegral(1)/dqToIntegral(1)。
 - Infinity 操作数原样透传
 - 验证：scaleb/ddScaleB/dqScaleB 归零（dqScaleB 曾有 3 fail 为抽样波动）
 
+### 179142f5b：scaleb 收尾（full 模式验证）
+- **quiet NaN 透传**：仅 quiet NaN 操作数不 signal、原样返回（scbx021/022：
+  scaleb(NaN,1)→NaN、scaleb(-NaN,-1)→-NaN 无 flags、sign/payload 保留）；
+  sNaN 仍 signal（scbx027/028/876）
+- **Infinity 指数检查**：scaleb(10,Infinity)→NaN InvalidOperation（scbx018，
+  Infinity 的 exp=0 此前漏过裸整数检查）
+- 验证：**full 模式（禁用 90% 随机跳过）** scaleb 0/160、ddScaleB 0/191、
+  dqScaleB 0/209——彻底归零，抽样波动假象排除；回归 vm 53/2、stdlib 8/0
+
 ### 剩余低垂果实（更新）
 - to_sci_string 系列（dsbsr510/ddbas935/940/1077/745：溢出 Clamped、05up
   舍入、零指数、sNaN payload 截断）——专职待办
