@@ -659,13 +659,34 @@ impl PyObject {
         if let Ok(cls) = cls.try_to_ref::<PyType>(vm) {
             // PyType_Check(cls) - cls is a type object
             let mut retval = self.class().is_subtype(cls);
-            if !retval
-                && let Some(i_cls) =
-                    vm.get_attribute_opt(self.to_owned(), identifier!(vm, __class__))?
-                && let Ok(i_cls_type) = PyTypeRef::try_from_object(vm, i_cls)
-                && !i_cls_type.is(self.class())
-            {
-                retval = i_cls_type.is_subtype(cls);
+            if !retval {
+                // Fast path: if the object's type resolves `__class__` to the
+                // plain `object.__class__` getset descriptor (the overwhelmingly
+                // common case), the "proxy" class is simply the real class and
+                // contributes nothing new — skip the expensive generic
+                // attribute lookup entirely. This mirrors CPython where the
+                // __class__ of a normal object IS Py_TYPE(obj).
+                // We compare against the descriptor installed on `object` so
+                // that subclasses which *override* __class__ (e.g. proxies)
+                // still take the slow, fully-correct path.
+                let obj_cls = self.class();
+                let default_class_desc = vm
+                    .ctx
+                    .types
+                    .object_type
+                    .get_attr(identifier!(vm, __class__));
+                let resolves_to_default = match (&default_class_desc, obj_cls.get_attr(identifier!(vm, __class__))) {
+                    (Some(def), Some(actual)) => def.is(&actual),
+                    _ => false,
+                };
+                if !resolves_to_default
+                    && let Some(i_cls) =
+                        vm.get_attribute_opt(self.to_owned(), identifier!(vm, __class__))?
+                    && let Ok(i_cls_type) = PyTypeRef::try_from_object(vm, i_cls)
+                    && !i_cls_type.is(obj_cls)
+                {
+                    retval = i_cls_type.is_subtype(cls);
+                }
             }
             Ok(retval)
         } else {
