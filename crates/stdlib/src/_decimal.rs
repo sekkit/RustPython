@@ -1965,17 +1965,27 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     special: Special::NaN,
                 }));
             }
+            // A quiet NaN operand (no sNaN) passes through without signaling
+            // (scbx021/022: scaleb(NaN,1) -> NaN; scaleb(-NaN,-1) -> -NaN,
+            // no flags; payload and sign preserved).
             if self.d.special == Special::NaN || n_obj.special == Special::NaN {
-                ctx.set_flag(vm, "InvalidOperation")?;
-                if ctx.trap(vm, "InvalidOperation")? {
-                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb with NaN"));
-                }
                 let src = if self.d.special == Special::NaN { &self.d } else { &n_obj };
                 return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
                     sign: src.sign,
                     coeff: src.coeff.clone(),
                     exp: 0,
                     special: Special::NaN,
+                }));
+            }
+            // An infinite exponent operand is InvalidOperation too
+            // (scbx018: scaleb(10, Infinity) -> NaN Invalid_operation).
+            if n_obj.special == Special::Infinity {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb with infinite exponent"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
             if n_obj.exp != 0 {
@@ -4200,25 +4210,42 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            // Any NaN operand signals InvalidOperation and yields a quiet NaN
-            // (payload from the sNaN operand: scaleb(NaN016, sNaN191) ->
-            // NaN191; scaleb(Inf, -sNaN) -> -NaN).
-            let x_nan = xd.special == Special::NaN || xd.special == Special::SignalingNaN;
-            let y_nan = yd.special == Special::NaN || yd.special == Special::SignalingNaN;
-            if x_nan || y_nan {
+            // A signaling NaN signals InvalidOperation and yields a quiet NaN
+            // with the sNaN operand's payload/sign (scaleb(NaN016, sNaN191)
+            // -> NaN191; scaleb(Inf, -sNaN) -> -NaN).
+            if xd.special == Special::SignalingNaN || yd.special == Special::SignalingNaN {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
-                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb with NaN"));
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb with sNaN"));
                 }
-                let src = if xd.special == Special::SignalingNaN { &xd }
-                    else if yd.special == Special::SignalingNaN { &yd }
-                    else if xd.special == Special::NaN { &xd }
-                    else { &yd };
+                let src = if xd.special == Special::SignalingNaN { &xd } else { &yd };
                 return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
                     sign: src.sign,
                     coeff: src.coeff.clone(),
                     exp: 0,
                     special: Special::NaN,
+                }));
+            }
+            // A quiet NaN operand (no sNaN) passes through without signaling
+            // (scbx021/022: scaleb(NaN,1) -> NaN; scaleb(-NaN,-1) -> -NaN).
+            if xd.special == Special::NaN || yd.special == Special::NaN {
+                let src = if xd.special == Special::NaN { &xd } else { &yd };
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: src.sign,
+                    coeff: src.coeff.clone(),
+                    exp: 0,
+                    special: Special::NaN,
+                }));
+            }
+            // An infinite exponent operand is InvalidOperation too
+            // (scbx018: scaleb(10, Infinity) -> NaN Invalid_operation).
+            if yd.special == Special::Infinity {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "scaleb with infinite exponent"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
             // The exponent must be an integer in bare form (y.exp == 0):
