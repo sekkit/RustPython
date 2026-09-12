@@ -1,6 +1,8 @@
 use crate::{
     AsObject,
-    builtins::{descriptor::PyMethodDescriptor, PyBoundMethod, PyFunction},
+    builtins::{
+        descriptor::PyMethodDescriptor, PyBoundMethod, PyFunction, PyStr,
+    },
     function::{FuncArgs, IntoFuncArgs},
     types::{GenericMethod, VectorCallFunc},
     {PyObject, PyObjectRef, PyResult, VirtualMachine},
@@ -36,9 +38,11 @@ impl PyObject {
             ));
         }
         let Some(callable) = self.to_callable() else {
-            return Err(
-                vm.new_type_error(format!("'{}' object is not callable", self.class().name()))
-            );
+            let mut msg = format!("'{}' object is not callable", self.class().name());
+            if let Some(suggestion) = module_call_suggestion(self, vm) {
+                msg.push_str(&format!(". Did you mean: '{suggestion}'?"));
+            }
+            return Err(vm.new_type_error(msg));
         };
         vm_trace!("Invoke: {:?} {:?}", callable, args);
         callable.invoke(args, vm)
@@ -55,11 +59,37 @@ impl PyObject {
         vm: &VirtualMachine,
     ) -> PyResult {
         let Some(callable) = self.to_callable() else {
-            return Err(
-                vm.new_type_error(format!("'{}' object is not callable", self.class().name()))
-            );
+            let mut msg = format!("'{}' object is not callable", self.class().name());
+            if let Some(suggestion) = module_call_suggestion(self, vm) {
+                msg.push_str(&format!(". Did you mean: '{suggestion}'?"));
+            }
+            return Err(vm.new_type_error(msg));
         };
         callable.invoke_vectorcall(args, nargs, kwnames, vm)
+    }
+}
+
+/// CPython's module-not-callable suggestion (Objects/call.c, bpo-44422):
+/// when a module is called, suggest the same-named callable attribute:
+/// `'module' object is not callable. Did you mean: 'mod.mod(...)'?`
+/// Only when `__name__` is a str and the module has a *callable* attribute
+/// with that name.
+fn module_call_suggestion(obj: &PyObject, vm: &VirtualMachine) -> Option<String> {
+    if !obj.class().fast_issubclass(vm.ctx.types.module_type) {
+        return None;
+    }
+    let module_name = obj
+        .get_attr(vm.ctx.intern_str("__name__"), vm)
+        .ok()
+        .filter(|name| !vm.is_none(name))?;
+    let module_name = module_name.downcast_ref::<PyStr>()?;
+    let name_str = module_name.as_wtf8().to_string();
+    let interned = vm.ctx.intern_str(name_str.as_str());
+    let attr = obj.get_attr(interned, vm).ok()?;
+    if attr.to_callable().is_some() {
+        Some(format!("{name_str}.{name_str}(...)"))
+    } else {
+        None
     }
 }
 
