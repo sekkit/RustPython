@@ -1095,7 +1095,15 @@ impl PyListIterator {
             IterStatus::Exhausted => return None,
         };
         let vec: &[PyObjectRef] = unsafe { &*list.elements.data_ptr() };
-        let item = vec.get(internal.position)?.clone();
+        // CPython marks an iterator exhausted when a `next` hits the current
+        // end (it_index >= len => it_seq = NULL). The sticky flag must be set
+        // here too: otherwise an iterator drained by the FOR_ITER fast path
+        // would "revive" after the list grows (GH-121012 / list_tests.py
+        // test_exhausted_iterator).
+        let Some(item) = vec.get(internal.position).cloned() else {
+            internal.status = IterStatus::Exhausted;
+            return None;
+        };
         internal.position += 1;
         Some(item)
     }
