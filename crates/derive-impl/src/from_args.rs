@@ -239,12 +239,29 @@ pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
 
     let (min_arity, max_arity) = compute_arity_bounds(&field_attrs);
 
+    // Keyword-accepting parameter names, in field order: `#[pyarg(any)]` and
+    // `#[pyarg(named)]` (positional-only and flatten contribute none).
+    let param_names: Vec<&str> = field_attrs
+        .iter()
+        .filter(|attr| {
+            matches!(
+                attr.kind,
+                ParameterKind::PositionalOrKeyword | ParameterKind::KeywordOnly
+            )
+        })
+        .filter_map(|attr| attr.name.as_deref())
+        .collect();
+
     let name = input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let output = quote! {
         impl #impl_generics ::rustpython_vm::function::FromArgs for #name #ty_generics #where_clause {
             fn arity() -> ::std::ops::RangeInclusive<usize> {
                 #min_arity..=#max_arity
+            }
+
+            fn parameters() -> &'static [&'static str] {
+                &[#(#param_names),*]
             }
 
             fn from_args(

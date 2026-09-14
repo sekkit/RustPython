@@ -112,6 +112,39 @@ impl Callable for PyNativeFunction {
     }
 }
 
+/// CPython-style callable display name for error messages: bound methods use
+/// the class-qualified name (list.index, dict.keys, Struct.pack), module-level
+/// functions use "{module}.{name}" (unlike `__qualname__`, which omits the
+/// module), and everything else the plain name. Mirrors how C functions are
+/// printed in `PyErr_Format("%s() ...")`.
+pub(crate) fn call_display_name(
+    zelf: &PyNativeFunction,
+    vm: &VirtualMachine,
+) -> Option<String> {
+    if let Some(bound) = &zelf.zelf {
+        if bound.class().is(vm.ctx.types.module_type) {
+            return Some(zelf.value.name.to_owned());
+        }
+        let prefix = if bound.class().is(vm.ctx.types.type_type) {
+            bound
+                .get_attr("__qualname__", vm)
+                .ok()
+                .and_then(|q| q.str(vm).ok())
+                .map(|s| s.as_wtf8().to_string())
+                .unwrap_or_else(|| bound.class().name().to_string())
+        } else {
+            bound.class().name().to_string()
+        };
+        Some(format!("{prefix}.{}", zelf.value.name))
+    } else if let Some(module) = zelf.module
+        && module.as_str() != "builtins"
+    {
+        Some(format!("{module}.{}", zelf.value.name))
+    } else {
+        Some(zelf.value.name.to_owned())
+    }
+}
+
 // meth_richcompare in CPython
 impl Comparable for PyNativeFunction {
     fn cmp(

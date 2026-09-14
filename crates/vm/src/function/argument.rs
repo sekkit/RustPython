@@ -285,27 +285,59 @@ impl FuncArgs {
     /// during the conversion will halt the binding and return the error.
     pub fn bind<T: FromArgs>(mut self, vm: &VirtualMachine) -> PyResult<T> {
         let given_args = self.args.len();
+        let total_kwargs = self.kwargs.len();
         let bound = T::from_args(vm, &mut self)
             .map_err(|e| e.into_exception(T::arity(), given_args, vm))?;
 
         if !self.args.is_empty() {
-            Err(vm.new_type_error(format!(
-                "expected at most {} arguments, got {}",
-                T::arity().end(),
-                given_args,
-            )))
-        } else if let Some(err) = self.check_kwargs_empty(vm) {
+            // Extra positional arguments left after binding: report with the
+            // same CPython phrasing as TooManyArgs ("takes no arguments" /
+            // "takes exactly one argument" / "expected at most N arguments,
+            // got M", with the callable's display name).
+            Err(ArgumentError::TooManyArgs.into_exception(T::arity(), given_args, vm))
+        } else if let Some(err) = self.check_kwargs_empty(vm, T::parameters(), total_kwargs) {
             Err(err)
         } else {
             Ok(bound)
         }
     }
 
-    pub fn check_kwargs_empty(&self, vm: &VirtualMachine) -> Option<PyBaseExceptionRef> {
-        self.kwargs
-            .keys()
-            .next()
-            .map(|k| vm.new_type_error(format!("Unexpected keyword argument {k}")))
+    pub fn check_kwargs_empty(
+        &self,
+        vm: &VirtualMachine,
+        parameters: &'static [&'static str],
+        total_kwargs: usize,
+    ) -> Option<PyBaseExceptionRef> {
+        let display = crate::utils::current_call_name().unwrap_or_default();
+        // No keyword parameters at all: `f() takes no keyword arguments`.
+        if parameters.is_empty() {
+            return self.kwargs.keys().next().map(|_| {
+                vm.new_type_error(format!("{}() takes no keyword arguments", display))
+            });
+        }
+        // Exactly one unexpected keyword: `f() got an unexpected keyword
+        // argument 'X'` (plus "Did you mean" when close to a valid name).
+        if self.kwargs.len() == 1 {
+            let (k, _) = self.kwargs.iter().next()?;
+            let mut msg = format!(
+                "{}() got an unexpected keyword argument '{}'",
+                display, k
+            );
+            if let Some(suggestion) = k.as_str().ok().and_then(|s| {
+                crate::utils::suggest_keyword(s, parameters.iter().copied())
+            }) {
+                msg.push_str(&format!(" Did you mean '{suggestion}'?"));
+            }
+            return Some(vm.new_type_error(msg));
+        }
+        // Several unexpected keywords (CPython's _PyArg_UnpackKeywords path):
+        // `f() takes at most N keyword arguments (M given)`.
+        Some(vm.new_type_error(format!(
+            "{}() takes at most {} keyword arguments ({} given)",
+            display,
+            parameters.len(),
+            total_kwargs
+        )))
     }
 }
 
@@ -338,15 +370,42 @@ impl ArgumentError {
         num_given: usize,
         vm: &VirtualMachine,
     ) -> PyBaseExceptionRef {
+        let display = crate::utils::current_call_name().unwrap_or_default();
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
         match self {
+            // CPython's phrasing: `min==max==1` -> "takes exactly one
+            // argument", `min==max==0` -> "takes no arguments", otherwise the
+            // legacy `f expected at least/at most N arguments, got M`.
+            Self::TooFewArgs if arity.start() == arity.end() && *arity.start() == 1 => {
+                vm.new_type_error(format!(
+                    "{}() takes exactly one argument ({} given)",
+                    display, num_given
+                ))
+            }
             Self::TooFewArgs => vm.new_type_error(format!(
-                "expected at least {} arguments, got {}",
-                arity.start(),
+                "{} expected at least {} argument{}, got {}",
+                display,
+                *arity.start(),
+                plural(*arity.start()),
                 num_given
             )),
+            Self::TooManyArgs if arity.start() == arity.end() && *arity.end() == 0 => {
+                vm.new_type_error(format!(
+                    "{}() takes no arguments ({} given)",
+                    display, num_given
+                ))
+            }
+            Self::TooManyArgs if arity.start() == arity.end() && *arity.end() == 1 => {
+                vm.new_type_error(format!(
+                    "{}() takes exactly one argument ({} given)",
+                    display, num_given
+                ))
+            }
             Self::TooManyArgs => vm.new_type_error(format!(
-                "expected at most {} arguments, got {}",
-                arity.end(),
+                "{} expected at most {} argument{}, got {}",
+                display,
+                *arity.end(),
+                plural(*arity.end()),
                 num_given
             )),
             Self::InvalidKeywordArgument(name) => {
@@ -370,6 +429,17 @@ pub trait FromArgs: Sized {
     #[must_use]
     fn arity() -> RangeInclusive<usize> {
         0..=0
+    }
+
+    /// Names of the parameters this function accepts as keywords, in
+    /// signature order. Used by the argument-binding error paths to decide
+    /// between "takes no keyword arguments", "got an unexpected keyword
+    /// argument 'X'" and "takes at most N keyword arguments (M given)",
+    /// and to power "Did you mean" suggestions. Derive-generated impls list
+    /// the `#[pyarg(any)]`/`#[pyarg(named)]` fields; manual impls default to
+    /// none.
+    fn parameters() -> &'static [&'static str] {
+        &[]
     }
 
     /// Extracts this item from the next argument(s).

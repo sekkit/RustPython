@@ -6496,6 +6496,11 @@ impl ExecutingFrame<'_> {
                             .is_some_and(|self_obj| self_obj.class().is(descr.objclass))
                     {
                         let func = descr.method.func;
+                        let display_name = Some(format!(
+                            "{}.{}",
+                            descr.objclass.name(),
+                            descr.common.name.as_str()
+                        ));
                         let positional_args: Vec<PyObjectRef> =
                             self.pop_multiple(nargs as usize).collect();
                         let self_or_null = self.pop_value_opt();
@@ -6509,7 +6514,10 @@ impl ExecutingFrame<'_> {
                             args: all_args,
                             kwargs: Default::default(),
                         };
-                        let result = func(vm, args)?;
+                        let result = crate::utils::with_call_name(
+                            display_name,
+                            || func(vm, args),
+                        )?;
                         self.push_value(result);
                         return Ok(None);
                     }
@@ -6548,6 +6556,11 @@ impl ExecutingFrame<'_> {
                             .is_some_and(|self_obj| self_obj.class().is(descr.objclass))
                     {
                         let func = descr.method.func;
+                        let display_name = Some(format!(
+                            "{}.{}",
+                            descr.objclass.name(),
+                            descr.common.name.as_str()
+                        ));
                         let positional_args: Vec<PyObjectRef> =
                             self.pop_multiple(nargs as usize).collect();
                         let self_or_null = self.pop_value_opt();
@@ -6561,7 +6574,10 @@ impl ExecutingFrame<'_> {
                             args: all_args,
                             kwargs: Default::default(),
                         };
-                        let result = func(vm, args)?;
+                        let result = crate::utils::with_call_name(
+                            display_name,
+                            || func(vm, args),
+                        )?;
                         self.push_value(result);
                         return Ok(None);
                     }
@@ -6600,6 +6616,11 @@ impl ExecutingFrame<'_> {
                         .is_some_and(|self_obj| self_obj.class().is(descr.objclass))
                 {
                     let func = descr.method.func;
+                    let display_name = Some(format!(
+                        "{}.{}",
+                        descr.objclass.name(),
+                        descr.common.name.as_str()
+                    ));
                     let positional_args: Vec<PyObjectRef> =
                         self.pop_multiple(nargs as usize).collect();
                     let self_or_null = self.pop_value_opt();
@@ -6613,7 +6634,10 @@ impl ExecutingFrame<'_> {
                         args: all_args,
                         kwargs: Default::default(),
                     };
-                    let result = func(vm, args)?;
+                    let result = crate::utils::with_call_name(
+                        display_name,
+                        || func(vm, args),
+                    )?;
                     self.push_value(result);
                     return Ok(None);
                 }
@@ -6730,6 +6754,11 @@ impl ExecutingFrame<'_> {
                         .is_some_and(|self_obj| self_obj.class().is(descr.objclass))
                 {
                     let func = descr.method.func;
+                    let display_name = Some(format!(
+                        "{}.{}",
+                        descr.objclass.name(),
+                        descr.common.name.as_str()
+                    ));
                     let positional_args: Vec<PyObjectRef> =
                         self.pop_multiple(nargs as usize).collect();
                     let self_or_null = self.pop_value_opt();
@@ -6743,7 +6772,10 @@ impl ExecutingFrame<'_> {
                         args: all_args,
                         kwargs: Default::default(),
                     };
-                    let result = func(vm, args)?;
+                    let result = crate::utils::with_call_name(
+                        display_name,
+                        || func(vm, args),
+                    )?;
                     self.push_value(result);
                     return Ok(None);
                 }

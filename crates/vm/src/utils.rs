@@ -6,6 +6,34 @@ use crate::{
     convert::{ToPyException, ToPyObject},
 };
 
+// Display name of the builtin call currently being dispatched, used by
+// `FuncArgs` binding error messages to reproduce CPython's
+// `f() takes no keyword arguments` / `f expected at least N arguments, got
+// M` phrasing. Set around the actual call in the builtin call funnels
+// (PyNativeFunction::call, PyType::call, PyMethodWrapper::call) and restored
+// afterwards so nested calls report the innermost function. Plain // comments
+// (not /// doc comments) so the lint on the macro-expanded thread_local is not
+// triggered.
+thread_local! {
+    pub(crate) static CURRENT_CALL_NAME: core::cell::RefCell<Option<String>> =
+        core::cell::RefCell::new(None);
+}
+
+/// Reads the display name of the currently-running builtin call, if any.
+pub(crate) fn current_call_name() -> Option<String> {
+    CURRENT_CALL_NAME.with(|c| c.borrow().clone())
+}
+
+/// Sets the display name for the duration of `f` and restores the previous
+/// value afterwards (nested builtin calls override and then restore).
+pub(crate) fn with_call_name<T>(name: Option<String>, f: impl FnOnce() -> T) -> T {
+    let prev = CURRENT_CALL_NAME.with(|c| c.borrow().clone());
+    CURRENT_CALL_NAME.with(|c| *c.borrow_mut() = name);
+    let result = f();
+    CURRENT_CALL_NAME.with(|c| *c.borrow_mut() = prev);
+    result
+}
+
 pub fn hash_iter<'a, I: IntoIterator<Item = &'a PyObjectRef>>(
     iter: I,
     vm: &VirtualMachine,

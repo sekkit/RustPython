@@ -884,6 +884,9 @@ impl Callable for PyMethodWrapper {
                 zelf.obj.class().name()
             )));
         }
+        // Method-wrappers (e.g. `{}.__contains__`) have no __qualname__;
+        // the display name is announced by PyCallable::invoke from the
+        // wrapper's plain name, like CPython.
         zelf.wrapper.wrapped.call(zelf.obj.clone(), args, vm)
     }
 }

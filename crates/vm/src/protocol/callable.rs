@@ -1,7 +1,8 @@
 use crate::{
     AsObject,
     builtins::{
-        descriptor::PyMethodDescriptor, PyBoundMethod, PyFunction, PyStr,
+        builtin_func::PyNativeFunction, descriptor::PyMethodDescriptor, descriptor::PyMethodWrapper,
+        PyBoundMethod, PyFunction, PyStr, PyType,
     },
     function::{FuncArgs, IntoFuncArgs},
     types::{GenericMethod, VectorCallFunc},
@@ -114,26 +115,34 @@ impl<'a> PyCallable<'a> {
 
     pub fn invoke(&self, args: impl IntoFuncArgs, vm: &VirtualMachine) -> PyResult {
         let args = args.into_args(vm);
-        if !vm.use_tracing.get() {
-            return (self.call)(self.obj, args, vm);
-        }
-        // Python functions get 'call'/'return' events from with_frame().
-        // Bound methods delegate to the inner callable, which fires its own events.
-        // All other callables only get c_call/c_return/c_exception when they are
-        // built-in functions/methods or method descriptors, matching CPython's
-        // trace_call_function in ceval.c (types, partials, ... are called
-        // without tracing events).
-        let Some(trace_callable) = self.trace_c_callable(vm, args.args.first()) else {
-            return (self.call)(self.obj, args, vm);
-        };
-        vm.trace_event(TraceEvent::CCall, Some(trace_callable.clone()))?;
-        let result = (self.call)(self.obj, args, vm);
-        if result.is_ok() {
-            vm.trace_event(TraceEvent::CReturn, Some(trace_callable))?;
-        } else {
-            let _ = vm.trace_event(TraceEvent::CException, Some(trace_callable));
-        }
-        result
+        // Announce the callable's display name for arg-binding error messages.
+        // Single funnel: the vectorcall fast path below also routes here for
+        // the fallback, and `builtin_call_display_name` returns None for
+        // Python functions/bound methods (their errors come from the Python
+        // call path, not FuncArgs).
+        let name = self.builtin_call_display_name(vm);
+        crate::utils::with_call_name(name, || {
+            if !vm.use_tracing.get() {
+                return (self.call)(self.obj, args, vm);
+            }
+            // Python functions get 'call'/'return' events from with_frame().
+            // Bound methods delegate to the inner callable, which fires its own events.
+            // All other callables only get c_call/c_return/c_exception when they are
+            // built-in functions/methods or method descriptors, matching CPython's
+            // trace_call_function in ceval.c (types, partials, ... are called
+            // without tracing events).
+            let Some(trace_callable) = self.trace_c_callable(vm, args.args.first()) else {
+                return (self.call)(self.obj, args, vm);
+            };
+            vm.trace_event(TraceEvent::CCall, Some(trace_callable.clone()))?;
+            let result = (self.call)(self.obj, args, vm);
+            if result.is_ok() {
+                vm.trace_event(TraceEvent::CReturn, Some(trace_callable))?;
+            } else {
+                let _ = vm.trace_event(TraceEvent::CException, Some(trace_callable));
+            }
+            result
+        })
     }
 
     /// Vectorcall dispatch: use vectorcall slot if available, else fall back to FuncArgs.
@@ -146,25 +155,55 @@ impl<'a> PyCallable<'a> {
         vm: &VirtualMachine,
     ) -> PyResult {
         if let Some(vc) = self.vectorcall {
-            if !vm.use_tracing.get() {
-                return vc(self.obj, args, nargs, kwnames, vm);
-            }
-            let Some(trace_callable) = self.trace_c_callable(vm, args.first()) else {
-                return vc(self.obj, args, nargs, kwnames, vm);
-            };
-            vm.trace_event(TraceEvent::CCall, Some(trace_callable.clone()))?;
-            let result = vc(self.obj, args, nargs, kwnames, vm);
-            if result.is_ok() {
-                vm.trace_event(TraceEvent::CReturn, Some(trace_callable))?;
-            } else {
-                let _ = vm.trace_event(TraceEvent::CException, Some(trace_callable));
-            }
-            result
+            let name = self.builtin_call_display_name(vm);
+            crate::utils::with_call_name(name, || {
+                if !vm.use_tracing.get() {
+                    return vc(self.obj, args, nargs, kwnames, vm);
+                }
+                let Some(trace_callable) = self.trace_c_callable(vm, args.first()) else {
+                    return vc(self.obj, args, nargs, kwnames, vm);
+                };
+                vm.trace_event(TraceEvent::CCall, Some(trace_callable.clone()))?;
+                let result = vc(self.obj, args, nargs, kwnames, vm);
+                if result.is_ok() {
+                    vm.trace_event(TraceEvent::CReturn, Some(trace_callable))?;
+                } else {
+                    let _ = vm.trace_event(TraceEvent::CException, Some(trace_callable));
+                }
+                result
+            })
         } else {
             // Fallback: convert owned Vec to FuncArgs (move, no clone)
             let func_args = FuncArgs::from_vectorcall_owned(args, nargs, kwnames);
             self.invoke(func_args, vm)
         }
+    }
+
+    /// CPython-style display name of the callable, used to prefix arg-binding
+    /// error messages: native functions (module-qualified like `_struct.pack`,
+    /// class-qualified bound methods like `list.index`), types (`bool`,
+    /// `ImportError`) and method-wrappers (`__contains__`). Python functions
+    /// and Python-bound methods contribute nothing.
+    fn builtin_call_display_name(&self, vm: &VirtualMachine) -> Option<String> {
+        if let Some(f) = self.obj.downcast_ref::<PyNativeFunction>() {
+            return crate::builtins::builtin_func::call_display_name(f, vm);
+        }
+        if let Some(t) = self.obj.downcast_ref::<PyType>() {
+            return Some(t.name().to_owned());
+        }
+        if let Some(w) = self.obj.downcast_ref::<PyMethodWrapper>() {
+            return Some(w.wrapper.name.as_str().to_owned());
+        }
+        if let Some(md) = self.obj.downcast_ref::<PyMethodDescriptor>() {
+            return Some(format!("{}.{}", md.objclass.name(), md.common.name.as_str()));
+        }
+        if let Some(bm) = self.obj.downcast_ref::<PyBoundMethod>()
+            && let Some(f) = bm.function_obj().downcast_ref::<PyNativeFunction>()
+        {
+            // Bound builtin method, e.g. `[].index(x=2)` -> list.index.
+            return crate::builtins::builtin_func::call_display_name(f, vm);
+        }
+        None
     }
 
     /// The object passed to c_call/c_return/c_exception trace events, or None

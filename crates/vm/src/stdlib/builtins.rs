@@ -1194,11 +1194,19 @@ mod builtins {
         func_name: &str,
         op: PyComparisonOp,
     ) -> PyResult {
+        let total_kwargs = args.kwargs.len();
         let default = args.take_keyword("default");
         let key_func = args.take_keyword("key");
 
-        if let Some(err) = args.check_kwargs_empty(vm) {
-            return Err(err);
+        // CPython (Objects/bltinmodule.c): leftover keywords report
+        // "min() takes at most 2 keyword arguments (M given)" even when only
+        // one extra keyword was passed, unlike METH_FASTCALL|KEYWORDS funcs.
+        if !args.kwargs.is_empty() {
+            return Err(vm.new_type_error(format!(
+                "{}() takes at most 2 keyword arguments ({} given)",
+                crate::utils::current_call_name().unwrap_or_default(),
+                total_kwargs
+            )));
         }
 
         let candidates = match args.args.len().cmp(&1) {
