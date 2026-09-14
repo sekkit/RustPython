@@ -223,17 +223,31 @@ fn compute_arity_bounds(field_attrs: &[ArgAttribute]) -> (usize, usize) {
 
 pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
     let (fields, field_attrs) = match input.data {
-        Data::Struct(syn::DataStruct { fields, .. }) => (
-            fields
-                .iter()
-                .enumerate()
-                .map(generate_field)
-                .collect::<Result<TokenStream>>()?,
-            fields
+        Data::Struct(syn::DataStruct { fields, .. }) => {
+            let mut attrs = fields
                 .iter()
                 .filter_map(|field| field.try_into().ok())
-                .collect::<Vec<ArgAttribute>>(),
-        ),
+                .collect::<Vec<ArgAttribute>>();
+            // Backfill parameter names from field identifiers when no
+            // explicit `name = "..."` was given (flatten fields contribute
+            // none). Without this, `parameters()` would omit every
+            // `#[pyarg(any)]`/`#[pyarg(named)]` field that did not spell out
+            // its name, breaking "takes no keyword arguments" vs "got an
+            // unexpected keyword argument" discrimination (print/product &co).
+            for (field, attr) in fields.iter().zip(attrs.iter_mut()) {
+                if attr.name.is_none() && !matches!(attr.kind, ParameterKind::Flatten) {
+                    attr.name = field.ident.as_ref().map(|ident| ident.unraw().to_string());
+                }
+            }
+            (
+                fields
+                    .iter()
+                    .enumerate()
+                    .map(generate_field)
+                    .collect::<Result<TokenStream>>()?,
+                attrs,
+            )
+        }
         _ => bail_span!(input, "FromArgs input must be a struct"),
     };
 

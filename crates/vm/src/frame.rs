@@ -6514,8 +6514,9 @@ impl ExecutingFrame<'_> {
                             args: all_args,
                             kwargs: Default::default(),
                         };
-                        let result = crate::utils::with_call_name(
+                        let result = crate::utils::with_call_context(
                             display_name,
+                            1,
                             || func(vm, args),
                         )?;
                         self.push_value(result);
@@ -6574,8 +6575,9 @@ impl ExecutingFrame<'_> {
                             args: all_args,
                             kwargs: Default::default(),
                         };
-                        let result = crate::utils::with_call_name(
+                        let result = crate::utils::with_call_context(
                             display_name,
+                            1,
                             || func(vm, args),
                         )?;
                         self.push_value(result);
@@ -6634,8 +6636,9 @@ impl ExecutingFrame<'_> {
                         args: all_args,
                         kwargs: Default::default(),
                     };
-                    let result = crate::utils::with_call_name(
+                    let result = crate::utils::with_call_context(
                         display_name,
+                        1,
                         || func(vm, args),
                     )?;
                     self.push_value(result);
@@ -6772,8 +6775,9 @@ impl ExecutingFrame<'_> {
                         args: all_args,
                         kwargs: Default::default(),
                     };
-                    let result = crate::utils::with_call_name(
+                    let result = crate::utils::with_call_context(
                         display_name,
+                        1,
                         || func(vm, args),
                     )?;
                     self.push_value(result);

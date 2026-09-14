@@ -121,7 +121,8 @@ impl<'a> PyCallable<'a> {
         // Python functions/bound methods (their errors come from the Python
         // call path, not FuncArgs).
         let name = self.builtin_call_display_name(vm);
-        crate::utils::with_call_name(name, || {
+        let self_offset = self.builtin_call_self_offset();
+        crate::utils::with_call_context(name, self_offset, || {
             if !vm.use_tracing.get() {
                 return (self.call)(self.obj, args, vm);
             }
@@ -156,7 +157,8 @@ impl<'a> PyCallable<'a> {
     ) -> PyResult {
         if let Some(vc) = self.vectorcall {
             let name = self.builtin_call_display_name(vm);
-            crate::utils::with_call_name(name, || {
+            let self_offset = self.builtin_call_self_offset();
+            crate::utils::with_call_context(name, self_offset, || {
                 if !vm.use_tracing.get() {
                     return vc(self.obj, args, nargs, kwnames, vm);
                 }
@@ -204,6 +206,25 @@ impl<'a> PyCallable<'a> {
             return crate::builtins::builtin_func::call_display_name(f, vm);
         }
         None
+    }
+
+    /// How many implicit `self` arguments the bound call prepends: 1 for
+    /// bound builtin methods (the instance/class in `zelf`), bare
+    /// method-descriptor calls (stack [descr, self, args...]) and bound-method
+    /// wrappers, 0 otherwise. Error messages count only external arguments.
+    fn builtin_call_self_offset(&self) -> usize {
+        if self.obj.downcast_ref::<PyBoundMethod>().is_some() {
+            return 1;
+        }
+        if self.obj.downcast_ref::<PyMethodDescriptor>().is_some() {
+            // Direct form `{}.keys(0)` (LOAD_ATTR + CALL): the descriptor is
+            // the callable and self sits first in the FuncArgs.
+            return 1;
+        }
+        if let Some(f) = self.obj.downcast_ref::<PyNativeFunction>() {
+            return usize::from(f.zelf.is_some());
+        }
+        0
     }
 
     /// The object passed to c_call/c_return/c_exception trace events, or None

@@ -286,8 +286,60 @@ impl FuncArgs {
     pub fn bind<T: FromArgs>(mut self, vm: &VirtualMachine) -> PyResult<T> {
         let given_args = self.args.len();
         let total_kwargs = self.kwargs.len();
+        // CPython parses keywords before positional/values (UnpackKeywords):
+        // an unknown keyword is reported even when a *value* conversion would
+        // fail first (print(0, sep=1, foo=5) -> "got an unexpected keyword
+        // argument 'foo'"), and non-str keys report "invalid keyword argument
+        // for f()". Only applied when the function declares parameters, so
+        // manual FromArgs impls that accept undeclared keys are untouched.
+        if !T::parameters().is_empty() && !self.kwargs.is_empty() {
+            let display = crate::utils::current_call_name().unwrap_or_default();
+            let bad = self.kwargs.keys().find(|k| {
+                match k.as_str() {
+                    Ok(s) => !T::parameters().contains(&s),
+                    Err(_) => true, // non-str key
+                }
+            });
+            if let Some(bad) = bad {
+                let s = match bad.as_str() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return Err(vm.new_type_error(format!(
+                            "invalid keyword argument for {}",
+                            display
+                        )))
+                    }
+                };
+                let mut msg = format!(
+                    "{}() got an unexpected keyword argument '{}'",
+                    display, s
+                );
+                if let Some(suggestion) = crate::utils::suggest_keyword(
+                    s,
+                    T::parameters().iter().copied(),
+                ) {
+                    msg.push_str(&format!(" Did you mean '{suggestion}'?"));
+                }
+                return Err(vm.new_type_error(msg));
+            }
+        }
         let bound = T::from_args(vm, &mut self)
-            .map_err(|e| e.into_exception(T::arity(), given_args, vm))?;
+            .map_err(|e| {
+                // CPython parses keywords before positional arguments: when
+                // a function accepts no keywords at all, any keyword is
+                // rejected up front ("f() takes no keyword arguments") even
+                // if positional binding failed first (e.g. `{}.keys(x=2)`).
+                // Only checked on binding failure so manual FromArgs impls
+                // that consume kwargs but report no parameters are untouched.
+                if !self.kwargs.is_empty() && T::parameters().is_empty() {
+                    let display = crate::utils::current_call_name().unwrap_or_default();
+                    return vm.new_type_error(format!(
+                        "{}() takes no keyword arguments",
+                        display
+                    ));
+                }
+                e.into_exception(T::arity(), given_args, vm)
+            })?;
 
         if !self.args.is_empty() {
             // Extra positional arguments left after binding: report with the
@@ -308,6 +360,10 @@ impl FuncArgs {
         parameters: &'static [&'static str],
         total_kwargs: usize,
     ) -> Option<PyBaseExceptionRef> {
+        // Nothing left to complain about.
+        if self.kwargs.is_empty() {
+            return None;
+        }
         let display = crate::utils::current_call_name().unwrap_or_default();
         // No keyword parameters at all: `f() takes no keyword arguments`.
         if parameters.is_empty() {
@@ -371,6 +427,13 @@ impl ArgumentError {
         vm: &VirtualMachine,
     ) -> PyBaseExceptionRef {
         let display = crate::utils::current_call_name().unwrap_or_default();
+        // CPython counts only external arguments in these messages; bound
+        // builtin methods have an implicit `self` prepended that must be
+        // excluded from BOTH the given count and the arity range
+        // ("keys() takes no arguments (1 given)" for `{}.keys(0)`).
+        let offset = crate::utils::current_call_self_offset();
+        let num_given = num_given.saturating_sub(offset);
+        let arity = arity.start().saturating_sub(offset)..=arity.end().saturating_sub(offset);
         let plural = |n: usize| if n == 1 { "" } else { "s" };
         match self {
             // CPython's phrasing: `min==max==1` -> "takes exactly one

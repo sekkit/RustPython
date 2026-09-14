@@ -17,6 +17,12 @@ use crate::{
 thread_local! {
     pub(crate) static CURRENT_CALL_NAME: core::cell::RefCell<Option<String>> =
         core::cell::RefCell::new(None);
+    // Number of implicit `self` arguments prepended by bound builtin methods
+    // (1) or not (0). CPython's error messages count only the *external*
+    // arguments ("keys() takes no arguments (1 given)" for `{}.keys(0)`),
+    // so the binding error paths subtract this offset.
+    pub(crate) static CURRENT_CALL_SELF_OFFSET: core::cell::Cell<usize> =
+        core::cell::Cell::new(0);
 }
 
 /// Reads the display name of the currently-running builtin call, if any.
@@ -24,13 +30,27 @@ pub(crate) fn current_call_name() -> Option<String> {
     CURRENT_CALL_NAME.with(|c| c.borrow().clone())
 }
 
-/// Sets the display name for the duration of `f` and restores the previous
-/// value afterwards (nested builtin calls override and then restore).
-pub(crate) fn with_call_name<T>(name: Option<String>, f: impl FnOnce() -> T) -> T {
-    let prev = CURRENT_CALL_NAME.with(|c| c.borrow().clone());
+/// Reads how many implicit `self` arguments the current builtin call had
+/// prepended (1 for bound methods, 0 otherwise).
+pub(crate) fn current_call_self_offset() -> usize {
+    CURRENT_CALL_SELF_OFFSET.with(|c| c.get())
+}
+
+/// Sets the display name and self-offset for the duration of `f` and restores
+/// the previous values afterwards (nested builtin calls override and then
+/// restore).
+pub(crate) fn with_call_context<T>(
+    name: Option<String>,
+    self_offset: usize,
+    f: impl FnOnce() -> T,
+) -> T {
+    let prev_name = CURRENT_CALL_NAME.with(|c| c.borrow().clone());
     CURRENT_CALL_NAME.with(|c| *c.borrow_mut() = name);
+    let prev_offset = CURRENT_CALL_SELF_OFFSET.with(|c| c.get());
+    CURRENT_CALL_SELF_OFFSET.with(|c| c.set(self_offset));
     let result = f();
-    CURRENT_CALL_NAME.with(|c| *c.borrow_mut() = prev);
+    CURRENT_CALL_SELF_OFFSET.with(|c| c.set(prev_offset));
+    CURRENT_CALL_NAME.with(|c| *c.borrow_mut() = prev_name);
     result
 }
 
