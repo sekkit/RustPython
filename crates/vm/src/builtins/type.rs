@@ -2757,7 +2757,14 @@ impl SetAttr for PyType {
         vm: &VirtualMachine,
     ) -> PyResult<()> {
         let attr_name = vm.ctx.intern_str(attr_name.as_wtf8());
-        if zelf.slots.flags.has_feature(PyTypeFlags::IMMUTABLETYPE) {
+        // CPython gh-122527: struct sequence types (time.struct_time &co.)
+        // are static yet deliberately NOT immutable, so `type(t).x = v`
+        // keeps working (their tp_dict stays writable). Detect them via the
+        // n_sequence_fields class attribute that PyStructSequence installs.
+        let is_structseq_type = zelf
+            .get_attr(vm.ctx.intern_str("n_sequence_fields"))
+            .is_some();
+        if zelf.slots.flags.has_feature(PyTypeFlags::IMMUTABLETYPE) && !is_structseq_type {
             return Err(vm.new_type_error(format!(
                 "cannot set '{}' attribute of immutable type '{}'",
                 attr_name,

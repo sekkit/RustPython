@@ -201,10 +201,14 @@ impl PyNativeFunction {
 
     // meth_get__self__ in CPython: module-level functions expose the module
     // as `__self__` (PyCFunction's m_self), which inspect uses to strip the
-    // `$module` parameter from text signatures.
+    // `$module` parameter from text signatures. Static builtins (e.g.
+    // str.maketrans) have no self at all -> None, like CPython.
     #[pygetset]
     fn __self__(zelf: NativeFunctionOrMethod, vm: &VirtualMachine) -> PyObjectRef {
         let zelf = zelf.0;
+        if zelf.value.flags.contains(PyMethodFlags::STATIC) {
+            return vm.ctx.none();
+        }
         if let Some(z) = &zelf.zelf {
             return z.clone();
         }

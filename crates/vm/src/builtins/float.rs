@@ -284,8 +284,8 @@ impl PyFloat {
             .map_err(|err| err.into_pyexception(vm))
     }
 
-    #[pystaticmethod]
-    fn __getformat__(spec: PyUtf8StrRef, vm: &VirtualMachine) -> PyResult<String> {
+    #[pyclassmethod]
+    fn __getformat__(_cls: PyTypeRef, spec: PyUtf8StrRef, vm: &VirtualMachine) -> PyResult<String> {
         if !matches!(spec.as_str(), "double" | "float") {
             return Err(
                 vm.new_value_error("__getformat__() argument 1 must be 'double' or 'float'")
