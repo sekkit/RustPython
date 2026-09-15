@@ -1935,10 +1935,14 @@ pub(super) mod types {
             let path = kwargs.swap_remove("path");
             let name_from = kwargs.swap_remove("name_from");
 
-            // Check for any remaining invalid keyword arguments
-            if let Some(invalid_key) = kwargs.keys().next() {
+            // Check for any remaining invalid keyword arguments: CPython
+            // (Objects/exceptions.c, _PyErr_SetObject path) reports
+            // "ImportError() takes at most 3 keyword arguments (N given)"
+            // with N = the total number of keyword arguments in the call.
+            if !kwargs.is_empty() {
                 return Err(vm.new_type_error(format!(
-                    "'{invalid_key}' is an invalid keyword argument for ImportError"
+                    "ImportError() takes at most 3 keyword arguments ({} given)",
+                    args.kwargs.len()
                 )));
             }
 

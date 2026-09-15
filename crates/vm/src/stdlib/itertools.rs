@@ -8,8 +8,8 @@ mod decl {
             PyGenericAlias, PyInt, PyIntRef, PyList, PyTuple, PyTupleRef, PyType, PyTypeRef, int,
         },
         common::lock::{PyMutex, PyRwLock, PyRwLockWriteGuard},
-        convert::ToPyObject,
-        function::{FuncArgs, OptionalArg, OptionalOption, PosArgs},
+        convert::{ToPyObject, TryFromObject},
+        function::{ArgumentError, FromArgs, FuncArgs, OptionalArg, OptionalOption, PosArgs},
         protocol::{PyIter, PyIterReturn, PyNumber},
         raise_if_stop,
         stdlib::sys,
@@ -1120,10 +1120,35 @@ mod decl {
         stop: AtomicCell<bool>,
     }
 
-    #[derive(FromArgs)]
     struct ProductArgs {
-        #[pyarg(named, optional)]
         repeat: OptionalArg<usize>,
+    }
+
+    impl FromArgs for ProductArgs {
+        fn from_args(
+            vm: &VirtualMachine,
+            args: &mut FuncArgs,
+        ) -> Result<Self, ArgumentError> {
+            // CPython (itertoolsmodule.c) declares `repeat` as the sole
+            // keyword parameter, so leftover keywords report
+            // "product() takes at most 1 keyword argument (N given)" with
+            // N = the total number of keyword arguments in the call, even
+            // when only one extra keyword was passed.
+            let total_kwargs = args.kwargs.len();
+            let repeat = match args.take_keyword("repeat") {
+                Some(value) => OptionalArg::Present(value.try_into_value(vm)?),
+                None => OptionalArg::Missing,
+            };
+            if !args.kwargs.is_empty() {
+                let _ = args.remaining_keywords().collect::<Vec<_>>();
+                let display = crate::utils::current_call_name().unwrap_or_default();
+                return Err(ArgumentError::Exception(vm.new_type_error(format!(
+                    "{}() takes at most 1 keyword argument ({} given)",
+                    display, total_kwargs
+                ))));
+            }
+            Ok(Self { repeat })
+        }
     }
 
     impl Constructor for PyItertoolsProduct {

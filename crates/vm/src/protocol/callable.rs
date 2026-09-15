@@ -209,9 +209,11 @@ impl<'a> PyCallable<'a> {
     }
 
     /// How many implicit `self` arguments the bound call prepends: 1 for
-    /// bound builtin methods (the instance/class in `zelf`), bare
-    /// method-descriptor calls (stack [descr, self, args...]) and bound-method
-    /// wrappers, 0 otherwise. Error messages count only external arguments.
+    /// bound builtin methods (the instance/class in `zelf`) and bare
+    /// method-descriptor calls (stack [descr, self, args...]), 0 otherwise.
+    /// Error messages count only external arguments. Method wrappers
+    /// (`__contains__` &co.) receive self outside the FuncArgs, so their
+    /// arity already reflects external arguments (offset 0).
     fn builtin_call_self_offset(&self) -> usize {
         if self.obj.downcast_ref::<PyBoundMethod>().is_some() {
             return 1;

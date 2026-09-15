@@ -222,7 +222,7 @@ fn compute_arity_bounds(field_attrs: &[ArgAttribute]) -> (usize, usize) {
 }
 
 pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
-    let (fields, field_attrs) = match input.data {
+    let (fields, field_attrs, flatten_tys) = match input.data {
         Data::Struct(syn::DataStruct { fields, .. }) => {
             let mut attrs = fields
                 .iter()
@@ -239,6 +239,12 @@ pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
                     attr.name = field.ident.as_ref().map(|ident| ident.unraw().to_string());
                 }
             }
+            let flatten_tys: Vec<syn::Type> = fields
+                .iter()
+                .zip(attrs.iter())
+                .filter(|(_, attr)| matches!(attr.kind, ParameterKind::Flatten))
+                .map(|(field, _)| field.ty.clone())
+                .collect();
             (
                 fields
                     .iter()
@@ -246,6 +252,7 @@ pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
                     .map(generate_field)
                     .collect::<Result<TokenStream>>()?,
                 attrs,
+                flatten_tys,
             )
         }
         _ => bail_span!(input, "FromArgs input must be a struct"),
@@ -254,8 +261,10 @@ pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
     let (min_arity, max_arity) = compute_arity_bounds(&field_attrs);
 
     // Keyword-accepting parameter names, in field order: `#[pyarg(any)]` and
-    // `#[pyarg(named)]` (positional-only and flatten contribute none).
-    let param_names: Vec<&str> = field_attrs
+    // `#[pyarg(named)]`; `#[pyarg(flatten)]` fields contribute their inner
+    // type's parameters() (e.g. `_io.open` flattens OpenArgs, whose
+    // encoding/errors/... must be recognized as valid keywords).
+    let direct_names: Vec<&str> = field_attrs
         .iter()
         .filter(|attr| {
             matches!(
@@ -266,6 +275,33 @@ pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
         .filter_map(|attr| attr.name.as_deref())
         .collect();
 
+    // `static` locals inside the parameters() body cannot reference generic
+    // params ("can't use generic parameters from outer item"), so the
+    // flatten-expanding LazyLock body is only generated for structs without
+    // generic parameters; generic structs keep the const-slice form.
+    let parameters_body = if input.generics.params.is_empty() {
+        if flatten_tys.is_empty() {
+            quote! { &[#(#direct_names),*] }
+        } else {
+            quote! {
+                static PARAMETERS: ::rustpython_vm::common::lock::LazyLock<
+                    Vec<&'static str>,
+                > = ::rustpython_vm::common::lock::LazyLock::new(|| {
+                    let mut params: Vec<&'static str> = vec![#(#direct_names),*];
+                    #(
+                        params.extend_from_slice(
+                            <#flatten_tys as ::rustpython_vm::function::FromArgs>::parameters(),
+                        );
+                    )*
+                    params
+                });
+                &PARAMETERS
+            }
+        }
+    } else {
+        quote! { &[#(#direct_names),*] }
+    };
+
     let name = input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let output = quote! {
@@ -275,7 +311,7 @@ pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
             }
 
             fn parameters() -> &'static [&'static str] {
-                &[#(#param_names),*]
+                #parameters_body
             }
 
             fn from_args(

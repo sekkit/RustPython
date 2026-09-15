@@ -11,17 +11,17 @@ use crate::{
         int::{bigint_to_finite_float, bytes_to_int, true_div},
         wtf8::Wtf8Buf,
     },
-    convert::{IntoPyException, ToPyObject, ToPyResult},
+    convert::{IntoPyException, ToPyObject, ToPyResult, TryFromObject},
     function::{
-        ArgByteOrder, ArgIntoBool, FuncArgs, OptionalArg, OptionalOption, PyArithmeticValue,
-        PyComparisonValue,
+        ArgByteOrder, ArgIntoBool, ArgumentError, FromArgs, FuncArgs, OptionalArg, OptionalOption,
+        PyArithmeticValue, PyComparisonValue,
     },
     protocol::{PyNumberMethods, handle_bytes_to_int_err},
     types::{AsNumber, Comparable, Constructor, Hashable, PyComparisonOp, Representable},
 };
 use alloc::fmt;
 use core::cell::Cell;
-use core::ops::{Neg, Not};
+use core::ops::{Neg, Not, RangeInclusive};
 use core::ptr::NonNull;
 use malachite_bigint::{BigInt, Sign};
 use num_integer::{ExtendedGcd, Integer};
@@ -786,13 +786,49 @@ pub(crate) struct IntOptions {
     base: OptionalArg<PyObjectRef>,
 }
 
-#[derive(FromArgs)]
 struct IntFromByteArgs {
     bytes: PyBytesInner,
-    #[pyarg(any, default = ArgByteOrder::Big)]
     byteorder: ArgByteOrder,
-    #[pyarg(named, optional)]
     signed: OptionalArg<ArgIntoBool>,
+}
+
+impl FromArgs for IntFromByteArgs {
+    fn arity() -> RangeInclusive<usize> {
+        1..=2
+    }
+
+    fn from_args(
+        vm: &VirtualMachine,
+        args: &mut FuncArgs,
+    ) -> Result<Self, ArgumentError> {
+        // Manual binding (instead of the derive) so that too many positional
+        // arguments report CPython's exact phrasing (Objects/bltinmodule.c):
+        // "from_bytes() takes at most 2 positional arguments (N given)".
+        let npos = args.args.len();
+        let bytes: PyBytesInner = args
+            .take_positional_keyword("bytes")
+            .ok_or(ArgumentError::TooFewArgs)?
+            .try_into_value(vm)?;
+        let byteorder: ArgByteOrder = match args.take_positional_keyword("byteorder") {
+            Some(value) => value.try_into_value(vm)?,
+            None => ArgByteOrder::Big,
+        };
+        let signed: OptionalArg<ArgIntoBool> = match args.take_keyword("signed") {
+            Some(value) => OptionalArg::Present(value.try_into_value(vm)?),
+            None => OptionalArg::Missing,
+        };
+        if !args.args.is_empty() {
+            return Err(ArgumentError::Exception(vm.new_type_error(format!(
+                "from_bytes() takes at most 2 positional arguments ({} given)",
+                npos
+            ))));
+        }
+        Ok(Self {
+            bytes,
+            byteorder,
+            signed,
+        })
+    }
 }
 
 #[derive(FromArgs)]

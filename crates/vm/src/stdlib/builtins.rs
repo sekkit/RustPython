@@ -1053,7 +1053,7 @@ mod builtins {
     }
 
     #[pyfunction]
-    fn input(prompt: OptionalArg<PyStrRef>, vm: &VirtualMachine) -> PyResult {
+    fn input(prompt: OptionalArg<PyObjectRef>, vm: &VirtualMachine) -> PyResult {
         use std::io::IsTerminal;
 
         let stdin = sys::get_stdin(vm)?;
@@ -1074,17 +1074,19 @@ mod builtins {
             && std::io::stdin().is_terminal()
             && !is_pty_child();
 
-        // Disable rustyline if prompt contains surrogates (not valid UTF-8 for terminal)
+        // Disable rustyline if prompt contains surrogates (not valid UTF-8 for terminal).
+        // The prompt is accepted as any object and stringified lazily, matching CPython:
+        // input(1, 2) reports the arity error, not a str-conversion error.
         let prompt_str = match &prompt {
-            OptionalArg::Present(s) => s.to_str(),
-            OptionalArg::Missing => Some(""),
+            OptionalArg::Present(s) => s.str(vm)?.to_str().map(str::to_owned),
+            OptionalArg::Missing => Some(String::new()),
         };
         let use_rustyline = use_rustyline && prompt_str.is_some();
 
         if use_rustyline {
             let prompt = prompt_str.unwrap();
             let mut readline = Readline::new(());
-            match readline.readline(prompt) {
+            match readline.readline(&prompt) {
                 ReadlineResult::Line(s) => Ok(vm.ctx.new_str(s).into()),
                 ReadlineResult::Eof => {
                     Err(vm.new_exception_empty(vm.ctx.exceptions.eof_error.to_owned()))

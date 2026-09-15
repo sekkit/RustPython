@@ -290,10 +290,20 @@ impl FuncArgs {
         // an unknown keyword is reported even when a *value* conversion would
         // fail first (print(0, sep=1, foo=5) -> "got an unexpected keyword
         // argument 'foo'"), and non-str keys report "invalid keyword argument
-        // for f()". Only applied when the function declares parameters, so
-        // manual FromArgs impls that accept undeclared keys are untouched.
+        // for f()". Only applied when the function declares parameters AND
+        // every passed keyword is unknown, so calls mixing known and unknown
+        // keys (open(file, encoding=...)) take the normal binding path and
+        // let from_args/check_kwargs_empty handle the leftovers.
         if !T::parameters().is_empty() && !self.kwargs.is_empty() {
             let display = crate::utils::current_call_name().unwrap_or_default();
+            let all_keys_unknown = self.kwargs.keys().all(|k| match k.as_str() {
+                Ok(s) => !T::parameters().contains(&s),
+                Err(_) => true,
+            });
+            // Any unknown key is reported up front (open's flatten-expanded
+            // parameters now recognize encoding/errors/..., so legitimate
+            // keys never land here); the Did-you-mean suffix is still
+            // restricted to the all-keys-unknown single-key case.
             let bad = self.kwargs.keys().find(|k| {
                 match k.as_str() {
                     Ok(s) => !T::parameters().contains(&s),
@@ -305,19 +315,34 @@ impl FuncArgs {
                     Ok(s) => s,
                     Err(_) => {
                         return Err(vm.new_type_error(format!(
-                            "invalid keyword argument for {}",
+                            "invalid keyword argument for {}()",
                             display
                         )))
                     }
                 };
+                // CPython rejects non-identifier keyword keys with
+                // "invalid keyword argument for f()" (e.g. the BadStr tests);
+                // identifier-shaped unknowns get the unexpected-argument form.
+                if !is_python_identifier(s) {
+                    return Err(vm.new_type_error(format!(
+                        "invalid keyword argument for {}()",
+                        display
+                    )));
+                }
                 let mut msg = format!(
                     "{}() got an unexpected keyword argument '{}'",
                     display, s
                 );
-                if let Some(suggestion) = crate::utils::suggest_keyword(
-                    s,
-                    T::parameters().iter().copied(),
-                ) {
+                // CPython appends "Did you mean 'X'?" only when the offending
+                // keyword is the ONLY keyword passed (all keys unknown):
+                // print(0, sep=1, foo=5) -> plain "got an unexpected keyword
+                // argument 'foo'", while "foo".split(maxsplt=1) suggests.
+                if all_keys_unknown
+                    && let Some(suggestion) = crate::utils::suggest_keyword(
+                        s,
+                        T::parameters().iter().copied(),
+                    )
+                {
                     msg.push_str(&format!(" Did you mean '{suggestion}'?"));
                 }
                 return Err(vm.new_type_error(msg));
@@ -373,15 +398,28 @@ impl FuncArgs {
         }
         // Exactly one unexpected keyword: `f() got an unexpected keyword
         // argument 'X'` (plus "Did you mean" when close to a valid name).
+        // Non-str keys (e.g. BadStr) report "invalid keyword argument for f()".
         if self.kwargs.len() == 1 {
             let (k, _) = self.kwargs.iter().next()?;
+            let Ok(s) = k.as_str() else {
+                return Some(vm.new_type_error(format!(
+                    "invalid keyword argument for {}()",
+                    display
+                )));
+            };
+            if !is_python_identifier(s) {
+                return Some(vm.new_type_error(format!(
+                    "invalid keyword argument for {}()",
+                    display
+                )));
+            }
             let mut msg = format!(
                 "{}() got an unexpected keyword argument '{}'",
-                display, k
+                display, s
             );
-            if let Some(suggestion) = k.as_str().ok().and_then(|s| {
+            if let Some(suggestion) =
                 crate::utils::suggest_keyword(s, parameters.iter().copied())
-            }) {
+            {
                 msg.push_str(&format!(" Did you mean '{suggestion}'?"));
             }
             return Some(vm.new_type_error(msg));
@@ -417,6 +455,18 @@ impl From<PyBaseExceptionRef> for ArgumentError {
     fn from(ex: PyBaseExceptionRef) -> Self {
         Self::Exception(ex)
     }
+}
+
+/// CPython rejects keyword keys that are not valid Python identifiers with
+/// "invalid keyword argument for f()" (BadStr-style keys), while
+/// identifier-shaped unknown keys get "got an unexpected keyword argument".
+fn is_python_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_alphanumeric())
 }
 
 impl ArgumentError {
@@ -829,6 +879,18 @@ macro_rules! tuple_from_py_func_args {
                     max += end;
                 )+
                 min..=max
+            }
+
+            // Forward the keyword parameters of the first tuple member that
+            // declares any (typically the trailing `...Args` struct of a
+            // `#[pyfunction]`/constructor signature, e.g. `PrintOptions`).
+            // This lets the binding-error paths report "got an unexpected
+            // keyword argument 'x'" / "takes at most N keyword arguments"
+            // instead of the misleading "takes no keyword arguments" when a
+            // tuple member accepts named parameters.
+            fn parameters() -> &'static [&'static str] {
+                $( if !$T::parameters().is_empty() { return $T::parameters(); } )*
+                &[]
             }
 
             fn from_args(vm: &VirtualMachine, args: &mut FuncArgs) -> Result<Self, ArgumentError> {
