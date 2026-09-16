@@ -5281,8 +5281,10 @@ pub fn _compile_symtable(
 ) -> Result<symboltable::SymbolTable, CompileError> {
     let res = match mode {
         Mode::Exec | Mode::Single | Mode::BlockExpr => {
-            let ast = ruff_python_parser::parse_module(source_file.source_text())
-                .map_err(|e| CompileError::from_ruff_parse_error(e, &source_file, mode))?;
+            let ast = stacker::maybe_grow(32 * 1024, 64 * 1024 * 1024, || {
+                ruff_python_parser::parse_module(source_file.source_text())
+            })
+            .map_err(|e| CompileError::from_ruff_parse_error(e, &source_file, mode))?;
             if let Some(error) =
                 post_parse_source_error(&source_file, ast.tokens(), &CompileOpts::default())
             {
@@ -5297,10 +5299,12 @@ pub fn _compile_symtable(
             symboltable::SymbolTable::scan_program(&ast, source_file.clone())
         }
         Mode::Eval => {
-            let ast = ruff_python_parser::parse(
-                source_file.source_text(),
-                parser::Mode::Expression.into(),
-            )
+            let ast = stacker::maybe_grow(32 * 1024, 64 * 1024 * 1024, || {
+                ruff_python_parser::parse(
+                    source_file.source_text(),
+                    parser::Mode::Expression.into(),
+                )
+            })
             .map_err(|e| CompileError::from_ruff_parse_error(e, &source_file, mode))?;
             if let Some(error) =
                 post_parse_source_error(&source_file, ast.tokens(), &CompileOpts::default())
