@@ -2102,13 +2102,20 @@ impl VirtualMachine {
     ) -> PyResult<R> {
         self.check_recursive_call("")?;
 
-        // Check the native C stack periodically.  The sampling interval
-        // (every 8th call) balances overhead against the risk of missing
-        // an overflow between checks, especially when light and heavy
-        // frames alternate (each recursion step uses different native
-        // stack amounts).
-        let depth = self.recursion_depth.get();
-        if depth & 7 == 0 && self.check_c_stack_overflow() {
+        // Native stack guard: check the C stack on every frame push.
+        //
+        // This deliberately is *not* sampled. The native stack consumed per
+        // recursion level depends on the call path, not just on the build
+        // profile: a plain Python call is nearly free (the interpreter frame
+        // lives on the datastack), while a class instantiation runs several
+        // Rust frames per level — measured at ~2 KB/level in release and tens
+        // of KB/level in a debug build. A sampling interval of N therefore
+        // risks overshooting the margin entirely when N * per-level usage
+        // exceeds it, which is exactly how a debug build used to die with a
+        // native stack overflow instead of raising RecursionError
+        // (test_class's testClassCallRecursionLimit). One stack-pointer read
+        // and a compare per call is negligible next to pushing a frame.
+        if self.check_c_stack_overflow() {
             return Err(self.new_recursion_error(String::new()));
         }
 
@@ -2202,28 +2209,44 @@ impl VirtualMachine {
     ) -> PyResult<IframeEntryState> {
         self.check_recursive_call("")?;
 
-        let depth = self.recursion_depth.get();
-        if depth & 7 == 0 && self.check_c_stack_overflow() {
+        if self.check_c_stack_overflow() {
             return Err(self.new_recursion_error(String::new()));
         }
 
-        self.enter_iframe_unchecked(iframe)
+        self.enter_iframe_unchecked_impl(iframe)
     }
 
     /// Like `enter_iframe` but skips the Python recursion depth check
     /// (already verified by `specialization_call_recursion_guard`).
     /// Still checks C-stack overflow since each `run_iframe` call
     /// consumes Rust stack space.
+    ///
+    /// The C-stack check here is *not* sampled (the older scheme only checked
+    /// when `depth & 7 == 0`): per-level native stack usage varies by call
+    /// path — tens of KB in a debug build for a class instantiation — so an
+    /// interval of 8 could consume more than the entire margin between two
+    /// checks and step straight past the guard into a real overflow
+    /// (test_class's testClassCallRecursionLimit). One stack-pointer read and
+    /// compare per frame push is negligible next to pushing a frame.
     #[inline(always)]
     pub(crate) fn enter_iframe_unchecked(
         &self,
         iframe: &mut crate::frame::InterpreterFrame,
     ) -> PyResult<IframeEntryState> {
-        let depth = self.recursion_depth.get();
-        if depth & 7 == 0 && self.check_c_stack_overflow() {
+        if self.check_c_stack_overflow() {
             return Err(self.new_recursion_error(String::new()));
         }
 
+        self.enter_iframe_unchecked_impl(iframe)
+    }
+
+    /// Link `iframe` into the frame chain now that the depth and native stack
+    /// checks passed.
+    #[inline]
+    fn enter_iframe_unchecked_impl(
+        &self,
+        iframe: &mut crate::frame::InterpreterFrame,
+    ) -> PyResult<IframeEntryState> {
         self.recursion_depth.update(|d| d + 1);
 
         let iframe_ptr = iframe as *const crate::frame::InterpreterFrame;
