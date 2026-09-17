@@ -661,14 +661,21 @@ impl PyObject {
             let mut retval = self.class().is_subtype(cls);
             if !retval {
                 // Fast path: if the object's type resolves `__class__` to the
-                // plain `object.__class__` getset descriptor (the overwhelmingly
-                // common case), the "proxy" class is simply the real class and
-                // contributes nothing new — skip the expensive generic
-                // attribute lookup entirely. This mirrors CPython where the
-                // __class__ of a normal object IS Py_TYPE(obj).
-                // We compare against the descriptor installed on `object` so
-                // that subclasses which *override* __class__ (e.g. proxies)
-                // still take the slow, fully-correct path.
+                // plain `object.__class__` getset descriptor *and* leaves
+                // attribute lookup to the default `object.__getattribute__`
+                // (the overwhelmingly common case), the "proxy" class is simply
+                // the real class and contributes nothing new — skip the
+                // expensive generic attribute lookup entirely. This mirrors
+                // CPython where the __class__ of a normal object IS
+                // Py_TYPE(obj).
+                //
+                // Both descriptors are compared against the ones installed on
+                // `object`, because either can divert the instance-level
+                // `obj.__class__` lookup: a type that overrides `__class__`
+                // does so directly, and a proxy that overrides
+                // `__getattribute__` redirects the lookup to another object
+                // (CPython's `recursive_isinstance` performs a full
+                // `_PyObject_GetAttrId`, so both must take the slow path).
                 let obj_cls = self.class();
                 let default_class_desc = vm
                     .ctx
@@ -679,7 +686,19 @@ impl PyObject {
                     (Some(def), Some(actual)) => def.is(&actual),
                     _ => false,
                 };
-                if !resolves_to_default
+                let default_attro_desc = vm
+                    .ctx
+                    .types
+                    .object_type
+                    .get_attr(identifier!(vm, __getattribute__));
+                let attro_is_default = match (
+                    &default_attro_desc,
+                    obj_cls.get_attr(identifier!(vm, __getattribute__)),
+                ) {
+                    (Some(def), Some(actual)) => def.is(&actual),
+                    _ => false,
+                };
+                if !(resolves_to_default && attro_is_default)
                     && let Some(i_cls) =
                         vm.get_attribute_opt(self.to_owned(), identifier!(vm, __class__))?
                     && let Ok(i_cls_type) = PyTypeRef::try_from_object(vm, i_cls)
