@@ -388,7 +388,26 @@ impl VirtualMachine {
         source_path: impl Into<String>,
         opts: CompileOpts,
     ) -> Result<PyRef<PyCode>, VmCompileError> {
+        stacker::maybe_grow(32 * 1024, 64 * 1024 * 1024, || {
+            self.compile_with_opts_inner(source, mode, source_path, opts)
+        })
+    }
+
+    fn compile_with_opts_inner(
+        &self,
+        source: &str,
+        mode: compiler::Mode,
+        source_path: impl Into<String>,
+        opts: CompileOpts,
+    ) -> Result<PyRef<PyCode>, VmCompileError> {
         let source_path = source_path.into();
+        if let Some(message) = compiler::excessive_source_nesting(source) {
+            return Err(VmCompileError::Compile(compiler::excessive_source_nesting_error(
+                source,
+                &source_path,
+                message,
+            )));
+        }
         #[cfg(feature = "parser")]
         {
             self.emit_tokenizer_syntax_warnings(source, &source_path)

@@ -5208,12 +5208,88 @@ fn _compile(
     _compile_with_syntax_warning_handler(source_file, mode, opts, None)
 }
 
+pub fn excessive_source_nesting_error(
+    source: &str,
+    source_path: &str,
+    message: &str,
+) -> CompileError {
+    let source_file = SourceFileBuilder::new(source_path, source).finish();
+    CompileError::from_source_error(&source_file, message.to_owned(), 0, source.len())
+}
+
+pub fn excessive_source_nesting(source: &str) -> Option<&'static str> {
+    const MAX_BRACKET_DEPTH: usize = 512;
+    const MAX_UNARY_CHAIN: usize = 8192;
+    let mut depth = 0usize;
+    let mut unary = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    for byte in source.bytes() {
+        if let Some(q) = quote {
+            if escaped { escaped = false; }
+            else if byte == b'\\' { escaped = true; }
+            else if byte == q { quote = None; }
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+            unary = 0;
+            continue;
+        }
+        match byte {
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                if depth > MAX_BRACKET_DEPTH { return Some("too many nested parentheses"); }
+                unary = 0;
+            }
+            b')' | b']' | b'}' => { depth = depth.saturating_sub(1); unary = 0; }
+            b'+' | b'-' | b'~' => {
+                unary += 1;
+                if unary > MAX_UNARY_CHAIN { return Some("too complex"); }
+            }
+            b' ' | b'\t' | b'\r' | b'\n' => {}
+            _ => unary = 0,
+        }
+    }
+    None
+}
+
 fn _compile_with_syntax_warning_handler<'a>(
     source_file: SourceFile,
     mode: Mode,
     opts: CompileOpts,
     syntax_warning_handler: Option<&'a mut compile::SyntaxWarningHandler<'a>>,
 ) -> Result<CodeObject, CompileError> {
+    stacker::maybe_grow(32 * 1024, 64 * 1024 * 1024, || {
+        _compile_with_syntax_warning_handler_inner(
+            source_file,
+            mode,
+            opts,
+            syntax_warning_handler,
+        )
+    })
+}
+
+fn _compile_with_syntax_warning_handler_inner<'a>(
+    source_file: SourceFile,
+    mode: Mode,
+    opts: CompileOpts,
+    syntax_warning_handler: Option<&'a mut compile::SyntaxWarningHandler<'a>>,
+) -> Result<CodeObject, CompileError> {
+    // The ruff PEG parser recursively descends through deeply nested bracket
+    // and unary expressions. On Windows its native recursion can exhaust the
+    // process stack before stacker can switch fibers. Reject pathological
+    // nesting in a linear pre-scan, matching CPython's safe SyntaxError path,
+    // rather than allowing an interpreter crash.
+    if let Some(message) = excessive_source_nesting(source_file.source_text()) {
+        return Err(CompileError::from_source_error(
+            &source_file,
+            message.to_owned(),
+            0,
+            source_file.source_text().len(),
+        ));
+    }
+
     let parser_mode = match mode {
         Mode::Exec => parser::Mode::Module,
         Mode::Eval => parser::Mode::Expression,

@@ -67,6 +67,7 @@ parking_lot = { workspace = true }
 paste = { workspace = true }
 rapidhash = { workspace = true }
 scopeguard = { workspace = true }
+stacker = { workspace = true }
 serde = { workspace = true, optional = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
