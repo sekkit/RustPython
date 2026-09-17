@@ -76,31 +76,65 @@ impl GetDescriptor for PyMethodDescriptor {
         vm: &VirtualMachine,
     ) -> PyResult {
         let descr = Self::_as_pyref(&zelf, vm).unwrap();
-        let bound = match obj {
-            Some(obj) => {
-                if descr.method.flags.contains(PyMethodFlags::METHOD) {
-                    if cls
-                        .as_ref()
-                        .is_none_or(|c| c.fast_isinstance(vm.ctx.types.type_type))
-                    {
-                        obj
-                    } else {
-                        return Err(vm.new_type_error(format!(
-                            "descriptor '{}' needs a type, not '{}', as arg 2",
-                            descr.common.name.as_str(),
-                            obj.class().name()
-                        )));
-                    }
-                } else if descr.method.flags.contains(PyMethodFlags::CLASS) {
-                    obj.class().to_owned().into()
-                } else {
-                    obj
-                }
+        // CPython's wrap_descr_get() maps a `None` argument to NULL for both
+        // parameters and rejects the doubly-empty call.
+        let obj = obj.filter(|o| !vm.is_none(o));
+        let cls = cls.filter(|c| !vm.is_none(c));
+        if obj.is_none() && cls.is_none() {
+            return Err(vm.new_type_error("__get__(None, None) is invalid".to_owned()));
+        }
+        if descr.method.flags.contains(PyMethodFlags::CLASS) {
+            // CPython's classmethod_get(): class methods ignore the receiver
+            // and are bound to arg 2, defaulting to the receiver's type.
+            let bound = match cls {
+                Some(cls) => cls,
+                // Both arguments were rejected above, so `obj` is present.
+                None => obj.as_ref().unwrap().class().to_owned().into(),
+            };
+            let Some(bound_type) = bound.downcast_ref::<PyType>() else {
+                return Err(vm.new_type_error(format!(
+                    "descriptor '{}' for type '{}' needs a type, not a '{}' as arg 2",
+                    descr.common.name,
+                    descr.common.typ.name(),
+                    bound.class().name()
+                )));
+            };
+            if !bound_type.fast_issubclass(descr.common.typ) {
+                return Err(vm.new_type_error(format!(
+                    "descriptor '{}' requires a subtype of '{}' but received '{}'",
+                    descr.common.name,
+                    descr.common.typ.name(),
+                    bound_type.name()
+                )));
             }
-            None if descr.method.flags.contains(PyMethodFlags::CLASS) => cls.unwrap(),
-            None => return Ok(zelf),
+            return Ok(descr.bind(bound, &vm.ctx).into());
+        }
+        // CPython's method_get(): without a receiver the descriptor itself is
+        // returned, otherwise descr_check() validates the receiver against the
+        // defining type; METH_METHOD additionally requires arg 2 to be a type.
+        let Some(obj) = obj else {
+            return Ok(zelf);
         };
-        Ok(descr.bind(bound, &vm.ctx).into())
+        let obj_cls = obj.class();
+        if !obj_cls.fast_issubclass(descr.common.typ) {
+            return Err(vm.new_type_error(format!(
+                "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
+                descr.common.name,
+                descr.common.typ.name(),
+                obj_cls.name()
+            )));
+        }
+        if descr.method.flags.contains(PyMethodFlags::METHOD)
+            && let Some(cls) = cls.as_ref()
+            && !cls.fast_isinstance(vm.ctx.types.type_type)
+        {
+            return Err(vm.new_type_error(format!(
+                "descriptor '{}' needs a type, not '{}', as arg 2",
+                descr.common.name,
+                cls.class().name()
+            )));
+        }
+        Ok(descr.bind(obj, &vm.ctx).into())
     }
 }
 
@@ -442,6 +476,30 @@ fn vectorcall_method_descriptor(
 ) -> PyResult {
     let zelf: &Py<PyMethodDescriptor> = zelf_obj.downcast_ref().unwrap();
     let func_args = FuncArgs::from_vectorcall_owned(args, nargs, kwnames);
+    // Unbound call: CPython's method_vectorcall validates the receiver before
+    // dispatching (no receiver with no arguments, and the receiver must be an
+    // instance of the defining type). Bound calls never reach here.
+    if !zelf.method.flags.contains(PyMethodFlags::CLASS)
+        && !zelf.method.flags.contains(PyMethodFlags::STATIC)
+    {
+        if func_args.args.is_empty() && func_args.kwargs.is_empty() {
+            return Err(vm.new_type_error(format!(
+                "unbound method {}.{}() needs an argument",
+                zelf.common.typ.name(),
+                zelf.common.name
+            )));
+        }
+        if let Some(first) = func_args.args.first()
+            && !first.class().fast_issubclass(zelf.common.typ)
+        {
+            return Err(vm.new_type_error(format!(
+                "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
+                zelf.common.name,
+                zelf.common.typ.name(),
+                first.class().name()
+            )));
+        }
+    }
     (zelf.method.func)(vm, func_args)
 }
 
@@ -657,12 +715,18 @@ impl SlotFunc {
             Self::DescrGet(func) => {
                 let (instance, owner): (PyObjectRef, crate::function::OptionalArg<PyObjectRef>) =
                     args.bind(vm)?;
-                let owner = owner.into_option();
+                // CPython's wrap_descr_get() (Objects/typeobject.c) turns a
+                // `None` for either argument into NULL and rejects the
+                // doubly-empty call before dispatching to the slot.
+                let owner = owner.into_option().filter(|o| !vm.is_none(o));
                 let instance_opt = if vm.is_none(&instance) {
                     None
                 } else {
                     Some(instance)
                 };
+                if instance_opt.is_none() && owner.is_none() {
+                    return Err(vm.new_type_error("__get__(None, None) is invalid".to_owned()));
+                }
                 func(obj, instance_opt, owner, vm)
             }
             Self::DescrSet(func) => {

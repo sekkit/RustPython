@@ -1,9 +1,10 @@
 use super::{PyBoundMethod, PyGenericAlias, PyStr, PyType, PyTypeRef};
 use crate::{
     AsObject, Context, Py, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
+    builtins::descriptor::PyMethodDescriptor,
     class::PyClassImpl,
     common::lock::PyMutex,
-    function::{FuncArgs, PySetterValue},
+    function::{FuncArgs, PyMethodFlags, PySetterValue},
     types::{Constructor, GetDescriptor, Initializer, Representable},
 };
 
@@ -55,9 +56,22 @@ impl GetDescriptor for PyClassMethod {
         cls: Option<PyObjectRef>,
         vm: &VirtualMachine,
     ) -> PyResult {
-        let (zelf, _obj) = Self::_unwrap(&zelf, obj, vm)?;
-        let cls = cls.unwrap_or_else(|| _obj.class().to_owned().into());
+        let (zelf, obj) = Self::_unwrap(&zelf, obj, vm)?;
+        // CPython's descriptor `__get__` wrapper rejects the doubly-empty call.
+        if vm.is_none(&obj) && cls.is_none() {
+            return Err(vm.new_type_error("__get__(None, None) is invalid".to_owned()));
+        }
+        let cls = cls.unwrap_or_else(|| obj.class().to_owned().into());
         let callable = zelf.callable.lock().clone();
+        // CPython's classmethod_descriptor validates the type it is bound to
+        // (descrobject.c: classmethod_get), and RustPython's unbound call path
+        // for those descriptors does not, so forward to the wrapped method
+        // descriptor's own __get__ with the type as arg 2.
+        if let Some(descr) = callable.downcast_ref::<PyMethodDescriptor>()
+            && descr.method.flags.contains(PyMethodFlags::CLASS)
+        {
+            return PyMethodDescriptor::descr_get(callable, None, Some(cls), vm);
+        }
         Ok(PyBoundMethod::new(cls, callable).into_ref(&vm.ctx).into())
     }
 }
