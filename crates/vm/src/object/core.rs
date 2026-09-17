@@ -85,6 +85,7 @@ pub(super) struct Erased;
 /// Trashcan mechanism to limit recursive deallocation depth (Py_TRASHCAN).
 /// Without this, deeply nested structures (e.g. 200k-deep list) cause stack overflow
 /// during deallocation because each level adds a stack frame.
+/// Deferred objects are released by the drain loop in `end`, never recursively.
 mod trashcan {
     use core::cell::Cell;
 
