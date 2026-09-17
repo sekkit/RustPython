@@ -502,7 +502,16 @@ impl<T: Clone> Dict<T> {
                         continue;
                     };
                     if key.key_is(&entry.key) {
-                        entry.value = value;
+                        // Swap the new value in *before* the old one is dropped: dropping it
+                        // runs `__del__`, which may re-enter this dict (`key in d`, `del d[key]`)
+                        // and must never observe an entry that still points at the object being
+                        // destroyed. Assigning in place instead drops the old value while the
+                        // entry still references it, so a re-entrant delete extracts and frees
+                        // the dying object a second time (double free -> heap corruption).
+                        let removed = core::mem::replace(&mut entry.value, value);
+                        // `inner`/`entry` are not used past this point; the decref is deferred
+                        // until the raw borrows are dead.
+                        drop(removed);
                         return true;
                     }
                     if entry.hash != hash {
@@ -510,7 +519,8 @@ impl<T: Clone> Dict<T> {
                     }
                     match key.key_eq_in_place(&entry.key) {
                         Some(true) => {
-                            entry.value = value;
+                            let removed = core::mem::replace(&mut entry.value, value);
+                            drop(removed);
                             return true;
                         }
                         Some(false) => continue,
@@ -784,7 +794,10 @@ impl<T: Clone> Dict<T> {
             let inner: &mut DictInner<T> = unsafe { &mut *self.inner.data_ptr() };
             if let Some(Some(entry)) = inner.entries.get_mut(hint) {
                 if key.key_is(&entry.key) {
-                    entry.value = value;
+                    // Swap before dropping the old value: dropping it runs `__del__`, which may
+                    // re-enter this dict, so the entry must already hold the new value.
+                    let removed = core::mem::replace(&mut entry.value, value);
+                    drop(removed);
                     return Ok(None);
                 }
             }
