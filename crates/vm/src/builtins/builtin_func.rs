@@ -11,13 +11,34 @@ use alloc::fmt;
 
 // PyCFunctionObject in CPython
 #[repr(C)]
-#[pyclass(name = "builtin_function_or_method", module = false)]
+#[pyclass(name = "builtin_function_or_method", module = false, traverse = "manual")]
 pub struct PyNativeFunction {
     pub(crate) value: &'static PyMethodDef,
     pub(crate) zelf: Option<PyObjectRef>,
     pub(crate) module: Option<&'static PyStrInterned>, // None for bound method
     /// Prevent HeapMethodDef from being freed while this function references it
     pub(crate) _method_def_owner: Option<PyObjectRef>,
+}
+
+// CPython's PyCFunctionObject is a GC type (Py_TPFLAGS_HAVE_GC) whose traverse
+// visits `m_self`. Tracking matters twice over here:
+//   * `zelf` may hold an arbitrary object, so bound builtin methods can form
+//     reference cycles that must remain collectable.
+//   * tracked deallocation is what runs the trashcan recursion guard. A chain
+//     of bound methods (`o = o.__dir__` repeated) is released through `zelf`,
+//     and without the guard each link adds a native stack frame, overflowing
+//     the stack around a few thousand links (CPython bpo-33930).
+// `_method_def_owner` is visited so a cycle through the owning HeapMethodDef
+// stays visible to the collector.
+unsafe impl crate::object::Traverse for PyNativeFunction {
+    fn traverse(&self, tracer_fn: &mut crate::object::TraverseFn<'_>) {
+        if let Some(zelf) = self.zelf.as_ref() {
+            zelf.traverse(tracer_fn);
+        }
+        if let Some(owner) = self._method_def_owner.as_ref() {
+            owner.traverse(tracer_fn);
+        }
+    }
 }
 
 impl PyPayload for PyNativeFunction {
@@ -280,10 +301,20 @@ impl PyNativeFunction {
 }
 
 // PyCMethodObject in CPython
-#[pyclass(name = "builtin_function_or_method", module = false, base = PyNativeFunction, ctx = "builtin_function_or_method_type")]
+#[pyclass(name = "builtin_function_or_method", module = false, base = PyNativeFunction, ctx = "builtin_function_or_method_type", traverse = "manual")]
 pub struct PyNativeMethod {
     pub(crate) func: PyNativeFunction,
     pub(crate) class: &'static Py<PyType>, // TODO: the actual life is &'self
+}
+
+// PyCMethodObject is GC-tracked in CPython as well. Tracking the bound form is
+// what makes the trashcan guard apply while a chain of bound methods tied
+// together through `func.zelf` is released; untracked chains recurse one
+// native frame per link and overflow the stack (see PyNativeFunction above).
+unsafe impl crate::object::Traverse for PyNativeMethod {
+    fn traverse(&self, tracer_fn: &mut crate::object::TraverseFn<'_>) {
+        self.func.traverse(tracer_fn);
+    }
 }
 
 // All Python-visible behavior (getters, slots) is registered by PyNativeFunction::extend_class.

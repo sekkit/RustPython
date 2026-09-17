@@ -606,6 +606,19 @@ impl VirtualMachine {
             return self.new_recursion_error(error.to_string());
         }
 
+        // CPython reports "MemoryError: too complex" when the parser/
+        // compiler stack guard trips on pathological nesting; mirror that
+        // for our linear pre-scan's "too complex" rejection.
+        #[cfg(feature = "parser")]
+        if let crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+            error: ruff_python_parser::ParseErrorType::OtherError(msg),
+            ..
+        }) = error
+            && msg == "too complex"
+        {
+            return self.new_memory_error(msg.clone());
+        }
+
         let incomplete_or_syntax = |allow| -> &'static Py<crate::builtins::PyType> {
             if allow {
                 self.ctx.exceptions.incomplete_input_error

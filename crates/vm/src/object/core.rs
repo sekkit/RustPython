@@ -92,6 +92,15 @@ mod trashcan {
     /// CPython uses UNWIND_NO_NESTING = 50.
     const TRASHCAN_LIMIT: usize = 50;
 
+    /// Depth installed while the drain loop runs. Non-zero, so a nested
+    /// `end()` reached from a drained deallocation does not start a second
+    /// drain loop (each drained object would otherwise recurse into a fresh
+    /// drain, consuming O(N/limit) stack for an N-link chain); and below
+    /// `TRASHCAN_LIMIT`, so drained deallocations still make progress instead
+    /// of bouncing straight back onto the queue. Mirrors CPython's
+    /// `trash_delete_nesting = 2` inside `_PyTrash_thread_destroy_chain`.
+    const DRAINING: usize = 1;
+
     type DeallocFn = unsafe fn(*mut super::PyObject);
     type DeallocQueue = Vec<(*mut super::PyObject, DeallocFn)>;
 
@@ -116,6 +125,10 @@ mod trashcan {
 
     /// Try to begin deallocation. Returns true if we should proceed,
     /// false if the object was deferred (depth exceeded).
+    ///
+    /// `DRAINING` is below the limit, so a deallocation started by the drain
+    /// loop enters here normally and can nest up to `TRASHCAN_LIMIT`; only
+    /// deeper links of the same chain are deferred onto the queue.
     #[inline]
     pub(super) unsafe fn begin(
         obj: *mut super::PyObject,
@@ -143,12 +156,18 @@ mod trashcan {
             let depth = t.depth.get();
             debug_assert!(depth > 0, "trashcan::end called without matching begin");
             let depth = depth - 1;
-            t.depth.set(depth);
             if depth != 0 {
+                t.depth.set(depth);
                 return;
             }
-            // Process deferred deallocations iteratively. The queue is set back
-            // before each `dealloc` call so a reentrant `begin` can push freely.
+            // Drain iteratively. While the loop runs the depth is pinned to
+            // `DRAINING`, so a deallocation started from the loop can nest up to
+            // `TRASHCAN_LIMIT` levels but its `end()` never sees depth 0 and so
+            // never starts a nested drain loop; without that pin each drained
+            // object would recurse into a fresh drain and an N-link chain would
+            // still consume O(N/limit) native stack frames. The queue is
+            // restored around each `pop` so a reentrant push can never alias it.
+            t.depth.set(DRAINING);
             loop {
                 let next = {
                     let mut queue = t.queue.take();
@@ -162,6 +181,7 @@ mod trashcan {
                     break;
                 }
             }
+            t.depth.set(0);
         })
     }
 }
