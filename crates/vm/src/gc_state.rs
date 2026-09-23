@@ -344,14 +344,11 @@ impl GcState {
         loop {
             let obj_gen = obj_ref.gc_generation();
 
-            let (list_lock, count) = if obj_gen <= 2 {
-                (
-                    &self.generation_lists[obj_gen as usize]
-                        as &PyRwLock<LinkedList<GcLink, PyObject>>,
-                    &self.generations[obj_gen as usize].count,
-                )
+            let list_lock = if obj_gen <= 2 {
+                &self.generation_lists[obj_gen as usize]
+                    as &PyRwLock<LinkedList<GcLink, PyObject>>
             } else if obj_gen == GC_PERMANENT {
-                (&self.permanent_list, &self.permanent.count)
+                &self.permanent_list
             } else {
                 return; // GC_UNTRACKED or unknown — already untracked
             };
@@ -363,7 +360,14 @@ impl GcState {
                 continue; // Retry with the updated generation
             }
             if unsafe { list.remove(obj) }.is_some() {
-                count.fetch_sub(1, Ordering::SeqCst);
+                // Rule D: deallocation decrements the generation-0 allocation
+                // counter only, regardless of which generation the object lived
+                // in (CPython `_PyObject_GC_Del`), saturating at zero.
+                let _ = self.generations[0].count.fetch_update(
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                    |c| if c > 0 { Some(c - 1) } else { None },
+                );
                 obj_ref.clear_gc_tracked();
                 obj_ref.set_gc_generation(GC_UNTRACKED);
             } else {
@@ -505,6 +509,29 @@ impl GcState {
         #[cfg(feature = "threading")]
         let mut stw = CollectStopTheWorld::new();
 
+        // (A) DEBUG_STATS: CPython prints the collection header and the real
+        // per-generation *list* sizes at the start of a collection
+        // (`show_stats_each_generations` in gcmodule.c). The "objects in each
+        // generation" line reports list sizes, not the allocation counters.
+        if debug.contains(GcDebugFlags::STATS) {
+            eprintln!("gc: collecting generation {generation}...");
+            self.show_stats_each_generations();
+        }
+
+        // (B) Collection/allocation counters, matching the opening of
+        // `gc_collect_main` in CPython: bump the next generation's counter and
+        // zero the counters of every generation being collected. `gc.get_count`
+        // reports these values; they are allocation bookkeeping, not the number
+        // of objects currently in each generation's list.
+        if generation + 1 < 3 {
+            self.generations[generation + 1]
+                .count
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        for i in 0..=generation {
+            self.generations[i].count.store(0, Ordering::SeqCst);
+        }
+
         // Step 1: Gather objects from generations 0..=generation
         // Hold read locks for the entire scan to prevent concurrent modifications.
         let gen_locks: Vec<_> = (0..=generation)
@@ -521,16 +548,10 @@ impl GcState {
         }
 
         if collecting.is_empty() {
-            // Reset counts for generations whose objects were promoted away.
-            // For gen2 (oldest), survivors stay in-place so don't reset gen2 count.
-            let reset_end = if generation >= 2 { 2 } else { generation + 1 };
-            for i in 0..reset_end {
-                self.generations[i].count.store(0, Ordering::SeqCst);
-            }
-
             let duration = elapsed_secs(start_time);
 
             self.generations[generation].update_stats(0, 0, 0, duration);
+            self.report_done(&debug, 0, 0, duration);
             return CollectResult {
                 collected: 0,
                 uncollectable: 0,
@@ -540,14 +561,6 @@ impl GcState {
         }
 
         let candidates = collecting.len();
-
-        if debug.contains(GcDebugFlags::STATS) {
-            eprintln!(
-                "gc: collecting {} objects from generations 0..={}",
-                collecting.len(),
-                generation
-            );
-        }
 
         // Step 2: Build gc_refs map (copy reference counts)
         let mut gc_refs: std::collections::HashMap<GcPtr, usize> = std::collections::HashMap::new();
@@ -655,14 +668,6 @@ impl GcState {
             }
         }
 
-        if debug.contains(GcDebugFlags::STATS) {
-            eprintln!(
-                "gc: {} reachable, {} unreachable",
-                reachable.len(),
-                unreachable.len()
-            );
-        }
-
         // Create strong references while read locks are still held.
         // After dropping gen_locks, other threads can untrack+free objects,
         // making the raw pointers in `reachable`/`unreachable` dangling.
@@ -698,15 +703,12 @@ impl GcState {
 
         if unreachable.is_empty() {
             drop(gen_locks);
-            self.promote_survivors(generation, &survivor_refs);
-            let reset_end = if generation >= 2 { 2 } else { generation + 1 };
-            for i in 0..reset_end {
-                self.generations[i].count.store(0, Ordering::SeqCst);
-            }
+            self.move_survivors(generation, &survivor_refs);
 
             let duration = elapsed_secs(start_time);
 
             self.generations[generation].update_stats(0, 0, candidates, duration);
+            self.report_done(&debug, 0, 0, duration);
             return CollectResult {
                 collected: 0,
                 uncollectable: 0,
@@ -721,15 +723,12 @@ impl GcState {
         // Step 6: Finalize unreachable objects and handle resurrection
 
         if unreachable_refs.is_empty() {
-            self.promote_survivors(generation, &survivor_refs);
-            let reset_end = if generation >= 2 { 2 } else { generation + 1 };
-            for i in 0..reset_end {
-                self.generations[i].count.store(0, Ordering::SeqCst);
-            }
+            self.move_survivors(generation, &survivor_refs);
 
             let duration = elapsed_secs(start_time);
 
             self.generations[generation].update_stats(0, 0, candidates, duration);
+            self.report_done(&debug, 0, 0, duration);
             return CollectResult {
                 collected: 0,
                 uncollectable: 0,
@@ -801,14 +800,6 @@ impl GcState {
                 resurrected_set.contains(&ptr)
             });
 
-        if debug.contains(GcDebugFlags::STATS) {
-            eprintln!(
-                "gc: {} resurrected, {} truly dead",
-                resurrected.len(),
-                truly_dead.len()
-            );
-        }
-
         // Compute collected count (exclude instance dicts in truly_dead)
         let collected = {
             let dead_ptrs: HashSet<usize> = truly_dead
@@ -832,7 +823,7 @@ impl GcState {
         // move_legacy_finalizer_reachable → delete_garbage order ensures
         // survivor_refs are dropped before tp_clear, so reachable objects
         // aren't kept alive beyond the deferred-drop phase.
-        self.promote_survivors(generation, &survivor_refs);
+        self.move_survivors(generation, &survivor_refs);
         drop(survivor_refs);
 
         // Resurrected objects stay tracked — just drop our references
@@ -946,16 +937,10 @@ impl GcState {
             });
         }
 
-        // Reset counts for generations whose objects were promoted away.
-        // For gen2 (oldest), survivors stay in-place so don't reset gen2 count.
-        let reset_end = if generation >= 2 { 2 } else { generation + 1 };
-        for i in 0..reset_end {
-            self.generations[i].count.store(0, Ordering::SeqCst);
-        }
-
         let duration = elapsed_secs(start_time);
 
         self.generations[generation].update_stats(collected, 0, candidates, duration);
+        self.report_done(&debug, collected, 0, duration);
 
         CollectResult {
             collected,
@@ -965,50 +950,86 @@ impl GcState {
         }
     }
 
-    /// Promote surviving objects to the next generation.
+    /// Print CPython's `gc: objects in each generation:` line followed by the
+    /// permanent-generation line (`show_stats_each_generations` in gcmodule.c).
+    /// The numbers are the real intrusive-list sizes (`gc_list_size`), not the
+    /// allocation counters reported by `gc.get_count()`.
+    fn show_stats_each_generations(&self) {
+        let mut buf = String::new();
+        for gen_list in &self.generation_lists {
+            buf.push_str(&format!(" {}", gen_list.read().iter().count()));
+        }
+        eprintln!("gc: objects in each generation:{buf}");
+        eprintln!(
+            "gc: objects in permanent generation: {}",
+            self.permanent_list.read().iter().count()
+        );
+    }
+
+    /// Print CPython's end-of-collection statistics line when STATS is set.
+    /// `unreachable` is the number of objects cleared this collection
+    /// (`n + m` in gcmodule.c) and `uncollectable` the uncollectable count
+    /// (`n`).
+    fn report_done(
+        &self,
+        debug: &GcDebugFlags,
+        unreachable: usize,
+        uncollectable: usize,
+        duration: f64,
+    ) {
+        if debug.contains(GcDebugFlags::STATS) {
+            eprintln!(
+                "gc: done, {unreachable} unreachable, {uncollectable} uncollectable, {duration:.4}s elapsed"
+            );
+        }
+    }
+
+    /// Place surviving objects into the generation CPython would put them in.
     ///
-    /// `survivors` must be strong references (`PyObjectRef`) to keep objects alive,
-    /// since the generation read locks are released before this is called.
+    /// CPython's `gc_collect_main` first merges generations `0..g-1` into `g`
+    /// and then moves the survivors of `g` into `g+1`; when `g` is the oldest
+    /// generation the survivors stay in `g`. This performs only the intrusive
+    /// list removal/insertion plus the `gc_generation` update; it does **not**
+    /// touch the generation counters, which are bookkeeping owned entirely by
+    /// `collect_inner` (rule B) and `track_object`/`untrack_object` (rule D).
+    ///
+    /// `survivors` must be strong references (`PyObjectRef`) to keep objects
+    /// alive, since the generation read locks are released before this is
+    /// called.
     ///
     /// Holds both source and destination list locks simultaneously to prevent
     /// a race where concurrent `untrack_object` reads a stale `gc_generation`
     /// and operates on the wrong list.
-    fn promote_survivors(&self, from_gen: usize, survivors: &[PyObjectRef]) {
-        if from_gen >= 2 {
-            return; // Already in oldest generation
-        }
-
-        let next_gen = from_gen + 1;
+    fn move_survivors(&self, generation: usize, survivors: &[PyObjectRef]) {
+        // Survivors of the younger generations end up in g+1; a full
+        // collection (the oldest generation) keeps them where they are (g).
+        let dest = if generation < 2 { generation + 1 } else { 2 };
 
         for obj_ref in survivors {
             let obj = obj_ref.as_ref();
             let ptr = NonNull::from(obj);
             let obj_gen = obj.gc_generation();
-            if obj_gen as usize <= from_gen && obj_gen <= 2 {
-                let src_gen = obj_gen as usize;
+            if obj_gen > 2 || !obj.is_gc_tracked() {
+                continue;
+            }
+            let src_gen = obj_gen as usize;
+            if src_gen == dest {
+                continue; // Already in the destination generation
+            }
 
-                // Lock both source and destination lists simultaneously.
-                // Always ascending order (src_gen < next_gen) → no deadlock.
-                let mut src = self.generation_lists[src_gen].write();
-                let mut dst = self.generation_lists[next_gen].write();
+            // Lock both source and destination lists simultaneously.
+            // `src_gen < dest` always here, so ascending order → no deadlock.
+            let mut src = self.generation_lists[src_gen].write();
+            let mut dst = self.generation_lists[dest].write();
 
-                // Re-check under locks: object might have been untracked concurrently
-                if obj.gc_generation() != obj_gen || !obj.is_gc_tracked() {
-                    continue;
-                }
+            // Re-check under locks: object might have been untracked concurrently
+            if obj.gc_generation() != obj_gen || !obj.is_gc_tracked() {
+                continue;
+            }
 
-                if unsafe { src.remove(ptr) }.is_some() {
-                    self.generations[src_gen]
-                        .count
-                        .fetch_sub(1, Ordering::SeqCst);
-
-                    dst.push_front(ptr);
-                    self.generations[next_gen]
-                        .count
-                        .fetch_add(1, Ordering::SeqCst);
-
-                    obj.set_gc_generation(next_gen as u8);
-                }
+            if unsafe { src.remove(ptr) }.is_some() {
+                dst.push_front(ptr);
+                obj.set_gc_generation(dest as u8);
             }
         }
     }
@@ -1040,20 +1061,17 @@ impl GcState {
     /// Unfreeze all objects (move from permanent to gen2).
     /// Lock order: generation_lists[2] → permanent_list (consistent with freeze).
     pub fn unfreeze(&self) {
-        let mut count = 0usize;
-
         {
             let mut gen2 = self.generation_lists[2].write();
             let mut perm_list = self.permanent_list.write();
             while let Some(ptr) = perm_list.pop_front() {
                 gen2.push_front(ptr);
                 unsafe { ptr.as_ref().set_gc_generation(2) };
-                count += 1;
             }
             self.permanent.count.store(0, Ordering::SeqCst);
         }
-
-        self.generations[2].count.fetch_add(count, Ordering::SeqCst);
+        // Like CPython's gc_unfreeze, this touches no allocation counters — it
+        // only moves the permanent objects back into the oldest generation.
     }
 
     /// Reset all locks to unlocked state after fork().
