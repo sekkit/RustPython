@@ -1,7 +1,8 @@
 use super::{PyStr, PyStrRef, PyType, PyTypeRef, PyWeak};
 use crate::common::lock::LazyLock;
 use crate::{
-    Context, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine, atomic_func,
+    AsObject, Context, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
+    atomic_func,
     class::PyClassImpl,
     common::hash::PyHash,
     function::{FuncArgs, OptionalArg, PyArithmeticValue, PyComparisonValue, PySetterValue},
@@ -359,13 +360,33 @@ impl AsMapping for PyWeakProxy {
 
 impl Representable for PyWeakProxy {
     #[inline]
-    fn repr(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyStrRef> {
-        zelf.try_upgrade(vm)?.repr(vm)
+    fn repr_str(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<String> {
+        let id = zelf.as_object().get_id();
+        Ok(match zelf.0.upgrade() {
+            Some(obj) => {
+                // CPython's weakproxy_repr: "<weakproxy at %p; to '%s' at %p>"
+                // where %s is Py_TYPE(obj)->tp_name (fully-qualified).
+                let type_name = super::weakref::type_fully_qualified_name(obj.class(), vm);
+                format!(
+                    "<weakproxy at {:#x}; to '{}' at {:#x}>",
+                    id,
+                    type_name,
+                    obj.get_id(),
+                )
+            }
+            None => {
+                // CPython's weakproxy_repr: when the referent is dead it
+                // returns "<weakproxy at %p; dead>" instead of raising
+                // ReferenceError.
+                format!("<weakproxy at {id:#x}; dead>")
+            }
+        })
     }
 
     #[cold]
-    fn repr_str(_zelf: &Py<Self>, _vm: &VirtualMachine) -> PyResult<String> {
-        unreachable!("use repr instead")
+    fn repr(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyStrRef> {
+        let s = Self::repr_str(zelf, vm)?;
+        Ok(vm.ctx.new_str(s))
     }
 }
 

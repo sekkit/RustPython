@@ -1,4 +1,4 @@
-use super::{PyGenericAlias, PyType, PyTypeRef};
+use super::{PyGenericAlias, PyStr, PyType, PyTypeRef};
 use crate::common::{
     atomic::{Ordering, Radium},
     hash::{self, PyHash},
@@ -152,17 +152,61 @@ impl Comparable for PyWeak {
     }
 }
 
+/// Construct the fully-qualified type name, matching CPython 3.13's
+/// `PyType_GetFullyQualifiedName`: for heap types, returns `module.qualname`
+/// unless module is "builtins" or "__main__". For static types, returns the
+/// short name (tp_name equivalent). Uses the `#[pygetset]` methods directly
+/// because `__qualname__` is stored in `HeapTypeExt.qualname` (removed from
+/// the type dict during creation), so `cls.get_attr()` cannot find it.
+pub(crate) fn type_fully_qualified_name(cls: &crate::builtins::PyType, vm: &VirtualMachine) -> String {
+    let qualname = cls
+        .__qualname__(vm)
+        .downcast_ref::<PyStr>()
+        .map(|s| s.as_wtf8().to_owned())
+        .map(|s| s.as_str().unwrap_or_default().to_string())
+        .unwrap_or_else(|| cls.name().to_string());
+    let module = cls
+        .__module__(vm)
+        .downcast_ref::<PyStr>()
+        .map(|m| m.as_wtf8().to_owned());
+    match module {
+        Some(m)
+            if m.as_str() != Ok("__main__")
+                && m.as_str() != Ok("builtins")
+                && !m.is_empty() =>
+        {
+            format!("{m}.{qualname}")
+        }
+        _ => qualname,
+    }
+}
+
 impl Representable for PyWeak {
     #[inline]
-    fn repr_str(zelf: &Py<Self>, _vm: &VirtualMachine) -> PyResult<String> {
+    fn repr_str(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<String> {
         let id = zelf.get_id();
         Ok(if let Some(o) = zelf.upgrade() {
-            format!(
-                "<weakref at {:#x}; to '{}' at {:#x}>",
-                id,
-                o.class().name(),
-                o.get_id(),
-            )
+            // CPython 3.13 weakref_repr: uses PyType_GetFullyQualifiedName
+            // for the type name ("to '%T'") and appends " (%U)" with the
+            // instance's __name__ whenever it is a string (via
+            // _PyObject_LookupSpecial). CPython 3.12 used tp_name and the
+            // same __name__ logic.
+            let cls = o.class();
+            let type_name = type_fully_qualified_name(cls, vm);
+            let name_suffix = o
+                .get_attr(identifier!(vm, __name__), vm)
+                .ok()
+                .and_then(|n| n.downcast_ref::<PyStr>().map(|s| s.as_wtf8().to_owned()));
+            match name_suffix {
+                Some(name) => format!(
+                    "<weakref at {:#x}; to '{}' at {:#x} ({})>",
+                    id, type_name, o.get_id(), name,
+                ),
+                None => format!(
+                    "<weakref at {:#x}; to '{}' at {:#x}>",
+                    id, type_name, o.get_id(),
+                ),
+            }
         } else {
             format!("<weakref at {id:#x}; dead>")
         })
