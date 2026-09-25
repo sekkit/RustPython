@@ -378,10 +378,11 @@ impl PySetInner {
         Ok(true)
     }
 
-    fn iter(&self) -> PySetIterator {
+    fn iter(&self, set_obj: Option<PyObjectRef>) -> PySetIterator {
         PySetIterator {
             size: self.content.size(),
             internal: PyMutex::new(PositionIterInternal::new(self.content.clone(), 0)),
+            set_obj,
         }
     }
 
@@ -933,7 +934,8 @@ impl Comparable for PySet {
 
 impl Iterable for PySet {
     fn iter(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
-        Ok(zelf.inner.iter().into_pyobject(vm))
+        let set_obj = Some(zelf.as_object().to_owned());
+        Ok(zelf.inner.iter(set_obj).into_pyobject(vm))
     }
 }
 
@@ -1351,7 +1353,8 @@ impl Comparable for PyFrozenSet {
 
 impl Iterable for PyFrozenSet {
     fn iter(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
-        Ok(zelf.inner.iter().into_pyobject(vm))
+        let set_obj = Some(zelf.as_object().to_owned());
+        Ok(zelf.inner.iter(set_obj).into_pyobject(vm))
     }
 }
 
@@ -1484,10 +1487,14 @@ impl TryFromObject for AnySet {
     }
 }
 
-#[pyclass(module = false, name = "set_iterator")]
+#[pyclass(module = false, name = "set_iterator", traverse = "manual")]
 pub(crate) struct PySetIterator {
     size: DictSize,
     internal: PyMutex<PositionIterInternal<PyRc<SetContentType>>>,
+    /// Strong reference to the set/frozenset object, matching CPython's
+    /// setiterobject.si_set. Keeps the set alive while the iterator exists,
+    /// even if no other references to the set object are held.
+    set_obj: Option<PyObjectRef>,
 }
 
 impl fmt::Debug for PySetIterator {
@@ -1501,6 +1508,22 @@ impl PyPayload for PySetIterator {
     #[inline]
     fn class(ctx: &Context) -> &'static Py<PyType> {
         ctx.types.set_iterator_type
+    }
+}
+
+// SAFETY: Traverse visits set_obj (the strong reference to the set/frozenset
+// object). The internal field holds a PyRc<SetContentType> which is not traversed
+// because PyRc does not implement Traverse; its refcount keeps the content alive
+// and the content (a flat key dict) does not form cycles with the iterator.
+unsafe impl crate::object::Traverse for PySetIterator {
+    fn traverse(&self, traverse_fn: &mut crate::object::TraverseFn<'_>) {
+        self.set_obj.traverse(traverse_fn);
+    }
+
+    fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+        if let Some(obj) = self.set_obj.take() {
+            out.push(obj);
+        }
     }
 }
 
