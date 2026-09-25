@@ -701,6 +701,15 @@ impl SlotFunc {
                 Ok(vm.ctx.none())
             }
             Self::DelAttro(func) => {
+                // CPython's wrapper_call (descrobject.c) uses "expected N
+                // argument(s), got M" for wrapper descriptors, distinct from
+                // the "f() takes exactly..." format used by method descriptors.
+                if args.args.len() != 1 || !args.kwargs.is_empty() {
+                    return Err(vm.new_type_error(format!(
+                        "expected 1 argument, got {}",
+                        args.args.len()
+                    )));
+                }
                 let (name,): (PyRef<PyStr>,) = args.bind(vm)?;
                 func(&obj, &name, PySetterValue::Delete, vm)?;
                 Ok(vm.ctx.none())

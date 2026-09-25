@@ -14,6 +14,7 @@ pub use argument::{
     ArgumentError, FromArgOptional, FromArgs, FuncArgs, IntoFuncArgs, KwArgs, OptionalArg,
     OptionalOption, PosArgs,
 };
+pub(crate) use argument::is_python_identifier;
 pub use arithmetic::{PyArithmeticValue, PyComparisonValue};
 pub use buffer::{ArgAsciiBuffer, ArgBytesLike, ArgMemoryBuffer, ArgStrOrBytesLike};
 pub use builtin::{IntoPyNativeFn, PyNativeFn, static_func, static_raw_func};

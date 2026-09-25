@@ -1036,6 +1036,7 @@ pub(crate) mod typevar {
         let func_args = FuncArgs {
             args: call_args,
             kwargs: args.kwargs,
+            ..Default::default()
         };
 
         func.call(func_args, vm)

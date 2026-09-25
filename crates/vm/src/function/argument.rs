@@ -68,11 +68,24 @@ into_func_args_from_tuple!((v1, T1), (v2, T2), (v3, T3), (v4, T4), (v5, T5), (v6
 /// The `FuncArgs` struct is one of the most used structs when creating
 /// a rust function that can be called from python. It holds both positional
 /// arguments, as well as keyword arguments passed to the function.
-#[derive(Debug, Default, Clone, Traverse)]
+#[derive(Debug, Default, Clone)]
 pub struct FuncArgs {
     pub args: Vec<PyObjectRef>,
     // sorted map, according to https://www.python.org/dev/peps/pep-0468/
     pub kwargs: KwArgs,
+    /// True when any keyword key was a str subclass (not exact str),
+    /// matching CPython's PyUnicode_CheckExact distinction. When true
+    /// and a keyword is not found, the error is "invalid keyword
+    /// argument for f()" instead of "got an unexpected keyword argument".
+    pub has_nonexact_str_keys: bool,
+}
+
+unsafe impl Traverse for FuncArgs {
+    fn traverse(&self, traverse_fn: &mut TraverseFn<'_>) {
+        self.args.traverse(traverse_fn);
+        self.kwargs.traverse(traverse_fn);
+        // has_nonexact_str_keys: bool — no PyObjectRefs to traverse
+    }
 }
 
 /// Conversion from vector of python objects to function arguments.
@@ -113,6 +126,7 @@ impl FuncArgs {
         Self {
             args,
             kwargs: kwargs.into(),
+            ..Default::default()
         }
     }
 
@@ -133,6 +147,7 @@ impl FuncArgs {
         Self {
             args: pos_args,
             kwargs,
+            ..Default::default()
         }
     }
 
@@ -171,6 +186,7 @@ impl FuncArgs {
         Self {
             args: pos_args,
             kwargs,
+            ..Default::default()
         }
     }
 
@@ -200,7 +216,7 @@ impl FuncArgs {
         });
 
         args.truncate(nargs);
-        Self { args, kwargs }
+        Self { args, kwargs, ..Default::default() }
     }
 
     #[must_use]
@@ -322,8 +338,9 @@ impl FuncArgs {
                 };
                 // CPython rejects non-identifier keyword keys with
                 // "invalid keyword argument for f()" (e.g. the BadStr tests);
+                // str-subclass keys (BadStr) also get this form; exact-str
                 // identifier-shaped unknowns get the unexpected-argument form.
-                if !is_python_identifier(s) {
+                if !is_python_identifier(s) || self.has_nonexact_str_keys {
                     return Err(vm.new_type_error(format!(
                         "invalid keyword argument for {}()",
                         display
@@ -407,7 +424,7 @@ impl FuncArgs {
                     display
                 )));
             };
-            if !is_python_identifier(s) {
+            if !is_python_identifier(s) || self.has_nonexact_str_keys {
                 return Some(vm.new_type_error(format!(
                     "invalid keyword argument for {}()",
                     display
@@ -460,7 +477,7 @@ impl From<PyBaseExceptionRef> for ArgumentError {
 /// CPython rejects keyword keys that are not valid Python identifiers with
 /// "invalid keyword argument for f()" (BadStr-style keys), while
 /// identifier-shaped unknown keys get "got an unexpected keyword argument".
-fn is_python_identifier(s: &str) -> bool {
+pub(crate) fn is_python_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c == '_' || c.is_alphabetic() => {}

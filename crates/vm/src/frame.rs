@@ -6512,7 +6512,7 @@ impl ExecutingFrame<'_> {
                         all_args.extend(positional_args);
                         let args = FuncArgs {
                             args: all_args,
-                            kwargs: Default::default(),
+                            ..Default::default()
                         };
                         let result = crate::utils::with_call_context(
                             display_name,
@@ -6573,7 +6573,7 @@ impl ExecutingFrame<'_> {
                         all_args.extend(positional_args);
                         let args = FuncArgs {
                             args: all_args,
-                            kwargs: Default::default(),
+                            ..Default::default()
                         };
                         let result = crate::utils::with_call_context(
                             display_name,
@@ -6634,7 +6634,7 @@ impl ExecutingFrame<'_> {
                     all_args.extend(positional_args);
                     let args = FuncArgs {
                         args: all_args,
-                        kwargs: Default::default(),
+                        ..Default::default()
                     };
                     let result = crate::utils::with_call_context(
                         display_name,
@@ -6773,7 +6773,7 @@ impl ExecutingFrame<'_> {
                     all_args.extend(positional_args);
                     let args = FuncArgs {
                         args: all_args,
-                        kwargs: Default::default(),
+                        ..Default::default()
                     };
                     let result = crate::utils::with_call_context(
                         display_name,
@@ -8294,6 +8294,7 @@ impl ExecutingFrame<'_> {
     fn collect_ex_args(&mut self, vm: &VirtualMachine) -> PyResult<FuncArgs> {
         let kwargs_or_null = self.pop_value_opt();
         let mut kwargs = KwArgs::default();
+        let mut has_nonexact_str_keys = false;
         if let Some(kw_obj) = kwargs_or_null {
             // Stack: [callable, self_or_null, args_tuple]
             let callable = self.nth_value(2);
@@ -8305,6 +8306,12 @@ impl ExecutingFrame<'_> {
                 let key_str = key
                     .downcast_ref::<PyStr>()
                     .ok_or_else(|| vm.new_type_error("keywords must be strings"))?;
+                // CPython's PyUnicode_CheckExact: a str subclass (e.g. BadStr)
+                // with a different hash triggers "invalid keyword argument"
+                // instead of "got an unexpected keyword argument".
+                if key.downcast_ref_if_exact::<PyStr>(vm).is_none() {
+                    has_nonexact_str_keys = true;
+                }
                 let value = kw_obj.get_item(&*key, vm)?;
                 kwargs.insert(key_str.as_wtf8().to_owned(), value);
                 Ok(())
@@ -8335,7 +8342,7 @@ impl ExecutingFrame<'_> {
                 }
             })?
         };
-        Ok(FuncArgs { args, kwargs })
+        Ok(FuncArgs { args, kwargs, has_nonexact_str_keys })
     }
 
     /// Returns a display string for a callable object for use in error messages.

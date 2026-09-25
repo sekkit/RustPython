@@ -1935,15 +1935,48 @@ pub(super) mod types {
             let path = kwargs.swap_remove("path");
             let name_from = kwargs.swap_remove("name_from");
 
-            // Check for any remaining invalid keyword arguments: CPython
-            // (Objects/exceptions.c, _PyErr_SetObject path) reports
-            // "ImportError() takes at most 3 keyword arguments (N given)"
-            // with N = the total number of keyword arguments in the call.
+            // CPython reports "ImportError() got an unexpected keyword
+            // argument 'X'" for unknown kwargs, with a "Did you mean?"
+            // suggestion when only one unknown key is passed.
             if !kwargs.is_empty() {
-                return Err(vm.new_type_error(format!(
-                    "ImportError() takes at most 3 keyword arguments ({} given)",
-                    args.kwargs.len()
-                )));
+                // CPython checks the keyword count limit first: when more
+                // than 3 kwargs are passed (including valid ones), it gives
+                // "takes at most 3 keyword arguments" before checking names.
+                if args.kwargs.len() > 3 {
+                    return Err(vm.new_type_error(format!(
+                        "ImportError() takes at most 3 keyword arguments ({} given)",
+                        args.kwargs.len()
+                    )));
+                }
+                let bad = kwargs.keys().next().unwrap();
+                let s = match bad.as_str() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return Err(vm.new_type_error(
+                            "invalid keyword argument for ImportError()".to_owned(),
+                        ))
+                    }
+                };
+                if !crate::function::is_python_identifier(s)
+                    || args.has_nonexact_str_keys
+                {
+                    return Err(vm.new_type_error(
+                        "invalid keyword argument for ImportError()".to_owned(),
+                    ));
+                }
+                let mut msg = format!(
+                    "ImportError() got an unexpected keyword argument '{}'",
+                    s
+                );
+                if kwargs.len() == 1
+                    && let Some(suggestion) = crate::utils::suggest_keyword(
+                        s,
+                        ["name", "path", "name_from"].iter().copied(),
+                    )
+                {
+                    msg.push_str(&format!(" Did you mean '{suggestion}'?"));
+                }
+                return Err(vm.new_type_error(msg));
             }
 
             if let Some(name) = name {

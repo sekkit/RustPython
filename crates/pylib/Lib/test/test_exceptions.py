@@ -2055,7 +2055,6 @@ class AttributeErrorTests(unittest.TestCase):
 
 class ImportErrorTests(unittest.TestCase):
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_attributes(self):
         # Setting 'name' and 'path' should not be a problem.
         exc = ImportError('test')
