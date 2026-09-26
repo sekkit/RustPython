@@ -10314,10 +10314,35 @@ impl ExecutingFrame<'_> {
                     | PyMethodFlags::NOARGS
                     | PyMethodFlags::O
                     | PyMethodFlags::KEYWORDS);
+            // Mirror the dedicated `len`/`isinstance` arms that the generic
+            // native branch below selects: without these checks the plain
+            // FASTCALL/O specializations would shadow them for every
+            // unbound builtin call site.
             let new_op = if call_conv == PyMethodFlags::O && nargs == 1 {
-                Some(Instruction::CallBuiltinO)
+                if native.zelf.is_none()
+                    && vm
+                        .callable_cache
+                        .len
+                        .as_ref()
+                        .is_some_and(|len_callable| callable.is(len_callable))
+                {
+                    Some(Instruction::CallLen)
+                } else {
+                    Some(Instruction::CallBuiltinO)
+                }
             } else if call_conv == PyMethodFlags::FASTCALL {
-                Some(Instruction::CallBuiltinFast)
+                if native.zelf.is_none()
+                    && nargs == 2
+                    && vm
+                        .callable_cache
+                        .isinstance
+                        .as_ref()
+                        .is_some_and(|isinstance_callable| callable.is(isinstance_callable))
+                {
+                    Some(Instruction::CallIsinstance)
+                } else {
+                    Some(Instruction::CallBuiltinFast)
+                }
             } else if call_conv == (PyMethodFlags::FASTCALL | PyMethodFlags::KEYWORDS) {
                 Some(Instruction::CallBuiltinFastWithKeywords)
             } else {
