@@ -594,17 +594,6 @@ fn do_suspend(stw: &super::StopTheWorldState) {
     });
 }
 
-#[cfg(feature = "threading")]
-#[inline]
-#[must_use]
-pub fn stop_requested_for_current_thread() -> bool {
-    CURRENT_THREAD_SLOT.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .is_some_and(|s| s.stop_requested.load(Ordering::Relaxed))
-    })
-}
-
 /// Whether the QSBR subsystem asked this thread to pass a checkpoint.
 /// A missed or racing read of this flag is harmless: the pending
 /// retirement is still processed at the next checkpoint or by the GC

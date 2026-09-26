@@ -28,6 +28,12 @@ const QSBR_BIT: u8 = 1 << 1;
 /// allocation that tripped the threshold.
 #[cfg(feature = "threading")]
 const GC_BIT: u8 = 1 << 2;
+/// A stop-the-world request is in flight. Set for the whole stop->start span
+/// so a thread holding a per-thread `stop_requested` flag reaches
+/// `check_signals` promptly; this keeps the per-instruction eval-breaker
+/// check a single relaxed load of the shared word.
+#[cfg(feature = "threading")]
+const STOP_BIT: u8 = 1 << 3;
 
 #[expect(
     clippy::declare_interior_mutable_const,
@@ -147,6 +153,18 @@ pub(crate) fn set_qsbr_bit() {
 #[cfg(feature = "threading")]
 pub(crate) fn clear_qsbr_bit() {
     EVAL_BREAKER.fetch_and(!QSBR_BIT, Ordering::Release);
+}
+
+/// Mark a stop-the-world span as in flight (see `STOP_BIT`).
+#[cfg(feature = "threading")]
+pub(crate) fn set_stop_bit() {
+    EVAL_BREAKER.fetch_or(STOP_BIT, Ordering::Release);
+}
+
+/// Clear the stop-the-world bit once every non-requester thread resumed.
+#[cfg(feature = "threading")]
+pub(crate) fn clear_stop_bit() {
+    EVAL_BREAKER.fetch_and(!STOP_BIT, Ordering::Release);
 }
 
 #[cfg(feature = "threading")]

@@ -290,6 +290,10 @@ impl StopTheWorldState {
     /// stop countdown reached zero after parking detached threads.
     fn park_detached_threads(&self, vm: &VirtualMachine) -> bool {
         use thread::{THREAD_ATTACHED, THREAD_DETACHED, THREAD_SUSPENDED};
+        // Publish the stop-the-world request in the shared eval-breaker word
+        // before any per-thread stop flag, so every attached thread reaches
+        // `check_signals` and self-suspends.
+        crate::signal::set_stop_bit();
         let requester = self.requester.load(Ordering::Relaxed);
         let registry = vm.state.thread_frames.lock();
         let mut attached_seen = 0u64;
@@ -495,6 +499,10 @@ impl StopTheWorldState {
         // thread-slot initialization.
         self.requested.store(false, Ordering::Release);
         self.world_stopped.store(false, Ordering::Release);
+        // The stop->start span is over: drop the shared stop bit before the
+        // suspended threads are woken (their per-thread flags are cleared
+        // below).
+        crate::signal::clear_stop_bit();
 
         #[expect(
             clippy::iter_over_hash_type,
@@ -532,6 +540,9 @@ impl StopTheWorldState {
     pub fn reset_after_fork(&self) {
         self.requested.store(false, Ordering::Relaxed);
         self.world_stopped.store(false, Ordering::Relaxed);
+        // The child inherits the parent's eval-breaker word; only one thread
+        // survives, so no stop request can be outstanding.
+        crate::signal::clear_stop_bit();
         self.requester.store(0, Ordering::Relaxed);
         self.thread_countdown.store(0, Ordering::Relaxed);
         // The surviving child thread inherited the exclusion taken by the
@@ -2771,22 +2782,23 @@ impl VirtualMachine {
         self.get_method(obj, method_name)
     }
 
+    /// Checked once per bytecode instruction, so the common case must stay a
+    /// single relaxed load.
+    ///
+    /// Signal, scheduled-GC, QSBR and stop-the-world bits share one word.
+    /// Stop-the-world sets `STOP_BIT` for the whole stop->start span while the
+    /// per-thread `stop_requested` flags are set, so a tripped word routes the
+    /// thread into `check_signals`, which parks it when its own flag is set;
+    /// no separate per-thread TLS check is needed here.
     #[inline]
     pub(crate) fn eval_breaker_tripped(&self) -> bool {
-        #[cfg(feature = "threading")]
-        if self.state.finalizing.load(Ordering::Relaxed) && !self.is_main_thread() {
-            return true;
-        }
-
-        #[cfg(feature = "threading")]
-        if thread::stop_requested_for_current_thread() {
-            return true;
-        }
-
-        // Signal and QSBR bits share one word: a single relaxed load per
-        // instruction covers both.
         #[cfg(not(target_arch = "wasm32"))]
         if crate::signal::eval_breaker_pending() {
+            return true;
+        }
+
+        #[cfg(feature = "threading")]
+        if self.state.finalizing.load(Ordering::Relaxed) && !self.is_main_thread() {
             return true;
         }
 
