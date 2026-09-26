@@ -2972,10 +2972,13 @@ impl ExecutingFrame<'_> {
         // Execute until return or exception:
         let mut arg_state = bytecode::OpArgState::default();
         loop {
-            // Single RMW advances lasti and yields the executing instruction's
-            // index — replaces the previous load/increment-store/re-load
-            // triple (3 atomic ops -> 1).
-            let idx = self.lasti.fetch_add(1, atomic::Ordering::Relaxed) as usize;
+            // Publish `lasti = idx + 1` (the index of the instruction being
+            // executed, CPython's `prev_instr` convention). Only the owning
+            // thread writes `lasti`, so a relaxed load+store pair keeps the
+            // same observable value while avoiding a locked RMW on every
+            // single instruction.
+            let idx = self.lasti.load(atomic::Ordering::Relaxed) as usize;
+            self.lasti.store((idx + 1) as u32, atomic::Ordering::Relaxed);
 
             // Fire 'line' trace event when line number changes.
             // Only fire if this frame has a per-frame trace function set
