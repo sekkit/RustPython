@@ -606,8 +606,14 @@ impl PyBaseException {
         self.args.read().clone()
     }
 
-    #[pygetset(setter)]
-    fn set_args(&self, args: ArgIterable, vm: &VirtualMachine) -> PyResult<()> {
+    #[pygetset(name = "args", setter)]
+    fn args_setter(&self, args: PySetterValue<ArgIterable>, vm: &VirtualMachine) -> PyResult<()> {
+        let args = match args {
+            PySetterValue::Delete => {
+                return Err(vm.new_type_error("args may not be deleted"));
+            }
+            PySetterValue::Assign(iter) => iter,
+        };
         let args = args.iter(vm)?.collect::<PyResult<Vec<_>>>()?;
         *self.args.write() = PyTuple::new_ref(args, &vm.ctx);
         Ok(())
@@ -618,7 +624,17 @@ impl PyBaseException {
         self.traceback.read().clone()
     }
 
-    #[pygetset(setter)]
+    #[pygetset(name = "__traceback__", setter)]
+    fn traceback_setter(&self, value: PySetterValue<PyObjectRef>, vm: &VirtualMachine) -> PyResult<()> {
+        let value = match value {
+            PySetterValue::Delete => {
+                return Err(vm.new_type_error("__traceback__ may not be deleted"));
+            }
+            PySetterValue::Assign(obj) => obj,
+        };
+        self.set___traceback__(value, vm)
+    }
+
     pub fn set___traceback__(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
         let traceback = if vm.is_none(&value) {
             None
@@ -644,7 +660,32 @@ impl PyBaseException {
         self.cause.read().clone()
     }
 
-    #[pygetset(setter)]
+    #[pygetset(name = "__cause__", setter)]
+    fn cause_setter(&self, value: PySetterValue<PyObjectRef>, vm: &VirtualMachine) -> PyResult<()> {
+        let cause = match value {
+            PySetterValue::Delete => {
+                return Err(vm.new_type_error("__cause__ may not be deleted"));
+            }
+            PySetterValue::Assign(obj) => {
+                if vm.is_none(&obj) {
+                    None
+                } else {
+                    match obj.downcast::<PyBaseException>() {
+                        Ok(exc) => Some(exc),
+                        Err(_) => {
+                            return Err(vm.new_type_error(
+                                "exception cause must be None or derive from BaseException"
+                            ));
+                        }
+                    }
+                }
+            }
+        };
+        self.set_suppress_context(true);
+        *self.cause.write() = cause;
+        Ok(())
+    }
+
     pub fn set___cause__(&self, cause: Option<PyRef<Self>>) {
         let mut c = self.cause.write();
         self.set_suppress_context(true);
@@ -656,7 +697,31 @@ impl PyBaseException {
         self.context.read().clone()
     }
 
-    #[pygetset(setter)]
+    #[pygetset(name = "__context__", setter)]
+    fn context_setter(&self, value: PySetterValue<PyObjectRef>, vm: &VirtualMachine) -> PyResult<()> {
+        let context = match value {
+            PySetterValue::Delete => {
+                return Err(vm.new_type_error("__context__ may not be deleted"));
+            }
+            PySetterValue::Assign(obj) => {
+                if vm.is_none(&obj) {
+                    None
+                } else {
+                    match obj.downcast::<PyBaseException>() {
+                        Ok(exc) => Some(exc),
+                        Err(_) => {
+                            return Err(vm.new_type_error(
+                                "exception context must be None or derive from BaseException"
+                            ));
+                        }
+                    }
+                }
+            }
+        };
+        *self.context.write() = context;
+        Ok(())
+    }
+
     pub fn set___context__(&self, context: Option<PyRef<Self>>) {
         *self.context.write() = context;
     }
@@ -3124,7 +3189,7 @@ pub fn exception_group_match(
                 && let Some(tb) = exc.__traceback__()
                 && let Ok(wrapped_exc) = wrapped.clone().downcast::<types::PyBaseException>()
             {
-                let _ = wrapped_exc.set___traceback__(tb.into(), vm);
+                wrapped_exc.set_traceback_typed(Some(tb));
             }
             wrapped
         };

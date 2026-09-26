@@ -661,7 +661,6 @@ class ExceptionTests(unittest.TestCase):
         else:
             self.fail("No exception raised")
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_invalid_setattr(self):
         TE = TypeError
         exc = Exception()
@@ -674,7 +673,6 @@ class ExceptionTests(unittest.TestCase):
         msg = "exception context must be None or derive from BaseException"
         self.assertRaisesRegex(TE, msg, setattr, exc, '__context__', 1)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON
     def test_invalid_delattr(self):
         TE = TypeError
         try:
