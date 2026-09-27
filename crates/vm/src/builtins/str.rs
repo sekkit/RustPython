@@ -1753,8 +1753,15 @@ impl PyRef<PyStr> {
         let mut s = Wtf8Buf::with_capacity(self.byte_len() + other.len());
         s.push_wtf8(self.as_ref());
         s.push_wtf8(other);
-        if self.as_object().strong_count() == 1 {
-            // SAFETY: strong_count()==1 guarantees unique ownership of this PyStr.
+        if self.as_object().strong_count() == 1
+            && !self.as_object().rc_is_leaked()
+            && !self.as_object().rc_is_published()
+        {
+            // SAFETY: strong_count()==1 guarantees unique ownership of this PyStr;
+            // a leaked (interned/cached) or published object can be aliased by
+            // callers the count does not track (immortal objects never bump it,
+            // and published payloads are read by lock-free caches), so those fall
+            // through to the fresh-allocation path below.
             // Mutating payload in place preserves semantics while avoiding PyObject reallocation.
             unsafe {
                 let payload = self.payload() as *const PyStr as *mut PyStr;

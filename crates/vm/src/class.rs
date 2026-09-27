@@ -1,7 +1,7 @@
 //! Utilities to define a new Python class
 
 use crate::{
-    PyPayload,
+    AsObject, PyPayload,
     builtins::{PyBaseObject, PyType, PyTypeRef, descriptor::PyWrapper},
     function::PyMethodDef,
     object::Py,
@@ -91,6 +91,7 @@ pub trait StaticType {
 
     #[must_use]
     fn init_manually(typ: PyTypeRef) -> &'static Py<PyType> {
+        mark_static_type_immortal(&typ);
         let cell = Self::static_cell();
         cell.set(typ)
             .unwrap_or_else(|_| panic!("double initialization from init_manually"));
@@ -103,6 +104,7 @@ pub trait StaticType {
         Self: PyClassImpl,
     {
         let typ = Self::create_static_type();
+        mark_static_type_immortal(&typ);
         let cell = Self::static_cell();
         cell.set(typ)
             .unwrap_or_else(|_| panic!("double initialization of {}", Self::NAME));
@@ -122,6 +124,20 @@ pub trait StaticType {
         )
         .unwrap()
     }
+}
+
+/// Static builtin types are immortal: they are installed into `'static`
+/// cells and never dropped, so freezing their reference count turns every
+/// later clone/drop into a no-op instead of a locked read-modify-write on
+/// a cache line shared by every instance allocation of that type
+/// (`PyPayload::into_ref` clones the class on each allocation).
+///
+/// CPython applies the same treatment to its static types.
+#[inline]
+fn mark_static_type_immortal(typ: &PyTypeRef) {
+    // SAFETY: the caller installs `typ` into a `'static` cell, so it is
+    // never deallocated; the leaked flag encodes exactly that lifetime.
+    unsafe { typ.as_object().mark_intern() };
 }
 
 pub trait PyClassDef {

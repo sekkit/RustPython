@@ -571,7 +571,18 @@ impl GcState {
         )]
         for &ptr in &collecting {
             let obj = unsafe { ptr.0.as_ref() };
-            gc_refs.insert(ptr, obj.strong_count());
+            // Immortal (leaked/interned) objects are process-lifetime roots:
+            // their reference count is frozen, so it no longer tracks the real
+            // number of references and the subtraction in step 3 could
+            // otherwise classify them as garbage. Pin them with an
+            // unreachable-high gc_refs so they (and everything they reference)
+            // always survive.
+            let refs = if obj.rc_is_leaked() {
+                usize::MAX
+            } else {
+                obj.strong_count()
+            };
+            gc_refs.insert(ptr, refs);
         }
 
         // Step 3: Subtract internal references

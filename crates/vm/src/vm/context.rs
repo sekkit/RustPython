@@ -312,23 +312,35 @@ impl Context {
             PyRef::new_ref(payload, cls.to_owned(), None)
         }
 
-        let none = create_object(PyNone, PyNone::static_type());
-        let ellipsis = create_object(PyEllipsis, PyEllipsis::static_type());
-        let not_implemented = create_object(PyNotImplemented, PyNotImplemented::static_type());
+        /// Freeze the reference count of a `Context`-owned singleton.
+        ///
+        /// These objects live as long as the process, so like CPython's
+        /// immortal objects (PEP 683) their clones and drops become no-ops
+        /// instead of locked read-modify-writes on a cache line shared by
+        /// every user. (`sys.getrefcount` then also reports a stable
+        /// value.) Only non-string objects are marked here: for strings the
+        /// same leaked bit doubles as the interning marker.
+        ///
+        /// SAFETY: the `Context` is never dropped, so the object is never
+        /// deallocated.
+        #[inline]
+        fn immortalize<T: PyObjectPayload>(obj: PyRef<T>) -> PyRef<T> {
+            use crate::AsObject as _;
+            unsafe { obj.as_object().mark_intern() };
+            obj
+        }
 
-        let typing_no_default = create_object(
+        let none = immortalize(create_object(PyNone, PyNone::static_type()));
+        let ellipsis = immortalize(create_object(PyEllipsis, PyEllipsis::static_type()));
+        let not_implemented = immortalize(create_object(PyNotImplemented, PyNotImplemented::static_type()));
+
+        let typing_no_default = immortalize(create_object(
             crate::stdlib::_typing::NoDefault,
             crate::stdlib::_typing::NoDefault::static_type(),
-        );
+        ));
 
         let int_cache_pool = Self::INT_CACHE_POOL_RANGE
-            .map(|v| {
-                PyRef::new_ref(
-                    PyInt::from(BigInt::from(v)),
-                    types.int_type.to_owned(),
-                    None,
-                )
-            })
+            .map(|v| immortalize(create_object(PyInt::from(BigInt::from(v)), types.int_type)))
             .collect();
 
         let latin1_char_cache = (u8::MIN..=u8::MAX)
@@ -337,8 +349,8 @@ impl Context {
 
         let ascii_char_cache = latin1_char_cache[..128].to_vec();
 
-        let true_value = create_object(PyBool(PyInt::from(1)), types.bool_type);
-        let false_value = create_object(PyBool(PyInt::from(0)), types.bool_type);
+        let true_value = immortalize(create_object(PyBool(PyInt::from(1)), types.bool_type));
+        let false_value = immortalize(create_object(PyBool(PyInt::from(0)), types.bool_type));
 
         let empty_tuple = create_object(
             PyTuple::new_unchecked(Vec::new().into_boxed_slice()),
