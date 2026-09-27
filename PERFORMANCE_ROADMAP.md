@@ -257,6 +257,7 @@ itself now faster than CPython), scanstring ASCII byte-count shortcut.
 | Vec preallocation heuristic | Over-allocation for nested inputs |
 | int_lt i64 comparison | Malachite BigInt cmp already optimal |
 | Instance allocation pool | GC interaction crash (ObjExt write during pop) |
+| Eval-breaker poll gating (CPython HAS_EVAL_BREAK set) | 8% slower (2.677x -> 2.890x): the index+branch gate costs more than the 3-instruction breaker check it replaces. Related: the poll must sit *after* the flag-bearing instruction, or a signal raised during a call surfaces past the end of `with`/`try` bodies (test_threading.InterruptMainTests) |
 | Tail-call optimization | Known bug, crashes when enabled |
 
 ### Remaining structural gaps (require major engineering)
