@@ -854,30 +854,27 @@ struct SuspendedFrame {
 /// Owned references for a suspended frame, stored inline.
 ///
 /// A tail call pushes at most two refs into `vm.pending_tailcall_refs`
-/// (the callable, plus the bound function for bound-method calls), so the
-/// shared buffer is drained into two inline slots with no heap allocation
-/// per call. `spill` only exists as a safety net should a future push
-/// site exceed the inline capacity.
+/// (the callable, plus the bound function for bound-method calls), and
+/// both push sites are immediately followed by `set_pending_tailcall`, so
+/// the shared buffer never holds more than two entries when it is
+/// drained. Keeping them inline leaves `SuspendedFrame` small and
+/// allocation-free; the pops leave the shared buffer's allocation in
+/// place for reuse.
 struct OwnedRefs {
     inline: [Option<PyObjectRef>; 2],
-    spill: Option<Vec<PyObjectRef>>,
 }
 
 impl OwnedRefs {
-    /// Take everything currently in `vm.pending_tailcall_refs`,
-    /// leaving that buffer's allocation in place for reuse.
     fn drain_from(vm: &VirtualMachine) -> Self {
         let shared = unsafe { &mut *vm.pending_tailcall_refs.get() };
-        let mut inline: [Option<PyObjectRef>; 2] = [None, None];
-        let mut spill: Option<Vec<PyObjectRef>> = None;
-        let mut it = shared.drain(..);
-        for slot in inline.iter_mut() {
-            *slot = it.next();
-        }
-        for r in it {
-            spill.get_or_insert_with(Vec::new).push(r);
-        }
-        Self { inline, spill }
+        let inline = [shared.pop(), shared.pop()];
+        // Drained before it can grow past the inline capacity; assert
+        // rather than silently leaving refs behind.
+        assert!(
+            shared.is_empty(),
+            "pending_tailcall_refs exceeded the two-ref inline capacity"
+        );
+        Self { inline }
     }
 }
 impl VirtualMachine {
