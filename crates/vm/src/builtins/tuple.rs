@@ -25,7 +25,7 @@ use crate::{
     vm::VirtualMachine,
 };
 use alloc::fmt;
-use core::cell::{Cell, UnsafeCell};
+use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 
 #[pyclass(module = false, name = "tuple", traverse = "manual")]
@@ -107,8 +107,7 @@ thread_local! {
     // dropped and replaced on reuse), so husks are interchangeable.
     // freelist_push must not read the payload — it runs after tp_clear,
     // which has already emptied `elements`.
-    static TUPLE_FREELIST: Cell<crate::object::FreeList<PyTuple>> =
-        const { Cell::new(crate::object::FreeList::new()) };
+    static TUPLE_FREELIST: crate::object::FreeList<PyTuple> = const { crate::object::FreeList::new() };
 }
 
 impl PyPayload for PyTuple {
@@ -122,32 +121,12 @@ impl PyPayload for PyTuple {
 
     #[inline]
     unsafe fn freelist_push(obj: *mut PyObject) -> bool {
-        TUPLE_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let stored = if list.len() < Self::MAX_FREELIST {
-                    list.push(obj);
-                    true
-                } else {
-                    false
-                };
-                fl.set(list);
-                stored
-            })
-            .unwrap_or(false)
+        TUPLE_FREELIST.try_with(|fl| unsafe { fl.push(obj) }).unwrap_or(false)
     }
 
     #[inline]
     unsafe fn freelist_pop(_payload: &Self) -> Option<NonNull<PyObject>> {
-        TUPLE_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let result = list.pop().map(|p| unsafe { NonNull::new_unchecked(p) });
-                fl.set(list);
-                result
-            })
-            .ok()
-            .flatten()
+        TUPLE_FREELIST.try_with(|fl| unsafe { fl.pop() }).ok().flatten()
     }
 }
 

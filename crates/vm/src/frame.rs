@@ -1373,8 +1373,8 @@ thread_local! {
     /// (`iframe == None`) whose child references were already released.
     /// PyInner<FrameObject> is fixed-size (localsplus storage is out-of-line),
     /// so a single bucket suffices.
-    static FRAME_FREELIST: core::cell::Cell<crate::object::FreeList<FrameObject>> =
-        const { core::cell::Cell::new(crate::object::FreeList::new()) };
+    static FRAME_FREELIST: crate::object::FreeList<FrameObject> =
+        const { crate::object::FreeList::new() };
 }
 
 impl PyPayload for FrameObject {
@@ -1393,31 +1393,13 @@ impl PyPayload for FrameObject {
     #[inline]
     unsafe fn freelist_push(obj: *mut PyObject) -> bool {
         FRAME_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let stored = if list.len() < Self::MAX_FREELIST {
-                    list.push(obj);
-                    true
-                } else {
-                    false
-                };
-                fl.set(list);
-                stored
-            })
+            .try_with(|fl| unsafe { fl.push(obj) })
             .unwrap_or(false)
     }
 
     #[inline]
     unsafe fn freelist_pop(_payload: &Self) -> Option<NonNull<PyObject>> {
-        FRAME_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let result = list.pop().map(|p| unsafe { NonNull::new_unchecked(p) });
-                fl.set(list);
-                result
-            })
-            .ok()
-            .flatten()
+        FRAME_FREELIST.try_with(|fl| unsafe { fl.pop() }).ok().flatten()
     }
 }
 
@@ -2980,60 +2962,44 @@ impl ExecutingFrame<'_> {
             let idx = self.lasti.load(atomic::Ordering::Relaxed) as usize;
             self.lasti.store((idx + 1) as u32, atomic::Ordering::Relaxed);
 
-            // Fire 'line' trace event when line number changes.
-            // Only fire if this frame has a per-frame trace function set
-            // (frames entered before sys.settrace() have trace=None).
-            // Skip RESUME – it should not generate user-visible line events.
-            if vm.use_tracing.get()
-                && self.trace_is_set(vm)
-                && !matches!(
-                    self.code.instructions.read_op(idx),
-                    Instruction::Resume { .. } | Instruction::InstrumentedResume
-                )
-                && let Some((loc, _)) = self.code.locations.get(idx)
-                && loc.line.get() as u32 != self.prev_line.get()
-            {
-                self.prev_line.set(loc.line.get() as u32);
-                vm.trace_event(crate::protocol::TraceEvent::Line, None)?;
-                // Trace callback may have changed lasti via set_f_lineno.
-                // Re-read and restart the loop from the new position.
-                if self.lasti() != (idx as u32 + 1) {
-                    // set_f_lineno defers stack unwinding because we hold
-                    // the state mutex.  Perform it now.
-                    let pops = self.pending_stack_pops();
-                    if pops > 0 {
-                        let from_stack = self.pending_unwind_from_stack();
-                        self.unwind_stack_for_lineno(pops as usize, from_stack, vm);
-                        self.set_pending_stack_pops(0);
-                    }
-                    arg_state.reset();
-                    continue;
-                }
-            }
             let op = self.code.instructions.read_op(idx);
             let arg = arg_state.extend(self.code.instructions.read_arg(idx));
             let mut do_extend_arg = false;
 
-            // Always update prev_line so f_lineno returns the correct line
-            // even when the frame is observed mid-call (e.g. sys._getframe,
-            // warnings.warn). The lookup is a simple array index, so the
-            // cost is negligible.
-            // Update prev_line for f_lineno. Skip RESUME, ExtendedArg,
-            // and InstrumentedLine (it manages prev_line in its own handler;
-            // updating here first would defeat LINE de-duplication).
-            // Other instrumented opcodes update prev_line via
-            // execute_instrumented.
-            // prev_line is NOT eagerly updated here anymore: f_lineno()
-            // computes the line lazily from lasti (matching CPython 3.12+,
-            // which derives f_lineno from the instruction position instead
-            // of maintaining a per-instruction shadow field). Removing this
-            // per-instruction Opcode conversion + locations table lookup +
-            // Cell write saves measurable dispatch overhead on every
-            // bytecode executed.
-            // prev_line updates happen only under active tracing (LINE
-            // event de-duplication below and in instrumented handlers).
-
+            // Both per-instruction trace hooks share one `use_tracing`
+            // load; without a tracer (the normal case) a single test
+            // skips the whole block.
             if vm.use_tracing.get() {
+                // Fire 'line' trace event when line number changes.
+                // Only fire if this frame has a per-frame trace function set
+                // (frames entered before sys.settrace() have trace=None).
+                // Skip RESUME: it should not generate user-visible line events.
+                if self.trace_is_set(vm)
+                    && !matches!(
+                    op,
+                    Instruction::Resume { .. } | Instruction::InstrumentedResume
+                )
+                    && let Some((loc, _)) = self.code.locations.get(idx)
+                    && loc.line.get() as u32 != self.prev_line.get()
+                {
+                    self.prev_line.set(loc.line.get() as u32);
+                    vm.trace_event(crate::protocol::TraceEvent::Line, None)?;
+                    // Trace callback may have changed lasti via set_f_lineno.
+                    // Re-read and restart the loop from the new position.
+                    if self.lasti() != (idx as u32 + 1) {
+                        // set_f_lineno defers stack unwinding because we hold
+                        // the state mutex.  Perform it now.
+                        let pops = self.pending_stack_pops();
+                        if pops > 0 {
+                            let from_stack = self.pending_unwind_from_stack();
+                            self.unwind_stack_for_lineno(pops as usize, from_stack, vm);
+                            self.set_pending_stack_pops(0);
+                        }
+                        arg_state.reset();
+                        continue;
+                    }
+                }
+
                 // Fire 'opcode' trace event for sys.settrace when f_trace_opcodes
                 // is set. Skip RESUME and ExtendedArg
                 // (_Py_call_instrumentation_instruction).

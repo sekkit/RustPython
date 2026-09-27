@@ -15,7 +15,6 @@ use crate::{
         Representable, SelfIter,
     },
 };
-use core::cell::Cell;
 use core::cmp::max;
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
@@ -71,7 +70,7 @@ pub struct PyRange {
 
 // spell-checker:ignore MAXFREELIST
 thread_local! {
-    static RANGE_FREELIST: Cell<crate::object::FreeList<PyRange>> = const { Cell::new(crate::object::FreeList::new()) };
+    static RANGE_FREELIST: crate::object::FreeList<PyRange> = const { crate::object::FreeList::new() };
 }
 
 impl PyPayload for PyRange {
@@ -85,32 +84,12 @@ impl PyPayload for PyRange {
 
     #[inline]
     unsafe fn freelist_push(obj: *mut PyObject) -> bool {
-        RANGE_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let stored = if list.len() < Self::MAX_FREELIST {
-                    list.push(obj);
-                    true
-                } else {
-                    false
-                };
-                fl.set(list);
-                stored
-            })
-            .unwrap_or(false)
+        RANGE_FREELIST.try_with(|fl| unsafe { fl.push(obj) }).unwrap_or(false)
     }
 
     #[inline]
     unsafe fn freelist_pop(_payload: &Self) -> Option<NonNull<PyObject>> {
-        RANGE_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let result = list.pop().map(|p| unsafe { NonNull::new_unchecked(p) });
-                fl.set(list);
-                result
-            })
-            .ok()
-            .flatten()
+        RANGE_FREELIST.try_with(|fl| unsafe { fl.pop() }).ok().flatten()
     }
 }
 

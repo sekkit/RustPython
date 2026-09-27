@@ -22,7 +22,6 @@ use crate::{
     vm::VirtualMachine,
 };
 use alloc::fmt;
-use core::cell::Cell;
 use core::ptr::NonNull;
 use rustpython_common::lock::PyMutex;
 use rustpython_common::wtf8::Wtf8Buf;
@@ -59,7 +58,7 @@ impl fmt::Debug for PyDict {
 }
 
 thread_local! {
-    static DICT_FREELIST: Cell<crate::object::FreeList<PyDict>> = const { Cell::new(crate::object::FreeList::new()) };
+    static DICT_FREELIST: crate::object::FreeList<PyDict> = const { crate::object::FreeList::new() };
 }
 
 impl PyPayload for PyDict {
@@ -73,32 +72,12 @@ impl PyPayload for PyDict {
 
     #[inline]
     unsafe fn freelist_push(obj: *mut PyObject) -> bool {
-        DICT_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let stored = if list.len() < Self::MAX_FREELIST {
-                    list.push(obj);
-                    true
-                } else {
-                    false
-                };
-                fl.set(list);
-                stored
-            })
-            .unwrap_or(false)
+        DICT_FREELIST.try_with(|fl| unsafe { fl.push(obj) }).unwrap_or(false)
     }
 
     #[inline]
     unsafe fn freelist_pop(_payload: &Self) -> Option<NonNull<PyObject>> {
-        DICT_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let result = list.pop().map(|p| unsafe { NonNull::new_unchecked(p) });
-                fl.set(list);
-                result
-            })
-            .ok()
-            .flatten()
+        DICT_FREELIST.try_with(|fl| unsafe { fl.pop() }).ok().flatten()
     }
 }
 

@@ -28,7 +28,6 @@ use crate::{
 use rustpython_common::wtf8::Wtf8Buf;
 
 use alloc::fmt;
-use core::cell::Cell;
 use core::ops::DerefMut;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -88,7 +87,7 @@ unsafe impl Traverse for PyList {
 }
 
 thread_local! {
-    static LIST_FREELIST: Cell<crate::object::FreeList<PyList>> = const { Cell::new(crate::object::FreeList::new()) };
+    static LIST_FREELIST: crate::object::FreeList<PyList> = const { crate::object::FreeList::new() };
 }
 
 impl PyPayload for PyList {
@@ -102,32 +101,12 @@ impl PyPayload for PyList {
 
     #[inline]
     unsafe fn freelist_push(obj: *mut PyObject) -> bool {
-        LIST_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let stored = if list.len() < Self::MAX_FREELIST {
-                    list.push(obj);
-                    true
-                } else {
-                    false
-                };
-                fl.set(list);
-                stored
-            })
-            .unwrap_or(false)
+        LIST_FREELIST.try_with(|fl| unsafe { fl.push(obj) }).unwrap_or(false)
     }
 
     #[inline]
     unsafe fn freelist_pop(_payload: &Self) -> Option<NonNull<PyObject>> {
-        LIST_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let result = list.pop().map(|p| unsafe { NonNull::new_unchecked(p) });
-                fl.set(list);
-                result
-            })
-            .ok()
-            .flatten()
+        LIST_FREELIST.try_with(|fl| unsafe { fl.pop() }).ok().flatten()
     }
 }
 

@@ -1442,20 +1442,55 @@ impl<T: PyPayload + core::fmt::Debug> PyInner<T> {
 
 /// Thread-local freelist storage for reusing object allocations.
 ///
-/// Wraps a `Vec<*mut PyObject>`. On thread teardown, `Drop` frees raw
-/// `PyInner<T>` allocations without running payload destructors to avoid
-/// accessing already-destroyed thread-local storage (GC state, other freelists).
+/// Wraps a `Vec<*mut PyObject>` behind an `UnsafeCell`. The list is
+/// only ever touched from its owning thread (it lives in a
+/// `thread_local!`), and neither `push` nor `pop` can re-enter user
+/// code, so in-place access is sound and avoids the header moves a
+/// `Cell::take`/`set` round trip would cost on every allocation.
+///
+/// On thread teardown, `Drop` frees raw `PyInner<T>` allocations
+/// without running payload destructors to avoid accessing
+/// already-destroyed thread-local storage (GC state, other freelists).
 pub(crate) struct FreeList<T: PyPayload> {
-    items: Vec<*mut PyObject>,
+    items: core::cell::UnsafeCell<Vec<*mut PyObject>>,
     _marker: core::marker::PhantomData<T>,
 }
 
 impl<T: PyPayload> FreeList<T> {
     pub(crate) const fn new() -> Self {
         Self {
-            items: Vec::new(),
+            items: core::cell::UnsafeCell::new(Vec::new()),
             _marker: core::marker::PhantomData,
         }
+    }
+
+    /// Push a dead husk onto the list. Returns `false` when the list is full.
+    ///
+    /// # Safety
+    /// Must be called from the thread that owns this freelist, with `obj`
+    /// pointing at a valid `PyInner<T>` husk eligible for reuse.
+    #[inline]
+    pub(crate) unsafe fn push(&self, obj: *mut PyObject) -> bool {
+        // SAFETY: exclusive access from the owning thread; `Vec::push`
+        // cannot re-enter this freelist.
+        let items = unsafe { &mut *self.items.get() };
+        if items.len() < T::MAX_FREELIST {
+            items.push(obj);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Pop a husk off the list, if any.
+    ///
+    /// # Safety
+    /// Must be called from the thread that owns this freelist.
+    #[inline]
+    pub(crate) unsafe fn pop(&self) -> Option<NonNull<PyObject>> {
+        // SAFETY: see `push`.
+        let items = unsafe { &mut *self.items.get() };
+        items.pop().map(|p| unsafe { NonNull::new_unchecked(p) })
     }
 }
 
@@ -1473,7 +1508,7 @@ impl<T: PyPayload> Drop for FreeList<T> {
         // Instead, free just the raw allocation. The payload's heap fields
         // (BigInt, PyObjectRef, etc.) are leaked, but this is bounded by
         // MAX_FREELIST per type per thread.
-        for ptr in self.items.drain(..) {
+        for ptr in self.items.get_mut().drain(..) {
             unsafe {
                 // Freelist entries are exact base types allocated by
                 // `PyInner::new`, which always reserves a 32-byte GcPrefix
@@ -1490,18 +1525,6 @@ impl<T: PyPayload> Drop for FreeList<T> {
     }
 }
 
-impl<T: PyPayload> core::ops::Deref for FreeList<T> {
-    type Target = Vec<*mut PyObject>;
-    fn deref(&self) -> &Self::Target {
-        &self.items
-    }
-}
-
-impl<T: PyPayload> core::ops::DerefMut for FreeList<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.items
-    }
-}
 
 /// The `PyObjectRef` is one of the most used types. It is a reference to a
 /// python object. A single python object can have multiple references, and

@@ -843,14 +843,43 @@ struct SuspendedFrame {
     /// builtins borrowed from PyFunction) valid. Drained from
     /// `vm.pending_tailcall_refs` when the callee's TailCall is consumed.
     /// Dropped when this SuspendedFrame is popped (after callee returns/errors).
-    owned_refs: Vec<PyObjectRef>,
+    owned_refs: OwnedRefs,
     /// True for the initial frame passed into the trampoline by the caller.
     /// The caller owns the datastack allocation for the entry frame, so the
-    /// trampoline must NOT release it — only callee-allocated frames are
+    /// trampoline must NOT release it: only callee-allocated frames are
     /// released here.
     is_entry: bool,
 }
 
+/// Owned references for a suspended frame, stored inline.
+///
+/// A tail call pushes at most two refs into `vm.pending_tailcall_refs`
+/// (the callable, plus the bound function for bound-method calls), so the
+/// shared buffer is drained into two inline slots with no heap allocation
+/// per call. `spill` only exists as a safety net should a future push
+/// site exceed the inline capacity.
+struct OwnedRefs {
+    inline: [Option<PyObjectRef>; 2],
+    spill: Option<Vec<PyObjectRef>>,
+}
+
+impl OwnedRefs {
+    /// Take everything currently in `vm.pending_tailcall_refs`,
+    /// leaving that buffer's allocation in place for reuse.
+    fn drain_from(vm: &VirtualMachine) -> Self {
+        let shared = unsafe { &mut *vm.pending_tailcall_refs.get() };
+        let mut inline: [Option<PyObjectRef>; 2] = [None, None];
+        let mut spill: Option<Vec<PyObjectRef>> = None;
+        let mut it = shared.drain(..);
+        for slot in inline.iter_mut() {
+            *slot = it.next();
+        }
+        for r in it {
+            spill.get_or_insert_with(Vec::new).push(r);
+        }
+        Self { inline, spill }
+    }
+}
 impl VirtualMachine {
     fn init_callable_cache(&mut self) -> PyResult<()> {
         self.callable_cache.len = Some(self.builtins.get_attr("len", self)?);
@@ -1478,13 +1507,7 @@ impl VirtualMachine {
 
         let initial_ptr = self.take_pending_tailcall();
         // Drain the refs that keep the initial callee's raw pointers alive.
-        #[allow(
-            clippy::drain_collect,
-            reason = "`pending_tailcall_refs`'s allocation is intentionally reused"
-        )]
-        let initial_refs = unsafe { &mut *self.pending_tailcall_refs.get() }
-            .drain(..)
-            .collect();
+        let initial_refs = OwnedRefs::drain_from(self);
         frame_stack.push(SuspendedFrame {
             iframe: iframe as *mut crate::frame::InterpreterFrame,
             entry_state,
@@ -1513,13 +1536,7 @@ impl VirtualMachine {
                     let result = crate::frame::run_iframe(callee, self);
                     match result {
                         Ok(ExecutionResult::TailCall) => {
-                            #[allow(
-                                clippy::drain_collect,
-                                reason = "`pending_tailcall_refs`'s allocation is intentionally reused"
-                            )]
-                            let refs = unsafe { &mut *self.pending_tailcall_refs.get() }
-                                .drain(..)
-                                .collect();
+                            let refs = OwnedRefs::drain_from(self);
                             frame_stack.push(SuspendedFrame {
                                 iframe: callee_ptr,
                                 entry_state: callee_entry,
@@ -1567,13 +1584,7 @@ impl VirtualMachine {
                     let result = crate::frame::run_iframe(caller_iframe, self);
                     match result {
                         Ok(ExecutionResult::TailCall) => {
-                            #[allow(
-                                clippy::drain_collect,
-                                reason = "`pending_tailcall_refs`'s allocation is intentionally reused"
-                            )]
-                            let refs = unsafe { &mut *self.pending_tailcall_refs.get() }
-                                .drain(..)
-                                .collect();
+                            let refs = OwnedRefs::drain_from(self);
                             drop(_caller_refs);
                             frame_stack.push(SuspendedFrame {
                                 iframe: caller_iframe_ptr,
@@ -1632,13 +1643,7 @@ impl VirtualMachine {
                             let result = crate::frame::run_iframe(caller_iframe, self);
                             match result {
                                 Ok(ExecutionResult::TailCall) => {
-                                    #[allow(
-                                        clippy::drain_collect,
-                                        reason = "`pending_tailcall_refs`'s allocation is intentionally reused"
-                                    )]
-                                    let refs = unsafe { &mut *self.pending_tailcall_refs.get() }
-                                        .drain(..)
-                                        .collect();
+                                    let refs = OwnedRefs::drain_from(self);
                                     drop(_caller_refs);
                                     frame_stack.push(SuspendedFrame {
                                         iframe: caller_iframe_ptr,

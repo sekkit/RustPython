@@ -1,6 +1,5 @@
 // sliceobject.{h,c} in CPython
 // spell-checker:ignore sliceobject
-use core::cell::Cell;
 use core::ptr::NonNull;
 use rustpython_common::wtf8::{Wtf8Buf, wtf8_concat};
 
@@ -46,7 +45,7 @@ unsafe impl crate::object::Traverse for PySlice {
 }
 
 thread_local! {
-    static SLICE_FREELIST: Cell<crate::object::FreeList<PySlice>> = const { Cell::new(crate::object::FreeList::new()) };
+    static SLICE_FREELIST: crate::object::FreeList<PySlice> = const { crate::object::FreeList::new() };
 }
 
 impl PyPayload for PySlice {
@@ -60,32 +59,12 @@ impl PyPayload for PySlice {
 
     #[inline]
     unsafe fn freelist_push(obj: *mut PyObject) -> bool {
-        SLICE_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let stored = if list.len() < Self::MAX_FREELIST {
-                    list.push(obj);
-                    true
-                } else {
-                    false
-                };
-                fl.set(list);
-                stored
-            })
-            .unwrap_or(false)
+        SLICE_FREELIST.try_with(|fl| unsafe { fl.push(obj) }).unwrap_or(false)
     }
 
     #[inline]
     unsafe fn freelist_pop(_payload: &Self) -> Option<NonNull<PyObject>> {
-        SLICE_FREELIST
-            .try_with(|fl| {
-                let mut list = fl.take();
-                let result = list.pop().map(|p| unsafe { NonNull::new_unchecked(p) });
-                fl.set(list);
-                result
-            })
-            .ok()
-            .flatten()
+        SLICE_FREELIST.try_with(|fl| unsafe { fl.pop() }).ok().flatten()
     }
 }
 
