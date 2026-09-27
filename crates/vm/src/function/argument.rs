@@ -311,7 +311,7 @@ impl FuncArgs {
         // keys (open(file, encoding=...)) take the normal binding path and
         // let from_args/check_kwargs_empty handle the leftovers.
         if !T::parameters().is_empty() && !self.kwargs.is_empty() {
-            let display = crate::utils::current_call_name().unwrap_or_default();
+            let display = crate::utils::current_call_name(vm).unwrap_or_default();
             let all_keys_unknown = self.kwargs.keys().all(|k| match k.as_str() {
                 Ok(s) => !T::parameters().contains(&s),
                 Err(_) => true,
@@ -374,7 +374,7 @@ impl FuncArgs {
                 // Only checked on binding failure so manual FromArgs impls
                 // that consume kwargs but report no parameters are untouched.
                 if !self.kwargs.is_empty() && T::parameters().is_empty() {
-                    let display = crate::utils::current_call_name().unwrap_or_default();
+                    let display = crate::utils::current_call_name(vm).unwrap_or_default();
                     return vm.new_type_error(format!(
                         "{}() takes no keyword arguments",
                         display
@@ -406,7 +406,7 @@ impl FuncArgs {
         if self.kwargs.is_empty() {
             return None;
         }
-        let display = crate::utils::current_call_name().unwrap_or_default();
+        let display = crate::utils::current_call_name(vm).unwrap_or_default();
         // No keyword parameters at all: `f() takes no keyword arguments`.
         if parameters.is_empty() {
             return self.kwargs.keys().next().map(|_| {
@@ -493,7 +493,7 @@ impl ArgumentError {
         num_given: usize,
         vm: &VirtualMachine,
     ) -> PyBaseExceptionRef {
-        let display = crate::utils::current_call_name().unwrap_or_default();
+        let display = crate::utils::current_call_name(vm).unwrap_or_default();
         // CPython counts only external arguments in these messages; bound
         // builtin methods have an implicit `self` prepended that must be
         // excluded from BOTH the given count and the arity range

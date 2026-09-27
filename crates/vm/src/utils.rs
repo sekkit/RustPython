@@ -14,20 +14,40 @@ use crate::{
 // afterwards so nested calls report the innermost function. Plain // comments
 // (not /// doc comments) so the lint on the macro-expanded thread_local is not
 // triggered.
+//
+// The slot stores only a borrowed pointer to the callable: the display-name
+// string is built lazily, and only when an argument-binding error actually
+// needs it. Building it eagerly made every builtin call allocate one or two
+// strings (`format!`/`to_owned`) plus a `RefCell` borrow for nothing on the
+// success path. The pointer borrows the callable, which the caller owns for
+// the entire call (see `with_call_context`).
+#[derive(Clone, Copy)]
+pub(crate) enum CallContext {
+    None,
+    Obj(*const crate::PyObject),
+}
 thread_local! {
-    pub(crate) static CURRENT_CALL_NAME: core::cell::RefCell<Option<String>> =
-        core::cell::RefCell::new(None);
+    pub(crate) static CURRENT_CALL: core::cell::Cell<CallContext> =
+        const { core::cell::Cell::new(CallContext::None) };
     // Number of implicit `self` arguments prepended by bound builtin methods
     // (1) or not (0). CPython's error messages count only the *external*
     // arguments ("keys() takes no arguments (1 given)" for `{}.keys(0)`),
     // so the binding error paths subtract this offset.
     pub(crate) static CURRENT_CALL_SELF_OFFSET: core::cell::Cell<usize> =
-        core::cell::Cell::new(0);
+        const { core::cell::Cell::new(0) };
 }
 
 /// Reads the display name of the currently-running builtin call, if any.
-pub(crate) fn current_call_name() -> Option<String> {
-    CURRENT_CALL_NAME.with(|c| c.borrow().clone())
+/// Only called from error paths, so resolving the name here is free.
+pub(crate) fn current_call_name(vm: &VirtualMachine) -> Option<String> {
+    match CURRENT_CALL.with(|c| c.get()) {
+        CallContext::None => None,
+        // SAFETY: the pointer was installed by `with_call_context`, whose
+        // borrow of the callable stays live until the call returns.
+        CallContext::Obj(obj) => unsafe {
+            crate::protocol::callable_display_name(&*obj, vm)
+        },
+    }
 }
 
 /// Reads how many implicit `self` arguments the current builtin call had
@@ -36,21 +56,25 @@ pub(crate) fn current_call_self_offset() -> usize {
     CURRENT_CALL_SELF_OFFSET.with(|c| c.get())
 }
 
-/// Sets the display name and self-offset for the duration of `f` and restores
-/// the previous values afterwards (nested builtin calls override and then
-/// restore).
+/// Sets the call context for the duration of `f` and restores the previous
+/// values afterwards (nested builtin calls override and then restore).
+///
+/// `callable` is borrowed for the whole call, so the raw pointer stored in
+/// the thread-local is valid whenever `f` (or anything it calls) reads it.
 pub(crate) fn with_call_context<T>(
-    name: Option<String>,
+    callable: Option<&crate::PyObject>,
     self_offset: usize,
     f: impl FnOnce() -> T,
 ) -> T {
-    let prev_name = CURRENT_CALL_NAME.with(|c| c.borrow().clone());
-    CURRENT_CALL_NAME.with(|c| *c.borrow_mut() = name);
-    let prev_offset = CURRENT_CALL_SELF_OFFSET.with(|c| c.get());
-    CURRENT_CALL_SELF_OFFSET.with(|c| c.set(self_offset));
+    let ctx = match callable {
+        Some(obj) => CallContext::Obj(obj as *const crate::PyObject),
+        None => CallContext::None,
+    };
+    let prev = CURRENT_CALL.with(|c| c.replace(ctx));
+    let prev_offset = CURRENT_CALL_SELF_OFFSET.with(|c| c.replace(self_offset));
     let result = f();
     CURRENT_CALL_SELF_OFFSET.with(|c| c.set(prev_offset));
-    CURRENT_CALL_NAME.with(|c| *c.borrow_mut() = prev_name);
+    CURRENT_CALL.with(|c| c.set(prev));
     result
 }
 

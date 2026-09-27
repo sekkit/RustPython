@@ -1206,7 +1206,7 @@ mod builtins {
         if !args.kwargs.is_empty() {
             return Err(vm.new_type_error(format!(
                 "{}() takes at most 2 keyword arguments ({} given)",
-                crate::utils::current_call_name().unwrap_or_default(),
+                crate::utils::current_call_name(vm).unwrap_or_default(),
                 total_kwargs
             )));
         }

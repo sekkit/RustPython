@@ -1692,7 +1692,7 @@ pub(crate) fn vectorcall_function(
 
     // SLOW PATH: construct FuncArgs from owned Vec and delegate to invoke()
     let func_args = if has_kwargs {
-        FuncArgs::from_vectorcall(&args, nargs, kwnames)
+        FuncArgs::from_vectorcall_owned(args, nargs, kwnames)
     } else {
         args.truncate(nargs);
         FuncArgs::from(args)

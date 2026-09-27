@@ -352,13 +352,15 @@ fn vectorcall_native_function(
         .is_some_and(|_| !zelf.value.flags.contains(PyMethodFlags::STATIC));
 
     let func_args = if needs_self {
+        // Prepend self into the owned args vector instead of building a
+        // second Vec and cloning every value out of it. The call sites
+        // reserve one spare slot so this insert does not reallocate.
         let self_obj = zelf.zelf.as_ref().unwrap().clone();
-        let mut all_args = Vec::with_capacity(args.len() + 1);
-        all_args.push(self_obj);
-        all_args.extend(args);
-        FuncArgs::from_vectorcall(&all_args, nargs + 1, kwnames)
+        let mut args = args;
+        args.insert(0, self_obj);
+        FuncArgs::from_vectorcall_owned(args, nargs + 1, kwnames)
     } else {
-        FuncArgs::from_vectorcall(&args, nargs, kwnames)
+        FuncArgs::from_vectorcall_owned(args, nargs, kwnames)
     };
 
     (zelf.value.func)(vm, func_args)

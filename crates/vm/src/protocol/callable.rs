@@ -115,14 +115,15 @@ impl<'a> PyCallable<'a> {
 
     pub fn invoke(&self, args: impl IntoFuncArgs, vm: &VirtualMachine) -> PyResult {
         let args = args.into_args(vm);
-        // Announce the callable's display name for arg-binding error messages.
-        // Single funnel: the vectorcall fast path below also routes here for
-        // the fallback, and `builtin_call_display_name` returns None for
-        // Python functions/bound methods (their errors come from the Python
-        // call path, not FuncArgs).
-        let name = self.builtin_call_display_name(vm);
+        // Announce the callable for arg-binding error messages. Single
+        // funnel: the vectorcall fast path below also routes here for the
+        // fallback, and `call_context` returns None for Python functions/
+        // bound methods (their errors come from the Python call path, not
+        // FuncArgs). The display name itself is resolved lazily, only if an
+        // error message actually needs it.
+        let call_context = self.call_context();
         let self_offset = self.builtin_call_self_offset();
-        crate::utils::with_call_context(name, self_offset, || {
+        crate::utils::with_call_context(call_context, self_offset, || {
             if !vm.use_tracing.get() {
                 return (self.call)(self.obj, args, vm);
             }
@@ -156,9 +157,9 @@ impl<'a> PyCallable<'a> {
         vm: &VirtualMachine,
     ) -> PyResult {
         if let Some(vc) = self.vectorcall {
-            let name = self.builtin_call_display_name(vm);
+            let call_context = self.call_context();
             let self_offset = self.builtin_call_self_offset();
-            crate::utils::with_call_context(name, self_offset, || {
+            crate::utils::with_call_context(call_context, self_offset, || {
                 if !vm.use_tracing.get() {
                     return vc(self.obj, args, nargs, kwnames, vm);
                 }
@@ -181,31 +182,24 @@ impl<'a> PyCallable<'a> {
         }
     }
 
-    /// CPython-style display name of the callable, used to prefix arg-binding
-    /// error messages: native functions (module-qualified like `_struct.pack`,
-    /// class-qualified bound methods like `list.index`), types (`bool`,
-    /// `ImportError`) and method-wrappers (`__contains__`). Python functions
-    /// and Python-bound methods contribute nothing.
-    fn builtin_call_display_name(&self, vm: &VirtualMachine) -> Option<String> {
-        if let Some(f) = self.obj.downcast_ref::<PyNativeFunction>() {
-            return crate::builtins::builtin_func::call_display_name(f, vm);
-        }
-        if let Some(t) = self.obj.downcast_ref::<PyType>() {
-            return Some(t.name().to_owned());
-        }
-        if let Some(w) = self.obj.downcast_ref::<PyMethodWrapper>() {
-            return Some(w.wrapper.name.as_str().to_owned());
-        }
-        if let Some(md) = self.obj.downcast_ref::<PyMethodDescriptor>() {
-            return Some(format!("{}.{}", md.objclass.name(), md.common.name.as_str()));
-        }
-        if let Some(bm) = self.obj.downcast_ref::<PyBoundMethod>()
-            && let Some(f) = bm.function_obj().downcast_ref::<PyNativeFunction>()
+    /// Whether this callable contributes a CPython-style display name to
+    /// argument-binding error messages: native functions (module-qualified
+    /// like `_struct.pack`, class-qualified bound methods like `list.index`),
+    /// types (`bool`, `ImportError`), method-wrappers (`__contains__`), method
+    /// descriptors and bound methods of native functions. Python functions
+    /// and Python-bound methods contribute nothing. The name string itself is
+    /// built on demand by [`callable_display_name`].
+    fn call_context(&self) -> Option<&PyObject> {
+        if self.obj.downcast_ref::<PyNativeFunction>().is_some()
+            || self.obj.downcast_ref::<PyType>().is_some()
+            || self.obj.downcast_ref::<PyMethodWrapper>().is_some()
+            || self.obj.downcast_ref::<PyMethodDescriptor>().is_some()
+            || self.obj.downcast_ref::<PyBoundMethod>().is_some()
         {
-            // Bound builtin method, e.g. `[].index(x=2)` -> list.index.
-            return crate::builtins::builtin_func::call_display_name(f, vm);
+            Some(self.obj)
+        } else {
+            None
         }
-        None
     }
 
     /// How many implicit `self` arguments the bound call prepends: 1 for
@@ -259,6 +253,31 @@ impl<'a> PyCallable<'a> {
         }
         None
     }
+}
+
+/// CPython-style display name of a callable object for argument-binding error
+/// messages. See [`PyCallable::call_context`] for which callables qualify.
+/// Cold path: only reached when an error message needs the name.
+pub(crate) fn callable_display_name(obj: &PyObject, vm: &VirtualMachine) -> Option<String> {
+    if let Some(f) = obj.downcast_ref::<PyNativeFunction>() {
+        return crate::builtins::builtin_func::call_display_name(f, vm);
+    }
+    if let Some(t) = obj.downcast_ref::<PyType>() {
+        return Some(t.name().to_owned());
+    }
+    if let Some(w) = obj.downcast_ref::<PyMethodWrapper>() {
+        return Some(w.wrapper.name.as_str().to_owned());
+    }
+    if let Some(md) = obj.downcast_ref::<PyMethodDescriptor>() {
+        return Some(format!("{}.{}", md.objclass.name(), md.common.name.as_str()));
+    }
+    if let Some(bm) = obj.downcast_ref::<PyBoundMethod>()
+        && let Some(f) = bm.function_obj().downcast_ref::<PyNativeFunction>()
+    {
+        // Bound builtin method, e.g. `[].index(x=2)` -> list.index.
+        return crate::builtins::builtin_func::call_display_name(f, vm);
+    }
+    None
 }
 
 /// Trace events for sys.settrace and sys.setprofile.

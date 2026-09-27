@@ -1141,7 +1141,7 @@ mod decl {
             };
             if !args.kwargs.is_empty() {
                 let _ = args.remaining_keywords().collect::<Vec<_>>();
-                let display = crate::utils::current_call_name().unwrap_or_default();
+                let display = crate::utils::current_call_name(vm).unwrap_or_default();
                 return Err(ArgumentError::Exception(vm.new_type_error(format!(
                     "{}() takes at most 1 keyword argument ({} given)",
                     display, total_kwargs
