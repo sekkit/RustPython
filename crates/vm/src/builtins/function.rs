@@ -1337,6 +1337,14 @@ impl Constructor for PyFunction {
     }
 }
 
+thread_local! {
+    /// Dead bound-method husks. A bound method is created for every
+    /// `obj.method(...)` evaluation, so recycling the fixed-size husk
+    /// avoids a malloc/free pair per method call.
+    static BOUND_METHOD_FREELIST: crate::object::FreeList<PyBoundMethod> =
+        const { crate::object::FreeList::new() };
+}
+
 #[pyclass(module = false, name = "method", traverse)]
 #[derive(Debug)]
 pub struct PyBoundMethod {
@@ -1528,9 +1536,27 @@ impl PyBoundMethod {
 }
 
 impl PyPayload for PyBoundMethod {
+    const MAX_FREELIST: usize = 100;
+    const HAS_FREELIST: bool = true;
+
     #[inline]
     fn class(ctx: &Context) -> &'static Py<PyType> {
         ctx.types.bound_method_type
+    }
+
+    #[inline]
+    unsafe fn freelist_push(obj: *mut PyObject) -> bool {
+        BOUND_METHOD_FREELIST
+            .try_with(|fl| unsafe { fl.push(obj) })
+            .unwrap_or(false)
+    }
+
+    #[inline]
+    unsafe fn freelist_pop(_payload: &Self) -> Option<core::ptr::NonNull<PyObject>> {
+        BOUND_METHOD_FREELIST
+            .try_with(|fl| unsafe { fl.pop() })
+            .ok()
+            .flatten()
     }
 }
 
