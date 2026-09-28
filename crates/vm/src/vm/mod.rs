@@ -1481,7 +1481,9 @@ impl VirtualMachine {
     /// Cold path: at least one TailCall was issued. Run the trampoline.
     /// All frame dispatch happens in this single loop — no mutual recursion
     /// between helper functions, so C stack depth is bounded.
-    #[cold]
+    // NOTE: not #[cold]: this loop runs on every Python-to-Python call
+    // (the run_frame_fast entry only sees the outermost frame), so it is
+    // optimized and laid out for speed instead of for size.
     #[inline(never)]
     fn run_frame_fast_trampoline(
         &self,
