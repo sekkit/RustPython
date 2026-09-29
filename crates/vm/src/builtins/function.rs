@@ -1345,11 +1345,30 @@ thread_local! {
         const { crate::object::FreeList::new() };
 }
 
-#[pyclass(module = false, name = "method", traverse)]
+#[pyclass(module = false, name = "method", traverse = "manual", clear)]
 #[derive(Debug)]
 pub struct PyBoundMethod {
     object: PyObjectRef,
     function: PyObjectRef,
+}
+
+// SAFETY: Traverse visits both owned references exactly once; clear moves them out.
+unsafe impl Traverse for PyBoundMethod {
+    fn traverse(&self, tracer_fn: &mut TraverseFn<'_>) {
+        self.object.traverse(tracer_fn);
+        self.function.traverse(tracer_fn);
+    }
+
+    fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+        out.push(core::mem::replace(
+            &mut self.object,
+            Context::genesis().none.to_owned().into(),
+        ));
+        out.push(core::mem::replace(
+            &mut self.function,
+            Context::genesis().none.to_owned().into(),
+        ));
+    }
 }
 
 impl Callable for PyBoundMethod {
