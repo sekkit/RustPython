@@ -8,7 +8,7 @@ use jiff::{Timestamp, Zoned, tz::TimeZone};
 use std::{
     env,
     io::{self, prelude::*},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -24,6 +24,7 @@ fn main() {
         println!("cargo:rerun-if-changed={display}");
     }
     println!("cargo:rerun-if-changed=../../Lib/importlib/_bootstrap.py");
+    track_git_metadata();
 
     // = 3.14.0alpha
     python_version(3, 14, 0, "alpha", 0);
@@ -63,6 +64,38 @@ fn main() {
         std::env::vars_os().format_with(", ", |(k, v), f| f(&format_args!("{k:?} => {v:?}")))
     )
     .unwrap();
+}
+
+fn track_git_metadata() {
+    for path in ["HEAD", "packed-refs", "index"] {
+        if let Ok(path) = git(&["rev-parse", "--git-path", path]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
+
+    if let Ok(reference) = git(&["symbolic-ref", "--quiet", "HEAD"])
+        && let Ok(path) = git(&["rev-parse", "--git-path", &reference])
+    {
+        println!("cargo:rerun-if-changed={path}");
+    }
+
+    if let Ok(refs_path) = git(&["rev-parse", "--git-path", "refs"]) {
+        track_git_ref_tree(Path::new(&refs_path));
+    }
+}
+
+fn track_git_ref_tree(path: &Path) {
+    println!("cargo:rerun-if-changed={}", path.display());
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                track_git_ref_tree(&entry_path);
+            } else {
+                println!("cargo:rerun-if-changed={}", entry_path.display());
+            }
+        }
+    }
 }
 
 fn git_hash() -> String {

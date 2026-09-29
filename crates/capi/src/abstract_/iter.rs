@@ -21,8 +21,12 @@ pub unsafe extern "C" fn PyAIter_Check(obj: *mut PyObject) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_GetIter(obj: *mut PyObject) -> *mut PyObject {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
-        obj.get_iter(vm).map(PyObjectRef::from)
+        let object = if unsafe { crate::listobject::is_foreign_list_buffer(obj) } {
+            unsafe { crate::listobject::foreign_list_to_native(vm, obj)? }
+        } else {
+            unsafe { &*obj }.to_owned()
+        };
+        object.get_iter(vm).map(PyObjectRef::from)
     })
 }
 

@@ -300,35 +300,37 @@ mod decl {
             let mut quad_pos = 0; // position in the nibble
             let mut pads = 0;
             let mut left_char: u8 = 0;
-            let mut padding_started = false;
             for (i, &el) in b.iter().enumerate() {
                 if el == PAD {
-                    padding_started = true;
-
                     pads += 1;
-                    if quad_pos >= 2 && quad_pos + pads >= 4 {
-                        if strict_mode && i + 1 < b.len() {
-                            // Represents excess data after padding error
-                            return Err(base64::DecodeError::InvalidLastSymbol(i, PAD));
-                        }
-
-                        return Ok(decoded);
+                    if quad_pos >= 2 && quad_pos + pads <= 4 {
+                        continue;
                     }
 
+                    if strict_mode {
+                        if quad_pos == 1 {
+                            return Err(base64::DecodeError::InvalidLastSymbol(
+                                decoded.len() / 3 * 4 + 1,
+                                0,
+                            ));
+                        }
+                        return Err(base64::DecodeError::InvalidPadding);
+                    }
                     continue;
                 }
 
                 let binary_char = BASE64_TABLE[el as usize];
                 if binary_char >= 64 || binary_char == -1 {
                     if strict_mode {
-                        // Represents non-base64 data error
                         return Err(base64::DecodeError::InvalidByte(i, el));
                     }
                     continue;
                 }
 
-                if strict_mode && padding_started {
-                    // Represents discontinuous padding error
+                if strict_mode && pads > 0 {
+                    if quad_pos + pads == 4 {
+                        return Err(base64::DecodeError::InvalidLastSymbol(i, PAD));
+                    }
                     return Err(base64::DecodeError::InvalidByte(i, PAD));
                 }
                 pads = 0;
@@ -367,7 +369,8 @@ mod decl {
                     decoded.len() / 3 * 4 + 1,
                     0,
                 )),
-                _ => Err(base64::DecodeError::InvalidLength(quad_pos)),
+                _ if quad_pos + pads < 4 => Err(base64::DecodeError::InvalidLength(quad_pos)),
+                _ => Ok(decoded),
             }
         })
         .map_err(|err| super::Base64DecodeError(err).to_pyexception(vm))
@@ -859,13 +862,13 @@ impl ToPyException for Base64DecodeError {
             DecodeError::InvalidLastSymbol(_, PAD) => "Excess data after padding".to_owned(),
             DecodeError::InvalidLastSymbol(length, _) => {
                 format!(
-                    "Invalid base64-encoded string: number of data characters {length} cannot be 1 more than a multiple of 4"
+                    "Invalid base64-encoded string: number of data characters ({length}) cannot be 1 more than a multiple of 4"
                 )
             }
             // TODO: clean up errors
             DecodeError::InvalidLength(_) => "Incorrect padding".to_owned(),
-            DecodeError::InvalidPadding => "Incorrect padding".to_owned(),
+            DecodeError::InvalidPadding => "Excess padding not allowed".to_owned(),
         };
-        new_binascii_error(format!("error decoding base64: {message}"), vm)
+        new_binascii_error(message, vm)
     }
 }

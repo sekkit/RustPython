@@ -42,7 +42,7 @@ use num_traits::ToPrimitive;
 use rustpython_common::wtf8::Wtf8;
 use std::collections::HashSet;
 
-#[pyclass(module = false, name = "type", traverse = "manual")]
+#[pyclass(module = false, name = "type", traverse = "manual", clear)]
 pub struct PyType {
     /// tp_base. Written under the type lock (see `set_bases`); read lock-free.
     pub base: PyAtomicRef<Option<Self>>,

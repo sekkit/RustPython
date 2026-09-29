@@ -260,7 +260,11 @@ pub unsafe extern "C" fn PyNumber_AsSsize_t(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySeqIter_New(seq: *mut PyObject) -> *mut PyObject {
     with_vm(|vm| {
-        let seq = unsafe { &*seq }.to_owned();
+        let seq = if unsafe { crate::listobject::is_foreign_list_buffer(seq) } {
+            unsafe { crate::listobject::foreign_list_to_native(vm, seq)? }
+        } else {
+            unsafe { &*seq }.to_owned()
+        };
         let iter = seq.get_iter(vm)?;
         // Convert PyIter to PyObjectRef for FfiResult compatibility
         let iter_obj: PyObjectRef = iter.into();
@@ -275,7 +279,11 @@ pub unsafe extern "C" fn PySequence_Fast(
     _m: *const c_char,
 ) -> *mut PyObject {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
+        let obj = if unsafe { crate::listobject::is_foreign_list_buffer(obj) } {
+            unsafe { crate::listobject::foreign_list_to_native(vm, obj)? }
+        } else {
+            unsafe { &*obj }.to_owned()
+        };
         if let Ok(seq) = obj.try_sequence(vm) {
             if let Ok(tup) = seq.tuple(vm) {
                 return Ok(tup);

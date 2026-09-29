@@ -460,6 +460,10 @@ pub unsafe extern "C" fn wrap_foreign_object(raw: *mut PyObject) -> *mut PyObjec
         // list while the buffer keeps its own (its dealloc decrefs them).
         if unsafe { crate::listobject::is_foreign_list_buffer(raw) } {
             let list = unsafe { crate::listobject::foreign_list_to_native(vm, raw)? };
+            // The C return convention gives this boundary one owned reference.
+            // Materialization cloned every item into the native list, so consume
+            // the returned raw list reference after the copy is complete.
+            unsafe { crate::refcount::_Py_DecRef(raw) };
             return Ok(list.into_raw().as_ptr());
         }
         // ob_type at offset 8 is the extension's own PyTypeObject (or one of

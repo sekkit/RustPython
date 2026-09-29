@@ -989,7 +989,7 @@ pub(crate) mod _thread {
     }
 
     #[pyattr]
-    #[pyclass(module = "_thread", name = "_local", traverse = "manual")]
+    #[pyclass(module = "_thread", name = "_local", traverse = "manual", clear)]
     #[derive(Debug, PyPayload)]
     struct Local {
         inner: Arc<LocalData>,

@@ -146,17 +146,18 @@ struct GcPtr(NonNull<PyObject>);
 /// well-defined while all other threads are parked at a safepoint. Restarting
 /// happens explicitly once the snapshot has pinned every object; `Drop` is a
 /// backstop that also restarts on the early-return paths.
-#[cfg(feature = "threading")]
 struct CollectStopTheWorld {
+    #[cfg(feature = "threading")]
     vm: *const crate::VirtualMachine,
+    #[cfg(feature = "threading")]
     stopped: bool,
 }
 
 #[cfg(feature = "threading")]
 impl CollectStopTheWorld {
     /// Request stop-the-world when the current thread has an attached VM.
-    /// Falls back to no barrier when no VM is attached (the tracked-object
-    /// reads then run without other threads only if the caller guarantees it).
+    /// Falls back to no barrier when no VM is attached; callers in that mode
+    /// must already be outside concurrent interpreter execution.
     fn new() -> Self {
         let vm = crate::vm::thread::try_with_current_vm(|vm| {
             vm.state.stop_the_world.stop_the_world(vm);
@@ -184,7 +185,17 @@ impl CollectStopTheWorld {
     }
 }
 
-#[cfg(feature = "threading")]
+#[cfg(not(feature = "threading"))]
+impl CollectStopTheWorld {
+    #[inline]
+    fn new() -> Self {
+        Self {}
+    }
+
+    #[inline]
+    fn restart(&mut self) {}
+}
+
 impl Drop for CollectStopTheWorld {
     fn drop(&mut self) {
         self.restart();
@@ -413,6 +424,28 @@ impl GcState {
         }
     }
 
+    /// Find tracked objects that refer to a target while payload edges are stable.
+    pub(crate) fn get_referrers(
+        &self,
+        targets: &HashSet<usize>,
+        excluded: &HashSet<usize>,
+    ) -> Vec<PyObjectRef> {
+        // Stop the world before enumerating generations: the object set and
+        // every payload edge must describe one stable snapshot.
+        let _stw = CollectStopTheWorld::new();
+        let objects = self.get_objects(None);
+        objects
+            .into_iter()
+            .filter(|obj| {
+                let ptr = obj.as_ref() as *const PyObject as usize;
+                !excluded.contains(&ptr)
+                    && unsafe { obj.gc_get_referent_ptrs() }
+                        .iter()
+                        .any(|child| targets.contains(&(child.as_ptr() as usize)))
+            })
+            .collect()
+    }
+
     /// Check if automatic GC should run and run it if needed.
     /// Called after object allocation.
     /// Returns true if GC was run, false otherwise.
@@ -506,7 +539,6 @@ impl GcState {
         // the world then waits for a thread that cannot reach a safepoint.
         // Closing it fully would require making those locks stop-the-world
         // aware; the exclusion above only serializes the fork/GC requesters.
-        #[cfg(feature = "threading")]
         let mut stw = CollectStopTheWorld::new();
 
         // (A) DEBUG_STATS: CPython prints the collection header and the real
@@ -604,8 +636,7 @@ impl GcState {
                 continue;
             }
             let referent_ptrs = unsafe { obj.gc_get_referent_ptrs() };
-            referents_map.insert(ptr, referent_ptrs.clone());
-            for child_ptr in referent_ptrs {
+            for &child_ptr in &referent_ptrs {
                 let gc_ptr = GcPtr(child_ptr);
                 if collecting.contains(&gc_ptr)
                     && let Some(refs) = gc_refs.get_mut(&gc_ptr)
@@ -613,6 +644,7 @@ impl GcState {
                     *refs = refs.saturating_sub(1);
                 }
             }
+            referents_map.insert(ptr, referent_ptrs);
         }
 
         // Step 4: Find reachable objects (gc_refs > 0) and traverse from them
@@ -636,11 +668,14 @@ impl GcState {
                 // Reuse the pre-computed referent pointers from step 3.
                 // For objects that were skipped in step 3 (strong_count was 0),
                 // compute them now as a fallback.
-                let referent_ptrs = referents_map
-                    .get(&ptr)
-                    .cloned()
-                    .unwrap_or_else(|| unsafe { obj.gc_get_referent_ptrs() });
-                for child_ptr in referent_ptrs {
+                let fallback_referents;
+                let referent_ptrs = if let Some(referent_ptrs) = referents_map.get(&ptr) {
+                    referent_ptrs.as_slice()
+                } else {
+                    fallback_referents = unsafe { obj.gc_get_referent_ptrs() };
+                    fallback_referents.as_slice()
+                };
+                for &child_ptr in referent_ptrs {
                     let gc_ptr = GcPtr(child_ptr);
                     if collecting.contains(&gc_ptr) && reachable.insert(gc_ptr) {
                         worklist.push(gc_ptr);
@@ -704,16 +739,23 @@ impl GcState {
             })
             .collect();
 
-        // The pointer-reading phases are done: strong references now pin every
-        // survivor and unreachable object, so the remaining phases can run with
-        // the world restarted. Finalizers and tp_clear must not run under
-        // stop-the-world — they execute arbitrary Python — and they only touch
-        // dead/husk objects, never a running frame.
-        #[cfg(feature = "threading")]
+        // Record the baseline while the first STW interval is still active.
+        // `unreachable_refs` includes the collector's pin, so this count is the
+        // reference state against which finalizer resurrection is compared.
+        let initial_counts: std::collections::HashMap<GcPtr, usize> = unreachable_refs
+            .iter()
+            .map(|obj| {
+                let ptr = GcPtr(NonNull::from(obj.as_ref()));
+                (ptr, obj.strong_count())
+            })
+            .collect();
+
+        // The pointer-reading phase is complete. Release generation locks before
+        // restarting the world so callbacks and generation mutations can proceed.
+        drop(gen_locks);
         stw.restart();
 
         if unreachable.is_empty() {
-            drop(gen_locks);
             self.move_survivors(generation, &survivor_refs);
 
             let duration = elapsed_secs(start_time);
@@ -727,9 +769,6 @@ impl GcState {
                 duration,
             };
         }
-
-        // Release read locks before finalization phase.
-        drop(gen_locks);
 
         // Step 6: Finalize unreachable objects and handle resurrection
 
@@ -748,16 +787,7 @@ impl GcState {
             };
         }
 
-        // 6b: Record initial strong counts (for resurrection detection)
-        let initial_counts: std::collections::HashMap<GcPtr, usize> = unreachable_refs
-            .iter()
-            .map(|obj| {
-                let ptr = GcPtr(core::ptr::NonNull::from(obj.as_ref()));
-                (ptr, obj.strong_count())
-            })
-            .collect();
-
-        // 6c: Clear existing weakrefs BEFORE calling __del__
+        // 6b: Clear existing weakrefs BEFORE calling __del__
         let mut all_callbacks: Vec<(crate::PyRef<crate::object::PyWeak>, crate::PyObjectRef)> =
             Vec::new();
         for obj_ref in &unreachable_refs {
@@ -779,37 +809,61 @@ impl GcState {
             obj_ref.try_call_finalizer();
         }
 
-        // Detect resurrection
-        let mut resurrected_set: HashSet<GcPtr> = HashSet::new();
-        let unreachable_set: HashSet<GcPtr> = unreachable.iter().copied().collect();
-
-        for obj in &unreachable_refs {
-            let ptr = GcPtr(core::ptr::NonNull::from(obj.as_ref()));
-            let initial = initial_counts.get(&ptr).copied().unwrap_or(1);
-            if obj.strong_count() > initial {
-                resurrected_set.insert(ptr);
+        // Snapshot and classify the post-finalizer graph in one STW interval.
+        // Finalizers ran with the world restarted and may have changed payloads;
+        // counts and edges must describe the same graph used by the closure.
+        let (resurrected, truly_dead): (Vec<_>, Vec<_>) = {
+            let mut post_stw = CollectStopTheWorld::new();
+            let mut post_finalizer_counts =
+                std::collections::HashMap::with_capacity(unreachable_refs.len());
+            let mut post_finalizer_referents =
+                std::collections::HashMap::with_capacity(unreachable_refs.len());
+            for obj in &unreachable_refs {
+                let ptr = GcPtr(NonNull::from(obj.as_ref()));
+                post_finalizer_counts.insert(ptr, obj.strong_count());
+                // SAFETY: `unreachable_refs` pins every source object and the
+                // active STW interval excludes concurrent payload mutation.
+                let edges = unsafe { obj.gc_get_referent_ptrs() };
+                post_finalizer_referents.insert(ptr, edges);
             }
-        }
 
-        // Transitive resurrection
-        let mut worklist: Vec<GcPtr> = resurrected_set.iter().copied().collect();
-        while let Some(ptr) = worklist.pop() {
-            let obj = unsafe { ptr.0.as_ref() };
-            let referent_ptrs = unsafe { obj.gc_get_referent_ptrs() };
-            for child_ptr in referent_ptrs {
-                let child_gc_ptr = GcPtr(child_ptr);
-                if unreachable_set.contains(&child_gc_ptr) && resurrected_set.insert(child_gc_ptr) {
-                    worklist.push(child_gc_ptr);
+            let unreachable_set: HashSet<GcPtr> = unreachable_refs
+                .iter()
+                .map(|obj| GcPtr(NonNull::from(obj.as_ref())))
+                .collect();
+            let mut resurrected_set: HashSet<GcPtr> = HashSet::new();
+            for obj in &unreachable_refs {
+                let ptr = GcPtr(NonNull::from(obj.as_ref()));
+                let initial = initial_counts.get(&ptr).copied().unwrap_or(1);
+                if post_finalizer_counts.get(&ptr).copied().unwrap_or(0) > initial {
+                    resurrected_set.insert(ptr);
                 }
             }
-        }
 
-        // Partition into resurrected and truly dead
-        let (resurrected, truly_dead): (Vec<_>, Vec<_>) =
-            unreachable_refs.into_iter().partition(|obj| {
+            let mut worklist: Vec<GcPtr> = resurrected_set.iter().copied().collect();
+            while let Some(ptr) = worklist.pop() {
+                let Some(referent_ptrs) = post_finalizer_referents.get(&ptr) else {
+                    continue;
+                };
+                for &child_ptr in referent_ptrs {
+                    let child_gc_ptr = GcPtr(child_ptr);
+                    if unreachable_set.contains(&child_gc_ptr)
+                        && resurrected_set.insert(child_gc_ptr)
+                    {
+                        worklist.push(child_gc_ptr);
+                    }
+                }
+            }
+
+            let partition = unreachable_refs.into_iter().partition(|obj| {
                 let ptr = GcPtr(core::ptr::NonNull::from(obj.as_ref()));
                 resurrected_set.contains(&ptr)
             });
+            drop(post_finalizer_referents);
+            drop(post_finalizer_counts);
+            post_stw.restart();
+            partition
+        };
 
         // Compute collected count (exclude instance dicts in truly_dead)
         let collected = {
@@ -865,62 +919,75 @@ impl GcState {
             // skips tp_clear for saved objects).
             let save_all = debug.contains(GcDebugFlags::SAVEALL);
 
-            // Untrack dead objects BEFORE clearing them, mirroring the
-            // untrack-then-clear ordering of the refcount dealloc path.
-            // A cleared object (e.g. a frame husk with iframe == None) must
-            // never be observable through the generation lists, or another
-            // thread could obtain a strong reference via gc.get_objects()
-            // and access the cleared payload.
-            let mut late_resurrected: HashSet<GcPtr> = HashSet::new();
-            if !save_all {
-                let mut expected_counts: std::collections::HashMap<GcPtr, usize> =
-                    std::collections::HashMap::new();
+            let late_resurrected: HashSet<GcPtr> = if !save_all {
                 for obj_ref in &truly_dead {
                     let obj = obj_ref.as_ref();
                     if obj.is_gc_tracked() {
                         unsafe { self.untrack_object(NonNull::from(obj)) };
                     }
-                    // One strong reference held by the `truly_dead` vec itself.
-                    expected_counts.insert(GcPtr(NonNull::from(obj)), 1);
                 }
-                // With the objects out of the generation lists, no new external
-                // reference can appear. Count the references coming from within
-                // the dead set; any surplus in strong_count means another thread
-                // grabbed a reference before untracking (late resurrection) and
-                // the object must not be cleared.
-                let mut referents: std::collections::HashMap<GcPtr, Vec<NonNull<PyObject>>> =
-                    std::collections::HashMap::new();
-                for obj_ref in &truly_dead {
-                    let referent_ptrs = unsafe { obj_ref.gc_get_referent_ptrs() };
-                    for child_ptr in &referent_ptrs {
-                        if let Some(n) = expected_counts.get_mut(&GcPtr(*child_ptr)) {
-                            *n += 1;
+
+                let late_resurrected = {
+                    let mut late_stw = CollectStopTheWorld::new();
+                    let mut late_counts =
+                        std::collections::HashMap::with_capacity(truly_dead.len());
+                    let mut referents = std::collections::HashMap::with_capacity(truly_dead.len());
+                    for obj_ref in &truly_dead {
+                        let ptr = GcPtr(NonNull::from(obj_ref.as_ref()));
+                        late_counts.insert(ptr, obj_ref.strong_count());
+                        // SAFETY: `truly_dead` pins every source object and the
+                        // active STW interval excludes concurrent payload mutation.
+                        let edges = unsafe { obj_ref.gc_get_referent_ptrs() };
+                        referents.insert(ptr, edges);
+                    }
+
+                    let mut expected_counts: std::collections::HashMap<GcPtr, usize> =
+                        std::collections::HashMap::with_capacity(truly_dead.len());
+                    for obj_ref in &truly_dead {
+                        // One strong reference held by the `truly_dead` vec itself.
+                        expected_counts.insert(GcPtr(NonNull::from(obj_ref.as_ref())), 1);
+                    }
+                    for referent_ptrs in referents.values() {
+                        for child_ptr in referent_ptrs {
+                            if let Some(n) = expected_counts.get_mut(&GcPtr(*child_ptr)) {
+                                *n += 1;
+                            }
                         }
                     }
-                    referents.insert(GcPtr(NonNull::from(obj_ref.as_ref())), referent_ptrs);
-                }
-                let mut worklist: Vec<GcPtr> = Vec::new();
-                for obj_ref in &truly_dead {
-                    let ptr = GcPtr(NonNull::from(obj_ref.as_ref()));
-                    if obj_ref.strong_count() > expected_counts[&ptr]
-                        && late_resurrected.insert(ptr)
-                    {
-                        worklist.push(ptr);
-                    }
-                }
-                // A holder of a late-resurrected object can reach its referents,
-                // so everything reachable from it must stay intact as well.
-                while let Some(ptr) = worklist.pop() {
-                    let Some(referent_ptrs) = referents.get(&ptr) else {
-                        continue;
-                    };
-                    for child_ptr in referent_ptrs {
-                        let child = GcPtr(*child_ptr);
-                        if expected_counts.contains_key(&child) && late_resurrected.insert(child) {
-                            worklist.push(child);
+
+                    let mut late_resurrected = HashSet::new();
+                    let mut worklist: Vec<GcPtr> = Vec::new();
+                    for obj_ref in &truly_dead {
+                        let ptr = GcPtr(NonNull::from(obj_ref.as_ref()));
+                        if late_counts.get(&ptr).copied().unwrap_or(0) > expected_counts[&ptr]
+                            && late_resurrected.insert(ptr)
+                        {
+                            worklist.push(ptr);
                         }
                     }
-                }
+                    // A holder of a late-resurrected object can reach its referents,
+                    // so everything reachable from it must stay intact as well.
+                    while let Some(ptr) = worklist.pop() {
+                        let Some(referent_ptrs) = referents.get(&ptr) else {
+                            continue;
+                        };
+                        for child_ptr in referent_ptrs {
+                            let child = GcPtr(*child_ptr);
+                            if expected_counts.contains_key(&child)
+                                && late_resurrected.insert(child)
+                            {
+                                worklist.push(child);
+                            }
+                        }
+                    }
+
+                    drop(referents);
+                    drop(late_counts);
+                    drop(expected_counts);
+                    late_stw.restart();
+                    late_resurrected
+                };
+
                 // Re-track late-resurrected objects so a future collection can
                 // retry once the external references are released.
                 #[expect(
@@ -930,7 +997,10 @@ impl GcState {
                 for &ptr in &late_resurrected {
                     unsafe { self.track_object(ptr.0) };
                 }
-            }
+                late_resurrected
+            } else {
+                HashSet::new()
+            };
             rustpython_common::refcount::with_deferred_drops(|| {
                 if !save_all {
                     for obj_ref in &truly_dead {

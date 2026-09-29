@@ -270,6 +270,9 @@ pub unsafe extern "C" fn PyObject_IsInstance(inst: *mut PyObject, cls: *mut PyOb
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Size(obj: *mut PyObject) -> isize {
+    if unsafe { crate::listobject::is_foreign_list_buffer(obj) } {
+        return unsafe { crate::listobject::header_obj_size(obj) };
+    }
     let r = with_vm(|vm| {
         let obj = unsafe { &*obj };
         obj.length(vm)

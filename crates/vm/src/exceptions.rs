@@ -31,6 +31,21 @@ unsafe impl Traverse for PyBaseException {
         self.context.traverse(tracer_fn);
         self.args.traverse(tracer_fn);
     }
+
+    fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+        if let Some(traceback) = self.traceback.get_mut().take() {
+            out.push(traceback.into());
+        }
+        if let Some(cause) = self.cause.get_mut().take() {
+            out.push(cause.into());
+        }
+        if let Some(context) = self.context.get_mut().take() {
+            out.push(context.into());
+        }
+        if let Some(args) = self.args.get_mut().take() {
+            out.push(args.into());
+        }
+    }
 }
 
 impl core::fmt::Debug for PyBaseException {
@@ -587,12 +602,12 @@ impl PyBaseException {
             cause: PyRwLock::new(None),
             context: PyRwLock::new(None),
             suppress_context: AtomicCell::new(false),
-            args: PyRwLock::new(PyTuple::new_ref(args, &vm.ctx)),
+            args: PyRwLock::new(Some(PyTuple::new_ref(args, &vm.ctx))),
         }
     }
 
     pub fn get_arg(&self, idx: usize) -> Option<PyObjectRef> {
-        self.args.read().get(idx).cloned()
+        self.args.read().as_ref().expect("cleared exception").get(idx).cloned()
     }
 }
 
@@ -603,7 +618,7 @@ impl PyBaseException {
 impl PyBaseException {
     #[pygetset]
     pub fn args(&self) -> PyTupleRef {
-        self.args.read().clone()
+        self.args.read().as_ref().expect("cleared exception").clone()
     }
 
     #[pygetset(name = "args", setter)]
@@ -615,7 +630,7 @@ impl PyBaseException {
             PySetterValue::Assign(iter) => iter,
         };
         let args = args.iter(vm)?.collect::<PyResult<Vec<_>>>()?;
-        *self.args.write() = PyTuple::new_ref(args, &vm.ctx);
+        *self.args.write() = Some(PyTuple::new_ref(args, &vm.ctx));
         Ok(())
     }
 
@@ -828,7 +843,7 @@ impl Initializer for PyBaseException {
     type Args = FuncArgs;
 
     fn init(zelf: PyRef<Self>, args: Self::Args, vm: &VirtualMachine) -> PyResult<()> {
-        *zelf.args.write() = PyTuple::new_ref(args.args, &vm.ctx);
+        *zelf.args.write() = Some(PyTuple::new_ref(args.args, &vm.ctx));
         Ok(())
     }
 }
@@ -1157,7 +1172,8 @@ fn make_arg_getter(idx: usize) -> impl Fn(PyBaseExceptionRef) -> Option<PyObject
 
 fn syntax_error_set_msg(exc: PyBaseExceptionRef, value: PySetterValue, vm: &VirtualMachine) {
     let mut args = exc.args.write();
-    let mut new_args = args.as_slice().to_vec();
+    let current = args.as_ref().expect("cleared exception");
+    let mut new_args = current.as_slice().to_vec();
     // Ensure the message slot at index 0 always exists for SyntaxError.args.
     if new_args.is_empty() {
         new_args.push(vm.ctx.none());
@@ -1166,7 +1182,7 @@ fn syntax_error_set_msg(exc: PyBaseExceptionRef, value: PySetterValue, vm: &Virt
         PySetterValue::Assign(value) => new_args[0] = value,
         PySetterValue::Delete => new_args[0] = vm.ctx.none(),
     }
-    *args = PyTuple::new_ref(new_args, &vm.ctx);
+    *args = Some(PyTuple::new_ref(new_args, &vm.ctx));
 }
 
 #[cfg(feature = "serde")]
@@ -1707,16 +1723,16 @@ pub(super) mod types {
 
     // Sorted By Hierarchy then alphabetized.
 
-    #[pyclass(module = false, name = "BaseException", traverse = "manual")]
+    #[pyclass(module = false, name = "BaseException", traverse = "manual", clear)]
     pub struct PyBaseException {
         pub(super) traceback: PyRwLock<Option<PyTracebackRef>>,
         pub(super) cause: PyRwLock<Option<PyRef<Self>>>,
         pub(super) context: PyRwLock<Option<PyRef<Self>>>,
         pub(super) suppress_context: AtomicCell<bool>,
-        pub(super) args: PyRwLock<PyTupleRef>,
+        pub(super) args: PyRwLock<Option<PyTupleRef>>,
     }
 
-    #[pyexception(name, base = PyBaseException, ctx = "system_exit", traverse = "manual")]
+    #[pyexception(name, base = PyBaseException, ctx = "system_exit", traverse = "manual", clear)]
     #[repr(C)]
     pub struct PySystemExit {
         base: PyBaseException,
@@ -1735,6 +1751,13 @@ pub(super) mod types {
             self.base.traverse(tracer_fn);
             if let Some(obj) = self.code.deref() {
                 tracer_fn(obj);
+            }
+        }
+
+        fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+            self.base.clear(out);
+            if let Some(obj) = unsafe { self.code.swap(None) } {
+                out.push(obj);
             }
         }
     }
@@ -1809,7 +1832,7 @@ pub(super) mod types {
     #[repr(transparent)]
     pub struct PyException(PyBaseException);
 
-    #[pyexception(name, base = PyException, ctx = "stop_iteration", traverse = "manual")]
+    #[pyexception(name, base = PyException, ctx = "stop_iteration", traverse = "manual", clear)]
     #[repr(C)]
     pub struct PyStopIteration {
         base: PyException,
@@ -1834,6 +1857,13 @@ pub(super) mod types {
             self.base.0.traverse(tracer_fn);
             if let Some(obj) = self.value.deref() {
                 tracer_fn(obj);
+            }
+        }
+
+        fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+            self.base.0.clear(out);
+            if let Some(obj) = unsafe { self.value.swap(None) } {
+                out.push(obj);
             }
         }
     }
@@ -2152,7 +2182,7 @@ pub(super) mod types {
     #[repr(transparent)]
     pub struct PyUnboundLocalError(PyNameError);
 
-    #[pyexception(name, base = PyException, ctx = "os_error", traverse = "manual")]
+    #[pyexception(name, base = PyException, ctx = "os_error", traverse = "manual", clear)]
     #[repr(C)]
     pub struct PyOSError {
         base: PyException,
@@ -2201,6 +2231,26 @@ pub(super) mod types {
             #[cfg(windows)]
             if let Some(obj) = self.winerror.deref() {
                 tracer_fn(obj);
+            }
+        }
+
+        fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+            self.base.0.clear(out);
+            if let Some(obj) = unsafe { self.errno.swap(None) } {
+                out.push(obj);
+            }
+            if let Some(obj) = unsafe { self.strerror.swap(None) } {
+                out.push(obj);
+            }
+            if let Some(obj) = unsafe { self.filename.swap(None) } {
+                out.push(obj);
+            }
+            if let Some(obj) = unsafe { self.filename2.swap(None) } {
+                out.push(obj);
+            }
+            #[cfg(windows)]
+            if let Some(obj) = unsafe { self.winerror.swap(None) } {
+                out.push(obj);
             }
         }
     }

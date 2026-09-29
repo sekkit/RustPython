@@ -1,21 +1,50 @@
 use crate::{PyObject, pystate::with_vm};
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering, fence};
 use rustpython_vm::PyObjectRef;
+
+#[inline]
+unsafe fn foreign_refcount(op: *mut PyObject) -> *const AtomicUsize {
+    op.cast()
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _Py_DecRef(op: *mut PyObject) {
-    // By dropping PyObjectRef, we will decrement the reference count.
+    if crate::objimpl::is_foreign_object(op as *const u8) {
+        let ref_count = unsafe { &*foreign_refcount(op) };
+        let old = ref_count.fetch_sub(1, Ordering::Release);
+        if old == 0 {
+            std::process::abort();
+        }
+        if old == 1 {
+            fence(Ordering::Acquire);
+            unsafe { _Py_Dealloc(op) };
+        }
+        return;
+    }
     unsafe { drop(PyObjectRef::from_raw(NonNull::new_unchecked(op))) };
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _Py_IncRef(op: *mut PyObject) {
+    if crate::objimpl::is_foreign_object(op as *const u8) {
+        let ref_count = unsafe { &*foreign_refcount(op) };
+        let old = ref_count.fetch_add(1, Ordering::Relaxed);
+        if old == 0 || old >= isize::MAX as usize {
+            std::process::abort();
+        }
+        return;
+    }
     // Don't drop the owned value, as we just want to increment the refcount.
     core::mem::forget(unsafe { (*op).to_owned() });
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_NewRef(op: *mut PyObject) -> *mut PyObject {
+    if crate::objimpl::is_foreign_object(op as *const u8) {
+        unsafe { _Py_IncRef(op) };
+        return op;
+    }
     with_vm(|_vm| unsafe { (*op).to_owned() })
 }
 
@@ -72,6 +101,9 @@ unsafe fn free_foreign_list(op: *mut PyObject) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_REFCNT(op: *mut PyObject) -> isize {
+    if crate::objimpl::is_foreign_object(op as *const u8) {
+        return unsafe { &*foreign_refcount(op) }.load(Ordering::Relaxed) as isize;
+    }
     with_vm(|_vm| unsafe { &*op }.strong_count())
 }
 

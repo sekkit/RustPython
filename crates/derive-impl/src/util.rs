@@ -473,6 +473,7 @@ impl ItemMeta for ExceptionItemMeta {
         "ctx",
         "impl",
         "traverse",
+        "clear",
     ];
 
     fn from_inner(inner: ItemMetaInner) -> Self {

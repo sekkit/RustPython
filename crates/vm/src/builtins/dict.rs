@@ -28,7 +28,7 @@ use rustpython_common::wtf8::Wtf8Buf;
 
 pub(crate) type DictContentType = dict_inner::Dict;
 
-#[pyclass(module = false, name = "dict", unhashable = true, traverse = "manual")]
+#[pyclass(module = false, name = "dict", unhashable = true, traverse = "manual", clear)]
 #[derive(Default)]
 pub struct PyDict {
     entries: DictContentType,

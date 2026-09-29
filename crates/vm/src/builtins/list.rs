@@ -41,7 +41,7 @@ pub(crate) fn enter_multi_thread_mode() {
     MULTI_THREAD.store(1, Ordering::Relaxed);
 }
 
-#[pyclass(module = false, name = "list", unhashable = true, traverse = "manual")]
+#[pyclass(module = false, name = "list", unhashable = true, traverse = "manual", clear)]
 #[derive(Default)]
 pub struct PyList {
     elements: PyRwLock<Vec<PyObjectRef>>,

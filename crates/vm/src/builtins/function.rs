@@ -61,7 +61,7 @@ fn format_missing_args(
     )
 }
 
-#[pyclass(module = false, name = "function", traverse = "manual")]
+#[pyclass(module = false, name = "function", traverse = "manual", clear)]
 #[derive(Debug)]
 pub struct PyFunction {
     pub(crate) code: PyAtomicRef<PyCode>,

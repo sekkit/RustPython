@@ -1,8 +1,37 @@
 use crate::{PyObject, pystate::with_vm};
 use core::ffi::c_int;
+use rustpython_vm::builtins::PyList;
+use rustpython_vm::{AsObject, PyObjectRef, PyResult, VirtualMachine};
+
+unsafe fn sequence_operand(
+    vm: &VirtualMachine,
+    raw: *mut PyObject,
+) -> PyResult<PyObjectRef> {
+    if unsafe { crate::listobject::is_foreign_list_buffer(raw) } {
+        unsafe { crate::listobject::foreign_list_to_native(vm, raw) }
+    } else {
+        Ok(unsafe { &*raw }.to_owned())
+    }
+}
+
+fn finish_foreign_inplace(
+    vm: &VirtualMachine,
+    raw: *mut PyObject,
+    result: PyObjectRef,
+) -> PyResult<*mut PyObject> {
+    {
+        let list = result.try_downcast_ref::<PyList>(vm)?;
+        unsafe { crate::listobject::foreign_list_sync_from_native(vm, raw, list)? };
+    }
+    unsafe { crate::refcount::_Py_IncRef(raw) };
+    Ok(raw)
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Check(obj: *mut PyObject) -> c_int {
+    if unsafe { crate::listobject::is_foreign_list_buffer(obj) } {
+        return 1;
+    }
     with_vm(|_vm| {
         let obj = unsafe { &*obj };
         Ok(obj.sequence_unchecked().check())
@@ -15,41 +44,67 @@ pub unsafe extern "C" fn PySequence_Concat(
     obj2: *mut PyObject,
 ) -> *mut PyObject {
     with_vm(|vm| {
-        let obj1 = unsafe { &*obj1 };
-        let obj2 = unsafe { &*obj2 };
-        obj1.try_sequence(vm)?.concat(obj2, vm)
+        let obj1 = unsafe { sequence_operand(vm, obj1)? };
+        let obj2 = unsafe { sequence_operand(vm, obj2)? };
+        obj1.try_sequence(vm)?.concat(obj2.as_ref(), vm)
     })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Count(obj: *mut PyObject, value: *mut PyObject) -> isize {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
-        let value = unsafe { &*value };
-        obj.try_sequence(vm)?.count(value, vm)
+        let obj = unsafe { sequence_operand(vm, obj)? };
+        let value = unsafe { &*value }.to_owned();
+        obj.try_sequence(vm)?.count(value.as_ref(), vm)
     })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_DelItem(obj: *mut PyObject, index: isize) -> c_int {
+    let is_foreign = unsafe { crate::listobject::is_foreign_list_buffer(obj) };
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
-        obj.try_sequence(vm)?.del_item(index, vm)
+        let object = unsafe { sequence_operand(vm, obj)? };
+        if is_foreign {
+            object.try_sequence(vm)?.del_item(index, vm)?;
+            unsafe {
+                crate::listobject::foreign_list_sync_from_native(
+                    vm,
+                    obj,
+                    object.try_downcast_ref::<PyList>(vm)?,
+                )?
+            };
+            Ok(())
+        } else {
+            object.try_sequence(vm)?.del_item(index, vm)
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_DelSlice(obj: *mut PyObject, low: isize, high: isize) -> c_int {
+    let is_foreign = unsafe { crate::listobject::is_foreign_list_buffer(obj) };
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
-        obj.try_sequence(vm)?.del_slice(low, high, vm)
+        let object = unsafe { sequence_operand(vm, obj)? };
+        if is_foreign {
+            object.try_sequence(vm)?.del_slice(low, high, vm)?;
+            unsafe {
+                crate::listobject::foreign_list_sync_from_native(
+                    vm,
+                    obj,
+                    object.try_downcast_ref::<PyList>(vm)?,
+                )?
+            };
+            Ok(())
+        } else {
+            object.try_sequence(vm)?.del_slice(low, high, vm)
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_GetItem(obj: *mut PyObject, index: isize) -> *mut PyObject {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
+        let obj = unsafe { sequence_operand(vm, obj)? };
         obj.try_sequence(vm)?.get_item(index, vm)
     })
 }
@@ -61,7 +116,7 @@ pub unsafe extern "C" fn PySequence_GetSlice(
     high: isize,
 ) -> *mut PyObject {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
+        let obj = unsafe { sequence_operand(vm, obj)? };
         obj.try_sequence(vm)?.get_slice(low, high, vm)
     })
 }
@@ -71,10 +126,16 @@ pub unsafe extern "C" fn PySequence_InPlaceConcat(
     obj1: *mut PyObject,
     obj2: *mut PyObject,
 ) -> *mut PyObject {
+    let is_foreign = unsafe { crate::listobject::is_foreign_list_buffer(obj1) };
     with_vm(|vm| {
-        let obj1 = unsafe { &*obj1 };
-        let obj2 = unsafe { &*obj2 };
-        obj1.try_sequence(vm)?.inplace_concat(obj2, vm)
+        let object = unsafe { sequence_operand(vm, obj1)? };
+        let other = unsafe { sequence_operand(vm, obj2)? };
+        let result = object.try_sequence(vm)?.inplace_concat(other.as_ref(), vm)?;
+        if is_foreign {
+            finish_foreign_inplace(vm, obj1, result)
+        } else {
+            Ok(result.into_raw().as_ptr())
+        }
     })
 }
 
@@ -83,25 +144,31 @@ pub unsafe extern "C" fn PySequence_InPlaceRepeat(
     obj: *mut PyObject,
     count: isize,
 ) -> *mut PyObject {
+    let is_foreign = unsafe { crate::listobject::is_foreign_list_buffer(obj) };
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
-        obj.try_sequence(vm)?.inplace_repeat(count, vm)
+        let object = unsafe { sequence_operand(vm, obj)? };
+        let result = object.try_sequence(vm)?.inplace_repeat(count, vm)?;
+        if is_foreign {
+            finish_foreign_inplace(vm, obj, result)
+        } else {
+            Ok(result.into_raw().as_ptr())
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Index(obj: *mut PyObject, value: *mut PyObject) -> isize {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
-        let value = unsafe { &*value };
-        obj.try_sequence(vm)?.index(value, vm)
+        let obj = unsafe { sequence_operand(vm, obj)? };
+        let value = unsafe { &*value }.to_owned();
+        obj.try_sequence(vm)?.index(value.as_ref(), vm)
     })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_List(obj: *mut PyObject) -> *mut PyObject {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
+        let obj = unsafe { sequence_operand(vm, obj)? };
         Ok(obj.try_sequence(vm)?.list(vm))
     })
 }
@@ -109,7 +176,7 @@ pub unsafe extern "C" fn PySequence_List(obj: *mut PyObject) -> *mut PyObject {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Repeat(obj: *mut PyObject, count: isize) -> *mut PyObject {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
+        let obj = unsafe { sequence_operand(vm, obj)? };
         obj.try_sequence(vm)?.repeat(count, vm)
     })
 }
@@ -120,10 +187,23 @@ pub unsafe extern "C" fn PySequence_SetItem(
     index: isize,
     value: *mut PyObject,
 ) -> c_int {
+    let is_foreign = unsafe { crate::listobject::is_foreign_list_buffer(obj) };
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
-        let value = unsafe { &*value };
-        obj.try_sequence(vm)?.set_item(index, value.to_owned(), vm)
+        let object = unsafe { sequence_operand(vm, obj)? };
+        let value = unsafe { &*value }.to_owned();
+        if is_foreign {
+            object.try_sequence(vm)?.set_item(index, value, vm)?;
+            unsafe {
+                crate::listobject::foreign_list_sync_from_native(
+                    vm,
+                    obj,
+                    object.try_downcast_ref::<PyList>(vm)?,
+                )?
+            };
+            Ok(())
+        } else {
+            object.try_sequence(vm)?.set_item(index, value, vm)
+        }
     })
 }
 
@@ -134,16 +214,31 @@ pub unsafe extern "C" fn PySequence_SetSlice(
     high: isize,
     value: *mut PyObject,
 ) -> c_int {
+    let is_foreign = unsafe { crate::listobject::is_foreign_list_buffer(obj) };
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
-        let value = unsafe { &*value };
-        obj.try_sequence(vm)?
-            .set_slice(low, high, value.to_owned(), vm)
+        let object = unsafe { sequence_operand(vm, obj)? };
+        let value = unsafe { sequence_operand(vm, value)? };
+        if is_foreign {
+            object.try_sequence(vm)?.set_slice(low, high, value, vm)?;
+            unsafe {
+                crate::listobject::foreign_list_sync_from_native(
+                    vm,
+                    obj,
+                    object.try_downcast_ref::<PyList>(vm)?,
+                )?
+            };
+            Ok(())
+        } else {
+            object.try_sequence(vm)?.set_slice(low, high, value, vm)
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Size(obj: *mut PyObject) -> isize {
+    if unsafe { crate::listobject::is_foreign_list_buffer(obj) } {
+        return unsafe { crate::listobject::header_obj_size(obj) };
+    }
     let r = with_vm(|vm| {
         let obj = unsafe { &*obj };
         obj.try_sequence(vm)?.length(vm)
@@ -162,7 +257,7 @@ pub unsafe extern "C" fn PySequence_Length(obj: *mut PyObject) -> isize {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Tuple(obj: *mut PyObject) -> *mut PyObject {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
+        let obj = unsafe { sequence_operand(vm, obj)? };
         Ok(obj.try_sequence(vm)?.tuple(vm))
     })
 }
@@ -170,9 +265,9 @@ pub unsafe extern "C" fn PySequence_Tuple(obj: *mut PyObject) -> *mut PyObject {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Contains(obj: *mut PyObject, value: *mut PyObject) -> c_int {
     with_vm(|vm| {
-        let obj = unsafe { &*obj };
-        let value = unsafe { &*value };
-        obj.sequence_unchecked().contains(value, vm)
+        let obj = unsafe { sequence_operand(vm, obj)? };
+        let value = unsafe { &*value }.to_owned();
+        obj.try_sequence(vm)?.contains(value.as_ref(), vm)
     })
 }
 

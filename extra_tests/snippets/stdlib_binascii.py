@@ -51,6 +51,30 @@ assert_equal(
 )
 assert_equal(dec_b64(b"3d=="), b"\xdd")
 
+# Base64 padding must be validated through the end of the input.
+with assert_raises(binascii.Error) as cm:
+    dec_b64(b"YQ==x")
+assert str(cm.exception) == "Incorrect padding"
+with assert_raises(binascii.Error) as cm:
+    dec_b64(b"YQ===x")
+assert str(cm.exception) == "Incorrect padding"
+assert_equal(dec_b64(b"YQ==!!!!"), b"a")
+with assert_raises(binascii.Error) as cm:
+    dec_b64(b"YQ==x", strict_mode=True)
+assert str(cm.exception) == "Excess data after padding"
+with assert_raises(binascii.Error) as cm:
+    dec_b64(b"YQ===x", strict_mode=True)
+assert str(cm.exception) == "Excess padding not allowed"
+with assert_raises(binascii.Error) as cm:
+    dec_b64(b"YWJj=", strict_mode=True)
+assert str(cm.exception) == "Excess padding not allowed"
+with assert_raises(binascii.Error) as cm:
+    dec_b64(b"YWJj====", strict_mode=True)
+assert str(cm.exception) == "Excess padding not allowed"
+with assert_raises(binascii.Error) as cm:
+    dec_b64(b"YWJj=Zg==", strict_mode=True)
+assert str(cm.exception) == "Excess padding not allowed"
+
 for exc, expected_name in [
     (binascii.Error, "Error"),
     (binascii.Incomplete, "Incomplete"),

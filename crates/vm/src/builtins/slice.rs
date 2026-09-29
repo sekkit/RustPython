@@ -16,7 +16,7 @@ use crate::{
 use malachite_bigint::{BigInt, ToBigInt};
 use num_traits::{One, Signed, Zero};
 
-#[pyclass(module = false, name = "slice", unhashable = true, traverse = "manual")]
+#[pyclass(module = false, name = "slice", unhashable = true, traverse = "manual", clear)]
 #[derive(Debug)]
 pub struct PySlice {
     pub start: Option<PyObjectRef>,
@@ -36,8 +36,11 @@ unsafe impl crate::object::Traverse for PySlice {
         if let Some(start) = self.start.take() {
             out.push(start);
         }
-        // stop is not Option, so it will be freed when payload is dropped
-        // (via drop_in_place on freelist pop, or on dealloc)
+        // Clear every strong reference before this payload enters the freelist.
+        out.push(core::mem::replace(
+            &mut self.stop,
+            Context::genesis().none.to_owned().into(),
+        ));
         if let Some(step) = self.step.take() {
             out.push(step);
         }

@@ -1292,7 +1292,7 @@ impl InterpreterFrame {
 
 /// Python-visible frame object. Currently always wraps an `InterpreterFrame`.
 /// Analogous to CPython's `PyFrameObject`.
-#[pyclass(module = false, name = "frame", traverse = "manual")]
+#[pyclass(module = false, name = "frame", traverse = "manual", clear)]
 pub struct FrameObject {
     // Owned references — keep the pointed-to objects alive for InterpreterFrame's
     // raw pointers. Wrapped in Option so Traverse::clear can release them,
@@ -6403,40 +6403,39 @@ impl ExecutingFrame<'_> {
                 }
                 if nargs == 1 {
                     // Stack: [callable, self_or_null, item]
-                    let stack_len = self.localsplus.stack_len();
-                    let self_or_null_is_some = self.localsplus.stack_index(stack_len - 2).is_some();
-                    let callable = self.nth_value(2);
-                    let self_is_list = self
-                        .localsplus
-                        .stack_index(stack_len - 2)
-                        .as_ref()
-                        .is_some_and(|obj| obj.downcast_ref::<PyList>().is_some());
-                    if vm
-                        .callable_cache
-                        .list_append
-                        .as_ref()
-                        .is_some_and(|list_append| callable.is(list_append))
-                        && self_or_null_is_some
-                        && self_is_list
-                    {
-                        let item = self.pop_value();
-                        let self_or_null = self.pop_value_opt();
-                        let callable = self.pop_value();
-                        if let Some(list_obj) = self_or_null.as_ref()
-                            && let Some(list) = list_obj.downcast_ref::<PyList>()
-                        {
-                            list.append(item);
-                            // CALL_LIST_APPEND fuses the following POP_TOP.
-                            self.jump_relative_forward(
-                                1,
-                                Instruction::CallListAppend.cache_entries() as u32,
-                            );
-                            return Ok(None);
+                    let item = self.pop_value();
+                    let self_or_null = self.pop_value_opt();
+                    let callable = self.pop_value();
+                    let list = if let Some(receiver) = self_or_null.as_ref() {
+                        let cached_descriptor = vm
+                            .callable_cache
+                            .list_append
+                            .as_ref()
+                            .is_some_and(|list_append| callable.is(list_append));
+                        if cached_descriptor {
+                            receiver.downcast_ref::<PyList>()
+                        } else {
+                            None
                         }
-                        self.push_value(callable);
-                        self.push_value_opt(self_or_null);
-                        self.push_value(item);
+                    } else {
+                        callable
+                            .downcast_ref_if_exact::<PyNativeFunction>(vm)
+                            .filter(|native| Self::is_cached_list_append(native, vm))
+                            .and_then(|native| native.zelf.as_ref())
+                            .and_then(|zelf| zelf.downcast_ref::<PyList>())
+                    };
+                    if let Some(list) = list {
+                        list.append(item);
+                        // CALL_LIST_APPEND fuses the following POP_TOP.
+                        self.jump_relative_forward(
+                            1,
+                            Instruction::CallListAppend.cache_entries() as u32,
+                        );
+                        return Ok(None);
                     }
+                    self.push_value(callable);
+                    self.push_value_opt(self_or_null);
+                    self.push_value(item);
                 }
                 self.execute_call_vectorcall(nargs, vm)
             }
@@ -10195,6 +10194,14 @@ impl ExecutingFrame<'_> {
         }
     }
 
+    fn is_cached_list_append(native: &PyNativeFunction, vm: &VirtualMachine) -> bool {
+        vm.callable_cache
+            .list_append
+            .as_ref()
+            .and_then(|callable| callable.downcast_ref_if_exact::<PyMethodDescriptor>(vm))
+            .is_some_and(|descriptor| core::ptr::eq(native.value, descriptor.method))
+    }
+
     fn specialize_call(
         &mut self,
         vm: &VirtualMachine,
@@ -10289,6 +10296,27 @@ impl ExecutingFrame<'_> {
                     | PyMethodFlags::NOARGS
                     | PyMethodFlags::O
                     | PyMethodFlags::KEYWORDS);
+            if call_conv == PyMethodFlags::O
+                && nargs == 1
+                && Self::is_cached_list_append(native, vm)
+                && native
+                    .zelf
+                    .as_ref()
+                    .is_some_and(|zelf| zelf.downcast_ref::<PyList>().is_some())
+            {
+                let call_cache_entries = Instruction::CallListAppend.cache_entries();
+                let next_idx = cache_base + call_cache_entries;
+                let next_is_pop_top = if next_idx < self.code.instructions.len() {
+                    let next_op = self.code.instructions.read_op(next_idx);
+                    matches!(next_op.to_base().unwrap_or(next_op), Instruction::PopTop)
+                } else {
+                    false
+                };
+                if next_is_pop_top {
+                    self.specialize_at(instr_idx, cache_base, Instruction::CallListAppend);
+                    return;
+                }
+            }
             // Mirror the dedicated `len`/`isinstance` arms that the generic
             // native branch below selects: without these checks the plain
             // FASTCALL/O specializations would shadow them for every

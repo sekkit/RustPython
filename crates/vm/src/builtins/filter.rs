@@ -2,16 +2,35 @@ use super::{PyType, PyTypeRef};
 use crate::{
     Context, Py, PyObjectRef, PyPayload, PyResult, VirtualMachine,
     class::PyClassImpl,
+    object::{Traverse, TraverseFn},
     protocol::{PyIter, PyIterReturn},
     raise_if_stop,
     types::{Constructor, IterNext, Iterable, SelfIter},
 };
 
-#[pyclass(module = false, name = "filter", traverse)]
+#[pyclass(module = false, name = "filter", traverse = "manual", clear)]
 #[derive(Debug)]
 pub struct PyFilter {
-    predicate: PyObjectRef,
-    iterator: PyIter,
+    predicate: Option<PyObjectRef>,
+    iterator: Option<PyIter>,
+}
+
+// SAFETY: traverse reports both owned references and clear moves both edges
+// out of the payload before the object is deallocated.
+unsafe impl Traverse for PyFilter {
+    fn traverse(&self, tracer_fn: &mut TraverseFn<'_>) {
+        self.predicate.traverse(tracer_fn);
+        self.iterator.traverse(tracer_fn);
+    }
+
+    fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+        if let Some(predicate) = self.predicate.take() {
+            out.push(predicate);
+        }
+        if let Some(iterator) = self.iterator.take() {
+            out.push(iterator.into());
+        }
+    }
 }
 
 impl PyPayload for PyFilter {
@@ -30,8 +49,8 @@ impl Constructor for PyFilter {
         _vm: &VirtualMachine,
     ) -> PyResult<Self> {
         Ok(Self {
-            predicate: function,
-            iterator,
+            predicate: Some(function),
+            iterator: Some(iterator),
         })
     }
 }
@@ -39,11 +58,17 @@ impl Constructor for PyFilter {
 #[pyclass(with(IterNext, Iterable, Constructor), flags(BASETYPE))]
 impl PyFilter {
     #[pymethod]
-    fn __reduce__(&self, vm: &VirtualMachine) -> (PyTypeRef, (PyObjectRef, PyIter)) {
-        (
+    fn __reduce__(&self, vm: &VirtualMachine) -> PyResult<(PyTypeRef, (PyObjectRef, PyIter))> {
+        let Some(predicate) = self.predicate.as_ref() else {
+            return Err(vm.new_runtime_error("cannot reduce a cleared filter"));
+        };
+        let Some(iterator) = self.iterator.as_ref() else {
+            return Err(vm.new_runtime_error("cannot reduce a cleared filter"));
+        };
+        Ok((
             vm.ctx.types.filter_type.to_owned(),
-            (self.predicate.clone(), self.iterator.clone()),
-        )
+            (predicate.clone(), iterator.clone()),
+        ))
     }
 }
 
@@ -51,9 +76,13 @@ impl SelfIter for PyFilter {}
 
 impl IterNext for PyFilter {
     fn next(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyIterReturn> {
-        let predicate = &zelf.predicate;
+        let (Some(predicate), Some(iterator)) =
+            (zelf.predicate.as_ref(), zelf.iterator.as_ref())
+        else {
+            return Ok(PyIterReturn::StopIteration(None));
+        };
         loop {
-            let next_obj = raise_if_stop!(zelf.iterator.next(vm)?);
+            let next_obj = raise_if_stop!(iterator.next(vm)?);
             let predicate_value = if vm.is_none(predicate) {
                 next_obj.clone()
             } else {

@@ -34,7 +34,8 @@ mod _collections {
         module = "collections",
         name = "deque",
         unhashable = true,
-        traverse = "manual"
+        traverse = "manual",
+         clear
     )]
     #[derive(Debug, Default, PyPayload)]
     struct PyDeque {
@@ -782,7 +783,8 @@ mod _collections {
         name = "defaultdict",
         base = PyDict,
         unhashable = true,
-        traverse = "manual"
+        traverse = "manual",
+         clear
     )]
     #[derive(Debug, Default)]
     struct PyDefaultDict {

@@ -37,7 +37,7 @@ use rustpython_common::{
 
 pub(crate) type SetContentType = dict_inner::Dict<()>;
 
-#[pyclass(module = false, name = "set", unhashable = true, traverse)]
+#[pyclass(module = false, name = "set", unhashable = true, traverse = "manual", clear)]
 #[derive(Default)]
 pub struct PySet {
     pub(super) inner: PySetInner,
@@ -180,6 +180,19 @@ unsafe impl crate::object::Traverse for PySetInner {
     fn traverse(&self, tracer_fn: &mut crate::object::TraverseFn<'_>) {
         // FIXME(discord9): Rc means shared ref, so should it be traced?
         self.content.traverse(tracer_fn)
+    }
+}
+
+// SAFETY: Traverse visits every element once; clear drains the owned content
+// into the deferred-drop buffer so cycles can be broken before deallocation.
+unsafe impl crate::object::Traverse for PySet {
+    fn traverse(&self, tracer_fn: &mut crate::object::TraverseFn<'_>) {
+        self.inner.traverse(tracer_fn);
+    }
+
+    fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+        let content = PyRc::make_mut(&mut self.inner.content);
+        out.extend(content.drain_entries().map(|(key, _)| key));
     }
 }
 
@@ -1487,7 +1500,7 @@ impl TryFromObject for AnySet {
     }
 }
 
-#[pyclass(module = false, name = "set_iterator", traverse = "manual")]
+#[pyclass(module = false, name = "set_iterator", traverse = "manual", clear)]
 pub(crate) struct PySetIterator {
     size: DictSize,
     internal: PyMutex<PositionIterInternal<PyRc<SetContentType>>>,

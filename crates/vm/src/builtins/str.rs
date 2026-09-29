@@ -2485,16 +2485,17 @@ impl AnyStr for str {
         let mut splits = Vec::new();
         let mut last_offset = 0;
         let mut count = maxsplit;
-        for (offset, _) in self.match_indices(|c: char| c.is_ascii_whitespace() || c == '\x0b') {
+        for (offset, whitespace) in self.match_indices(unicode::classify::is_space) {
+            let end = offset + whitespace.len();
             if last_offset == offset {
-                last_offset += 1;
+                last_offset = end;
                 continue;
             }
             if count == 0 {
                 break;
             }
             splits.push(convert(&self[last_offset..offset]));
-            last_offset = offset + 1;
+            last_offset = end;
             count -= 1;
         }
         if last_offset != self.len() {
@@ -2511,15 +2512,16 @@ impl AnyStr for str {
         let mut splits = Vec::new();
         let mut last_offset = self.len();
         let mut count = maxsplit;
-        for (offset, _) in self.rmatch_indices(|c: char| c.is_ascii_whitespace() || c == '\x0b') {
-            if last_offset == offset + 1 {
-                last_offset -= 1;
+        for (offset, whitespace) in self.rmatch_indices(unicode::classify::is_space) {
+            let end = offset + whitespace.len();
+            if last_offset == end {
+                last_offset = offset;
                 continue;
             }
             if count == 0 {
                 break;
             }
-            splits.push(convert(&self[offset + 1..last_offset]));
+            splits.push(convert(&self[end..last_offset]));
             last_offset = offset;
             count -= 1;
         }
@@ -2598,19 +2600,20 @@ impl AnyStr for Wtf8 {
         let mut splits = Vec::new();
         let mut last_offset = 0;
         let mut count = maxsplit;
-        for (offset, _) in self
+        for (offset, c) in self
             .code_point_indices()
-            .filter(|(_, c)| c.is_char_and(|c| c.is_ascii_whitespace() || c == '\x0b'))
+            .filter(|(_, c)| c.is_char_and(unicode::classify::is_space))
         {
+            let end = offset + c.len_wtf8();
             if last_offset == offset {
-                last_offset += 1;
+                last_offset = end;
                 continue;
             }
             if count == 0 {
                 break;
             }
             splits.push(convert(&self[last_offset..offset]));
-            last_offset = offset + 1;
+            last_offset = end;
             count -= 1;
         }
         if last_offset != self.len() {
@@ -2627,19 +2630,20 @@ impl AnyStr for Wtf8 {
         let mut splits = Vec::new();
         let mut last_offset = self.len();
         let mut count = maxsplit;
-        for (offset, _) in self
+        for (offset, c) in self
             .code_point_indices()
             .rev()
-            .filter(|(_, c)| c.is_char_and(|c| c.is_ascii_whitespace() || c == '\x0b'))
+            .filter(|(_, c)| c.is_char_and(unicode::classify::is_space))
         {
-            if last_offset == offset + 1 {
-                last_offset -= 1;
+            let end = offset + c.len_wtf8();
+            if last_offset == end {
+                last_offset = offset;
                 continue;
             }
             if count == 0 {
                 break;
             }
-            splits.push(convert(&self[offset + 1..last_offset]));
+            splits.push(convert(&self[end..last_offset]));
             last_offset = offset;
             count -= 1;
         }

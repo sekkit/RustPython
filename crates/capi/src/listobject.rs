@@ -1,5 +1,4 @@
 use crate::PyObject;
-use crate::object::define_py_check;
 use crate::pystate::with_vm;
 use core::ffi::c_int;
 use core::ptr::NonNull;
@@ -8,8 +7,29 @@ use rustpython_vm::PyObjectRef;
 use rustpython_vm::builtins::PyList;
 use rustpython_vm::sliceable::{SaturatedSlice, SliceableSequenceMutOp, SliceableSequenceOp};
 
-define_py_check!(fn PyList_Check, types.list_type);
-define_py_check!(exact fn PyList_CheckExact, types.list_type);
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_Check(obj: *mut PyObject) -> c_int {
+    if unsafe { is_foreign_list_buffer(obj) } {
+        return 1;
+    }
+    with_vm(|vm| unsafe {
+        obj.as_ref()
+            .map(|obj| obj.class().is_subtype(vm.ctx.types.list_type))
+            .unwrap_or_default()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_CheckExact(obj: *mut PyObject) -> c_int {
+    if unsafe { is_foreign_list_buffer(obj) } {
+        return 1;
+    }
+    with_vm(|vm| unsafe {
+        obj.as_ref()
+            .map(|obj| obj.class().is(vm.ctx.types.list_type))
+            .unwrap_or_default()
+    })
+}
 
 /// True when `raw` is a CPython-layout list buffer: a foreign raw buffer whose
 /// ob_type (at offset 8) is our exported `PyList_Type` stub. Such buffers are
@@ -51,16 +71,52 @@ pub(crate) unsafe fn foreign_list_to_native(
     vm: &rustpython_vm::VirtualMachine,
     raw: *mut PyObject,
 ) -> rustpython_vm::PyResult<PyObjectRef> {
+    if raw.is_null() || !unsafe { is_foreign_list_buffer(raw) } {
+        return Err(vm.new_system_error("invalid foreign list buffer"));
+    }
     // ob_size at offset 0x10, ob_item at offset 0x18.
-    let size = unsafe { *(raw as *const usize).add(2) } as isize;
+    let raw_size = unsafe { *(raw as *const usize).add(2) };
+    if raw_size > isize::MAX as usize {
+        return Err(vm.new_system_error("foreign list has an invalid size"));
+    }
+    let allocated = unsafe { *(raw as *const usize).add(4) };
+    if raw_size > allocated {
+        return Err(vm.new_system_error("foreign list size exceeds allocation"));
+    }
     let items_ptr = unsafe { *(raw as *const usize).add(3) } as *const *mut PyObject;
-    let mut items = Vec::with_capacity(size.max(0) as usize);
-    for i in 0..size {
-        let item = unsafe { *items_ptr.offset(i as isize) };
-        if !item.is_null() {
-            // New owned reference for the native list; the raw array keeps its own.
-            items.push(unsafe { (&*item).to_owned() });
+    if raw_size != 0 && items_ptr.is_null() {
+        return Err(vm.new_system_error("foreign list has a null item buffer"));
+    }
+    let mut items = Vec::with_capacity(raw_size);
+    for i in 0..raw_size {
+        let item = unsafe { *items_ptr.add(i) };
+        if item.is_null() {
+            // PyList_New leaves slots NULL until the extension initializes
+            // them. Do not silently compress positional slots into a shorter
+            // native list; reject the incomplete buffer at the boundary.
+            return Err(vm.new_system_error(
+                "foreign list contains an uninitialized slot",
+            ));
         }
+        let owned = if crate::objimpl::is_foreign_object(item as *const u8) {
+            // A foreign element has CPython layout, not a RustPython PyInner
+            // refcount. Route it through the existing wrapper instead of
+            // reading its header as a native object.
+            if unsafe { is_foreign_list_buffer(item) } {
+                return Err(vm.new_system_error("nested foreign list is unsupported"));
+            }
+            let wrapped = unsafe { crate::foreign::wrap_foreign_object(item) };
+            let ptr = NonNull::new(wrapped).ok_or_else(|| {
+                vm.take_raised_exception().unwrap_or_else(|| {
+                    vm.new_system_error("failed to wrap foreign list element")
+                })
+            })?;
+            unsafe { PyObjectRef::from_raw(ptr) }
+        } else {
+            // Native elements are cloned; the raw buffer keeps its own ref.
+            unsafe { (&*item).to_owned() }
+        };
+        items.push(owned);
     }
     Ok(vm.ctx.new_list(items).into())
 }
@@ -88,6 +144,11 @@ pub(crate) unsafe fn header_obj_size(raw: *mut PyObject) -> isize {
 /// `raw` must be a valid CPython-layout list buffer.
 pub(crate) unsafe fn header_obj_item(raw: *mut PyObject) -> *mut *mut PyObject {
     unsafe { *(raw as *const usize).add(3) as *mut *mut PyObject }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_NewForeign(size: isize) -> *mut PyObject {
+    with_vm(|vm| new_foreign_list(vm, size))
 }
 
 /// CPython-layout PyListObject header, mirrors the offsets numpy's inlined
@@ -135,9 +196,89 @@ fn new_foreign_list(
 
 /// Explicitly create a foreign CPython-layout list buffer (test/tooling entry
 /// point); the standard `PyList_New` already returns such buffers.
-#[unsafe(no_mangle)]
-pub extern "C" fn PyList_NewForeign(size: isize) -> *mut PyObject {
-    with_vm(|vm| new_foreign_list(vm, size))
+/// Synchronize a native list result back into its original CPython-layout buffer.
+///
+/// The native list owns one reference to every element in `new_items`; the raw
+/// buffer owns its existing slots. New references are cloned into the raw
+/// buffer before the native list is dropped, so replacing an item remains valid
+/// even when the old and new values are the same object.
+///
+/// # Safety
+/// `raw` must be a live foreign list buffer and `native` must be its materialized list.
+pub(crate) unsafe fn foreign_list_sync_from_native(
+    vm: &rustpython_vm::VirtualMachine,
+    raw: *mut PyObject,
+    native: &PyList,
+) -> rustpython_vm::PyResult<()> {
+    if !unsafe { is_foreign_list_buffer(raw) } {
+        return Err(vm.new_system_error("foreign list synchronization on non-foreign object"));
+    }
+
+    let old_size = unsafe { header_obj_size(raw) };
+    if old_size < 0 {
+        return Err(vm.new_system_error("foreign list has a negative size"));
+    }
+    let old_len = old_size as usize;
+    let allocated = unsafe { *(raw as *const usize).add(4) };
+    if old_len > allocated {
+        return Err(vm.new_system_error("foreign list size exceeds allocation"));
+    }
+
+    let new_items = native.borrow_vec().to_vec();
+    let new_len = new_items.len();
+    let item_size = core::mem::size_of::<*mut PyObject>();
+    let required_bytes = new_len
+        .max(1)
+        .checked_mul(item_size)
+        .ok_or_else(|| vm.new_memory_error("foreign list is too large"))?;
+    let new_allocated = if new_len > allocated {
+        new_len.max(allocated.saturating_mul(2)).max(1)
+    } else {
+        allocated.max(1)
+    };
+    let allocation_bytes = new_allocated
+        .checked_mul(item_size)
+        .ok_or_else(|| vm.new_memory_error("foreign list is too large"))?;
+
+    let mut items = unsafe { header_obj_item(raw) };
+    if items.is_null() {
+        return Err(vm.new_system_error("foreign list has a null item buffer"));
+    }
+    if new_len > allocated || required_bytes > allocated.saturating_mul(item_size) {
+        let resized = unsafe {
+            libc::realloc(items as *mut libc::c_void, allocation_bytes) as *mut *mut PyObject
+        };
+        if resized.is_null() {
+            return Err(vm.new_memory_error("foreign list synchronization realloc failed"));
+        }
+        items = resized;
+        unsafe {
+            *(raw as *mut usize).add(3) = items as usize;
+            *(raw as *mut usize).add(4) = new_allocated;
+        }
+    }
+
+    for i in 0..old_len {
+        let slot = unsafe { items.add(i) };
+        let old = unsafe { *slot };
+        if !old.is_null() {
+            unsafe {
+                core::mem::drop(PyObjectRef::from_raw(NonNull::new_unchecked(old)));
+            }
+        }
+        unsafe {
+            *slot = core::ptr::null_mut();
+        }
+    }
+    for (i, item) in new_items.into_iter().enumerate() {
+        unsafe {
+            *items.add(i) = item.into_raw().as_ptr();
+        }
+    }
+    unsafe {
+        *(raw as *mut usize).add(2) = new_len;
+    }
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -184,6 +325,21 @@ pub unsafe extern "C" fn PyList_GetItemRef(obj: *mut PyObject, index: isize) -> 
 /// list is modified (same contract as CPython).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_GetItem(obj: *mut PyObject, index: isize) -> *mut PyObject {
+    // Foreign (CPython-layout) list: return the raw slot as a borrowed reference.
+    if unsafe { is_foreign_list_buffer(obj) } {
+        return with_vm(|vm| {
+            let size = unsafe { header_obj_size(obj) };
+            if index < 0 || index >= size {
+                return Err(vm.new_index_error(format!("list index out of range: {index}")));
+            }
+            let items = unsafe { header_obj_item(obj) };
+            let item = unsafe { *items.offset(index) };
+            if item.is_null() {
+                return Err(vm.new_index_error(format!("list index out of range: {index}")));
+            }
+            Ok(item)
+        });
+    }
     with_vm(|vm| {
         let list = unsafe { &*obj }.try_downcast_ref::<PyList>(vm)?;
         let index: usize = index
@@ -262,16 +418,36 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
     // Foreign (CPython-layout) list: append by growing the ob_item array.
     if unsafe { is_foreign_list_buffer(list) } {
         return with_vm(|vm| {
+            if item.is_null() {
+                return Err(vm.new_system_error("PyList_Append: NULL item"));
+            }
             let size = unsafe { header_obj_size(list) };
-            let allocated = unsafe { *(list as *const usize).add(4) as isize };
-            if size >= allocated {
-                // Grow: doubling allocation, CPython-style.
-                let new_cap = (allocated.max(1) * 2) as usize;
+            if size < 0 {
+                return Err(vm.new_system_error("PyList_Append: negative list size"));
+            }
+            let allocated = unsafe { *(list as *const usize).add(4) };
+            let size_usize = size as usize;
+            if size_usize > allocated {
+                return Err(vm.new_system_error("PyList_Append: size exceeds allocation"));
+            }
+            if size_usize == allocated {
+                // Grow: double allocation, with overflow checked before libc.
+                let new_cap = allocated
+                    .max(1)
+                    .checked_mul(2)
+                    .ok_or_else(|| vm.new_memory_error("PyList_Append: list is too large"))?;
                 let items = unsafe { header_obj_item(list) };
+                if items.is_null() {
+                    return Err(vm.new_system_error("PyList_Append: NULL item buffer"));
+                }
                 let new_items = unsafe {
                     libc::realloc(
                         items as *mut libc::c_void,
-                        new_cap * core::mem::size_of::<*mut PyObject>(),
+                        new_cap
+                            .checked_mul(core::mem::size_of::<*mut PyObject>())
+                            .ok_or_else(|| {
+                                vm.new_memory_error("PyList_Append: list is too large")
+                            })?,
                     ) as *mut *mut PyObject
                 };
                 if new_items.is_null() {
@@ -280,10 +456,12 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
                 unsafe { *(list as *mut usize).add(3) = new_items as usize };
                 unsafe { *(list as *mut usize).add(4) = new_cap };
             }
+            // PyList_Append borrows item; the list owns a new strong reference.
+            unsafe { crate::refcount::_Py_IncRef(item) };
             let items = unsafe { header_obj_item(list) };
             unsafe {
-                *items.offset(size as isize) = item;
-                *(list as *mut usize).add(2) = (size + 1) as usize; // ob_size++
+                *items.add(size_usize) = item;
+                *(list as *mut usize).add(2) = size_usize + 1;
             }
             Ok(())
         });
@@ -302,6 +480,24 @@ pub unsafe extern "C" fn PyList_Insert(
     index: isize,
     item: *mut PyObject,
 ) -> c_int {
+    if unsafe { is_foreign_list_buffer(list) } {
+        return with_vm(|vm| {
+            let native = unsafe { foreign_list_to_native(vm, list)? };
+            let native_list = native.try_downcast_ref::<PyList>(vm)?;
+            let item = unsafe { &*item }.to_owned();
+            let mut vec = native_list.borrow_vec_mut();
+            let index = if index < 0 {
+                index + vec.len() as isize
+            } else {
+                index
+            }
+            .clamp(0, vec.len() as isize) as usize;
+            vec.insert(index, item);
+            drop(vec);
+            unsafe { foreign_list_sync_from_native(vm, list, native_list)? };
+            Ok(())
+        });
+    }
     with_vm(|vm| {
         let list = unsafe { &*list }.try_downcast_ref::<PyList>(vm)?;
         let item = unsafe { &*item }.to_owned();
@@ -319,6 +515,15 @@ pub unsafe extern "C" fn PyList_Insert(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Reverse(list: *mut PyObject) -> c_int {
+    if unsafe { is_foreign_list_buffer(list) } {
+        return with_vm(|vm| {
+            let native = unsafe { foreign_list_to_native(vm, list)? };
+            let native_list = native.try_downcast_ref::<PyList>(vm)?;
+            native_list.borrow_vec_mut().reverse();
+            unsafe { foreign_list_sync_from_native(vm, list, native_list)? };
+            Ok(())
+        });
+    }
     with_vm(|vm| {
         let list = unsafe { &*list }.try_downcast_ref::<PyList>(vm)?;
         list.borrow_vec_mut().reverse();
@@ -329,7 +534,12 @@ pub unsafe extern "C" fn PyList_Reverse(list: *mut PyObject) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_AsTuple(list: *mut PyObject) -> *mut PyObject {
     with_vm(|vm| {
-        let list = unsafe { &*list }.try_downcast_ref::<PyList>(vm)?;
+        let list = if unsafe { is_foreign_list_buffer(list) } {
+            unsafe { foreign_list_to_native(vm, list)? }
+        } else {
+            unsafe { &*list }.to_owned()
+        };
+        let list = list.try_downcast_ref::<PyList>(vm)?;
         Ok(vm.ctx.new_tuple(list.borrow_vec().to_vec()))
     })
 }
@@ -341,7 +551,12 @@ pub unsafe extern "C" fn PyList_GetSlice(
     high: isize,
 ) -> *mut PyObject {
     with_vm(|vm| {
-        let list = unsafe { &*list }.try_downcast_ref::<PyList>(vm)?;
+        let list = if unsafe { is_foreign_list_buffer(list) } {
+            unsafe { foreign_list_to_native(vm, list)? }
+        } else {
+            unsafe { &*list }.to_owned()
+        };
+        let list = list.try_downcast_ref::<PyList>(vm)?;
         let vec = list.borrow_vec();
         let sliced = vec.getitem_by_slice(vm, SaturatedSlice::from_parts(low, high, 1))?;
         Ok(vm.ctx.new_list(sliced))
@@ -355,6 +570,30 @@ pub unsafe extern "C" fn PyList_SetSlice(
     high: isize,
     itemlist: *mut PyObject,
 ) -> c_int {
+    if unsafe { is_foreign_list_buffer(list) } {
+        return with_vm(|vm| {
+            let native = unsafe { foreign_list_to_native(vm, list)? };
+            let native_list = native.try_downcast_ref::<PyList>(vm)?;
+            let slice = SaturatedSlice::from_parts(low, high, 1);
+            if itemlist.is_null() {
+                native_list
+                    .borrow_vec_mut()
+                    .delitem_by_slice(vm, slice)?;
+            } else {
+                let itemlist = if unsafe { is_foreign_list_buffer(itemlist) } {
+                    unsafe { foreign_list_to_native(vm, itemlist)? }
+                } else {
+                    unsafe { &*itemlist }.to_owned()
+                };
+                let items: Vec<PyObjectRef> = itemlist.try_to_value(vm)?;
+                native_list
+                    .borrow_vec_mut()
+                    .setitem_by_slice(vm, slice, &items)?;
+            }
+            unsafe { foreign_list_sync_from_native(vm, list, native_list)? };
+            Ok(())
+        });
+    }
     with_vm(|vm| {
         let list = unsafe { &*list }.try_downcast_ref::<PyList>(vm)?;
         let slice = SaturatedSlice::from_parts(low, high, 1);
@@ -372,6 +611,15 @@ pub unsafe extern "C" fn PyList_SetSlice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Sort(list: *mut PyObject) -> c_int {
+    if unsafe { is_foreign_list_buffer(list) } {
+        return with_vm(|vm| {
+            let native = unsafe { foreign_list_to_native(vm, list)? };
+            let native_list = native.try_downcast_ref::<PyList>(vm)?;
+            vm.call_method(native_list.as_object(), "sort", ())?;
+            unsafe { foreign_list_sync_from_native(vm, list, native_list)? };
+            Ok(())
+        });
+    }
     with_vm(|vm| {
         let list = unsafe { &*list }.try_downcast_ref::<PyList>(vm)?;
         vm.call_method(list.as_object(), "sort", ())?;

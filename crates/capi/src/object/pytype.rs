@@ -8,7 +8,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use rustpython_vm::builtins::{PyStr, PyType};
 use rustpython_vm::function::FuncArgs;
-use rustpython_vm::object::SIZEOF_GCPREFIX;
+use rustpython_vm::object::GCPREFIX_VTABLE_OFFSET_FROM_PYINNER;
 use rustpython_vm::protocol::{CBufferSlots, CPyBuffer};
 use rustpython_vm::types::PyTypeSlots;
 use rustpython_vm::{AsObject, Py, PyObject, PyObjectRef, PyRef, VirtualMachine};
@@ -157,10 +157,10 @@ pub(crate) unsafe fn looks_like_native_object(op: *mut PyObject) -> bool {
     if op.is_null() {
         return false;
     }
-    const SIZEOF_GCPREFIX: usize = rustpython_vm::object::SIZEOF_GCPREFIX;
-    let vtable_slot =
-        unsafe { (op as *const usize).sub(SIZEOF_GCPREFIX / core::mem::size_of::<usize>()) };
-    let vtable = unsafe { *vtable_slot };
+    let vtable = unsafe {
+        let vtable_ptr = (op as *const u8).sub(GCPREFIX_VTABLE_OFFSET_FROM_PYINNER);
+        *(vtable_ptr as *const usize)
+    };
     vtable >= 0x1000 && vtable % core::mem::size_of::<usize>() == 0
 }
 
@@ -297,13 +297,12 @@ fn vtable_probes(vm: &VirtualMachine) -> Vec<(usize, *mut u8)> {
     };
 
     fn probe<T: PyPayload>(obj: PyObjectRef, ty: PyRef<PyType>) -> (usize, *mut u8) {
-        // The payload vtable lives in the GcPrefix, which is allocated
-        // immediately BEFORE the PyInner (the new 16-byte header), so read it
-        // at a negative offset of SIZEOF_GCPREFIX from the object pointer.
+        // The vtable is the last GcPrefix field immediately before PyInner.
         // typ remains at offset 8 (matching CPython's ob_type).
         let vtable = unsafe {
-            let ptr = (obj.as_object().as_raw() as *const u8).sub(SIZEOF_GCPREFIX);
-            *(ptr as *const usize)
+            let vtable_ptr =
+                (obj.as_object().as_raw() as *const u8).sub(GCPREFIX_VTABLE_OFFSET_FROM_PYINNER);
+            *(vtable_ptr as *const usize)
         };
         (vtable, ty.as_object().as_raw().cast_mut().cast())
     }

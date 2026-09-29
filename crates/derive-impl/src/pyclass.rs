@@ -633,15 +633,10 @@ pub(crate) fn impl_pyclass(attr: PunctuatedNestedMeta, item: Item) -> Result<Tok
     )?;
 
     const ALLOWED_TRAVERSE_OPTS: &[&str] = &["manual"];
-    // Generate MaybeTraverse impl with both traverse and clear support
-    //
-    // For traverse:
-    // 1. no `traverse` at all: HAS_TRAVERSE = false, try_traverse does nothing
-    // 2. `traverse = "manual"`: HAS_TRAVERSE = true, but no #[derive(Traverse)]
-    // 3. `traverse`: HAS_TRAVERSE = true, and #[derive(Traverse)]
-    //
-    // For clear (tp_clear):
-    // 1. no `clear`: HAS_CLEAR = HAS_TRAVERSE (default: same as traverse)
+    // For clear (tp_clear), the implementation must be explicit because the
+    // default `Traverse::clear` is intentionally a no-op and cannot break
+    // ownership cycles.
+    // 1. no `clear`: HAS_CLEAR = false (traverse-only)
     // 2. `clear` or `clear = true`: HAS_CLEAR = true, try_clear calls Traverse::clear
     // 3. `clear = false`: HAS_CLEAR = false (rare: traverse without clear)
     let has_traverse = class_meta.inner().contains_key("traverse");
@@ -649,8 +644,8 @@ pub(crate) fn impl_pyclass(attr: PunctuatedNestedMeta, item: Item) -> Result<Tok
         // If clear attribute is present, use its value
         class_meta.inner()._bool("clear")?
     } else {
-        // If clear attribute is absent, default to same as traverse
-        has_traverse
+        // Never advertise the default no-op Traverse::clear as tp_clear.
+        false
     };
 
     let derive_trace = if has_traverse {
@@ -803,8 +798,18 @@ pub(crate) fn impl_pyexception(attr: PunctuatedNestedMeta, item: &Item) -> Resul
         None => quote! {},
     };
 
+    let clear_attr = if class_meta.inner().contains_key("clear") {
+        if class_meta.inner()._bool("clear")? {
+            quote! { , clear }
+        } else {
+            quote! { , clear = false }
+        }
+    } else {
+        quote! {}
+    };
+
     let ret = quote! {
-        #[pyclass(module = false, name = #class_name, base = #base_class_name #traverse_attr)]
+        #[pyclass(module = false, name = #class_name, base = #base_class_name #traverse_attr #clear_attr)]
         #item
         #impl_pyclass
     };

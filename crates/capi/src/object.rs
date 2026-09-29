@@ -406,6 +406,9 @@ pub unsafe extern "C" fn PyObject_LengthHint(
     defaultvalue: isize,
 ) -> isize {
     with_vm(|vm| {
+        if unsafe { crate::listobject::is_foreign_list_buffer(obj) } {
+            return Ok(unsafe { crate::listobject::header_obj_size(obj) });
+        }
         let obj = unsafe { &*obj };
         // Try __length_hint__() first.
         if let Ok(hint) = vm.call_method(obj, "__length_hint__", ()) {

@@ -353,6 +353,8 @@ unsafe impl Link for GcLink {
 /// while allowing RustPython's GC to track all objects.
 #[repr(C, align(8))]
 pub(super) struct GcPrefix {
+    /// Trailing bytes reserved after PyInner for this allocation.
+    pub(super) allocation_extra: usize,
     /// GC bits for free-threading (like ob_gc_bits)
     pub(super) gc_bits: PyAtomic<u8>,
     /// GC generation index (0-2=gen, GC_PERMANENT=permanent, GC_UNTRACKED=not tracked).
@@ -433,9 +435,11 @@ const _: () = assert!(
     "PyInner header must match CPython's PyObject layout (two pointer-widths)"
 );
 /// Size of the GcPrefix allocated immediately before every PyInner.
-/// Exposed publicly so the C-API crate can locate an object's vtable at
-/// `ptr - SIZEOF_GCPREFIX`.
+/// Exposed publicly so other crates can locate the prefix at `ptr - SIZEOF_GCPREFIX`.
 pub const SIZEOF_GCPREFIX: usize = core::mem::size_of::<GcPrefix>();
+/// Byte distance from PyInner to the GcPrefix vtable field.
+pub const GCPREFIX_VTABLE_OFFSET_FROM_PYINNER: usize =
+    core::mem::size_of::<GcPrefix>() - core::mem::offset_of!(GcPrefix, vtable);
 
 /// Optional C-API foreign object dispatch table.
 ///
@@ -1259,24 +1263,16 @@ impl InstanceDict {
 }
 
 impl<T: PyPayload> PyInner<T> {
-    /// Deallocate a PyInner, handling optional prefix(es).
-    /// Layout: [ObjExt?][WeakRefList?][GcPrefix][PyInner<T>]
+    /// Reconstruct the allocation layout used by `new_with_extra`.
     ///
     /// # Safety
-    /// `ptr` must be a valid pointer from `PyInner::new` and must not be used after this call.
-    unsafe fn dealloc(ptr: *mut Self) {
+    /// `ptr` must point to a live allocation created for `PyInner<T>`.
+    unsafe fn allocation_layout(ptr: *mut Self) -> (*mut u8, core::alloc::Layout, bool) {
         unsafe {
             let (flags, member_count) = (*ptr).read_type_flags();
             let has_ext =
                 flags.has_feature(crate::types::PyTypeFlags::HAS_DICT) || member_count > 0;
             let has_weakref = flags.has_feature(crate::types::PyTypeFlags::HAS_WEAKREF);
-            // Objects published to lock-free caches keep their memory mapped
-            // until a QSBR grace period passes; destructors still run now.
-            let published = (*ptr).ref_count.is_published();
-
-            // Reconstruct the same layout used in new(): the GcPrefix always
-            // precedes PyInner (immediately before it), so it must be included
-            // even when there are no ObjExt/WeakRefList prefixes.
             let mut layout = core::alloc::Layout::from_size_align(0, 1).unwrap();
 
             if has_ext {
@@ -1295,11 +1291,37 @@ impl<T: PyPayload> PyInner<T> {
                 .extend(core::alloc::Layout::new::<GcPrefix>())
                 .unwrap()
                 .0;
-            let (combined, inner_offset) =
-                layout.extend(core::alloc::Layout::new::<Self>()).unwrap();
-            let combined = combined.pad_to_align();
+            let extra = (*ptr).gc_prefix().allocation_extra;
+            let payload_layout = if extra == 0 {
+                core::alloc::Layout::new::<Self>()
+            } else {
+                core::alloc::Layout::from_size_align(
+                    core::mem::size_of::<Self>() + extra,
+                    core::mem::align_of::<Self>(),
+                )
+                .unwrap()
+            };
+            let (combined, inner_offset) = layout.extend(payload_layout).unwrap();
 
-            let alloc_ptr = (ptr as *mut u8).sub(inner_offset);
+            (
+                (ptr as *mut u8).sub(inner_offset),
+                combined.pad_to_align(),
+                has_ext,
+            )
+        }
+    }
+
+    /// Deallocate a PyInner, handling optional prefix(es).
+    /// Layout: [ObjExt?][WeakRefList?][GcPrefix][PyInner<T>]
+    ///
+    /// # Safety
+    /// `ptr` must be a valid pointer from `PyInner::new` and must not be used after this call.
+    unsafe fn dealloc(ptr: *mut Self) {
+        unsafe {
+            let (alloc_ptr, combined, has_ext) = Self::allocation_layout(ptr);
+            // Objects published to lock-free caches keep their memory mapped
+            // until a QSBR grace period passes; destructors still run now.
+            let published = (*ptr).ref_count.is_published();
 
             // Drop PyInner (payload, typ, etc.)
             core::ptr::drop_in_place(ptr);
@@ -1423,6 +1445,7 @@ impl<T: PyPayload + core::fmt::Debug> PyInner<T> {
             // gc_offset is its offset from the allocation start.
             let gc_ptr = alloc_ptr.add(gc_offset) as *mut GcPrefix;
             gc_ptr.write(GcPrefix {
+                allocation_extra: extra,
                 gc_bits: Radium::new(0),
                 gc_generation: Radium::new(GC_UNTRACKED),
                 gc_pointers: Pointers::new(),
@@ -1510,16 +1533,11 @@ impl<T: PyPayload> Drop for FreeList<T> {
         // MAX_FREELIST per type per thread.
         for ptr in self.items.get_mut().drain(..) {
             unsafe {
-                // Freelist entries are exact base types allocated by
-                // `PyInner::new`, which always reserves a 32-byte GcPrefix
-                // immediately before the PyInner. Free the whole allocation
-                // (GcPrefix + PyInner) without running the payload destructor.
-                let alloc_ptr = (ptr as *mut u8).sub(SIZEOF_GCPREFIX);
-                let (combined, _) = core::alloc::Layout::new::<GcPrefix>()
-                    .extend(core::alloc::Layout::new::<PyInner<T>>())
-                    .unwrap();
-                let combined = combined.pad_to_align();
-                alloc::alloc::dealloc(alloc_ptr, combined);
+                // Reconstruct every optional prefix and trailing byte so the
+                // cached block is freed with the same layout used to allocate it.
+                let (alloc_ptr, layout, _) =
+                    PyInner::<T>::allocation_layout(ptr.cast::<PyInner<T>>());
+                alloc::alloc::dealloc(alloc_ptr, layout);
             }
         }
     }
@@ -2662,29 +2680,36 @@ impl<T: PyPayload + crate::object::MaybeTraverse + core::fmt::Debug> PyRef<T> {
         let has_dict = dict.is_some();
         let is_heaptype = typ.heaptype_ext.is_some();
 
-        // Try to reuse from freelist (no dict, no heaptype)
+        // Freelist entries may only be reused for the exact type that created
+        // them. Retagging a cached object can invalidate its optional prefixes.
         let cached = if !has_dict && !is_heaptype {
             unsafe { T::freelist_pop(&payload) }
         } else {
             None
         };
+        let cached = cached.and_then(|cached| {
+            let inner = cached.as_ptr() as *mut PyInner<T>;
+            let cached_typ = unsafe { (*inner).typ.load_raw() };
+            if core::ptr::eq(cached_typ, &*typ) {
+                Some(cached)
+            } else {
+                unsafe {
+                    if !T::freelist_push(cached.as_ptr()) {
+                        PyInner::<T>::dealloc(inner);
+                    }
+                }
+                None
+            }
+        });
 
         let ptr = if let Some(cached) = cached {
+            drop(typ);
             let inner = cached.as_ptr() as *mut PyInner<T>;
             unsafe {
                 core::ptr::write(&mut (*inner).ref_count, RefCount::new());
                 (*inner).gc_prefix().gc_bits.store(0, Ordering::Relaxed);
                 core::ptr::drop_in_place(&mut (*inner).payload);
                 core::ptr::write(&mut (*inner).payload, payload);
-                // Freelist only stores exact base types (push-side filter),
-                // but subtypes sharing the same Rust payload (e.g. structseq)
-                // may pop entries. Update typ if it differs.
-                let cached_typ: *const Py<PyType> = &*(*inner).typ;
-                if core::ptr::eq(cached_typ, &*typ) {
-                    drop(typ);
-                } else {
-                    let _old = (*inner).typ.swap(typ);
-                }
             }
             unsafe { NonNull::new_unchecked(inner.cast::<Py<T>>()) }
         } else {
@@ -2946,6 +2971,7 @@ pub(crate) fn init_type_hierarchy() -> (PyTypeRef, PyTypeRef, PyTypeRef) {
 
                 let gc_ptr = alloc_ptr.add(gc_offset) as *mut GcPrefix;
                 gc_ptr.write(GcPrefix {
+                    allocation_extra: 0,
                     gc_bits: Radium::new(0),
                     gc_generation: Radium::new(GC_UNTRACKED),
                     gc_pointers: Pointers::new(),

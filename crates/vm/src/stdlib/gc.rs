@@ -205,24 +205,7 @@ mod gc {
             stack_frames.insert(obj as *const crate::PyObject as usize);
         });
 
-        let mut result = Vec::new();
-
-        // Scan all tracked objects across all generations
-        let all_objects = gc_state::gc_state().get_objects(None);
-        for obj in all_objects {
-            let obj_ptr = obj.as_ref() as *const crate::PyObject as usize;
-            if stack_frames.contains(&obj_ptr) {
-                continue;
-            }
-            let referent_ptrs = unsafe { obj.gc_get_referent_ptrs() };
-            for child_ptr in referent_ptrs {
-                if targets.contains(&(child_ptr.as_ptr() as usize)) {
-                    result.push(obj.clone());
-                    break;
-                }
-            }
-        }
-
+        let result = gc_state::gc_state().get_referrers(&targets, &stack_frames);
         vm.ctx.new_list(result)
     }
 

@@ -28,7 +28,7 @@ use alloc::fmt;
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 
-#[pyclass(module = false, name = "tuple", traverse = "manual")]
+#[pyclass(module = false, name = "tuple", traverse = "manual", clear)]
 pub struct PyTuple<R = PyObjectRef> {
     elements: TupleElements<R>,
 }
