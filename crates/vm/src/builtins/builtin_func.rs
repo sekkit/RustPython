@@ -11,7 +11,7 @@ use alloc::fmt;
 
 // PyCFunctionObject in CPython
 #[repr(C)]
-#[pyclass(name = "builtin_function_or_method", module = false, traverse = "manual")]
+#[pyclass(name = "builtin_function_or_method", module = false, traverse = "manual", clear)]
 pub struct PyNativeFunction {
     pub(crate) value: &'static PyMethodDef,
     pub(crate) zelf: Option<PyObjectRef>,
@@ -37,6 +37,15 @@ unsafe impl crate::object::Traverse for PyNativeFunction {
         }
         if let Some(owner) = self._method_def_owner.as_ref() {
             owner.traverse(tracer_fn);
+        }
+    }
+
+    fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+        if let Some(zelf) = self.zelf.take() {
+            out.push(zelf);
+        }
+        if let Some(owner) = self._method_def_owner.take() {
+            out.push(owner);
         }
     }
 }
@@ -301,7 +310,7 @@ impl PyNativeFunction {
 }
 
 // PyCMethodObject in CPython
-#[pyclass(name = "builtin_function_or_method", module = false, base = PyNativeFunction, ctx = "builtin_function_or_method_type", traverse = "manual")]
+#[pyclass(name = "builtin_function_or_method", module = false, base = PyNativeFunction, ctx = "builtin_function_or_method_type", traverse = "manual", clear)]
 pub struct PyNativeMethod {
     pub(crate) func: PyNativeFunction,
     pub(crate) class: &'static Py<PyType>, // TODO: the actual life is &'self
@@ -314,6 +323,10 @@ pub struct PyNativeMethod {
 unsafe impl crate::object::Traverse for PyNativeMethod {
     fn traverse(&self, tracer_fn: &mut crate::object::TraverseFn<'_>) {
         self.func.traverse(tracer_fn);
+    }
+
+    fn clear(&mut self, out: &mut Vec<PyObjectRef>) {
+        self.func.clear(out);
     }
 }
 
