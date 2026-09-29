@@ -1122,9 +1122,70 @@ impl PyStr {
 
     #[pymethod]
     fn format(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Wtf8Buf> {
+        if let Some(result) = self.format_simple_auto_fields(&args, vm) {
+            return result;
+        }
         let format_str =
             FormatString::from_str(self.as_wtf8()).map_err(|e| e.to_pyexception(vm))?;
         format(&format_str, &args, vm)
+    }
+
+    /// Fast path for the common `"literal {} literal {}".format(a, b)` shape.
+    ///
+    /// The general formatter reparses the template and recursively parses each
+    /// field's format spec. Templates containing only literal text and empty
+    /// automatic fields need neither operation; every other syntax falls back
+    /// to the full CPython-compatible parser below.
+    fn format_simple_auto_fields(
+        &self,
+        args: &FuncArgs,
+        vm: &VirtualMachine,
+    ) -> Option<PyResult<Wtf8Buf>> {
+        if !args.kwargs.is_empty() || args.args.is_empty() {
+            return None;
+        }
+
+        // Validate the entire template first. A later unsupported field must
+        // fall back without invoking an earlier argument's __format__ method.
+        let mut field_count = 0usize;
+        let mut chars = self.as_wtf8().code_points();
+        while let Some(ch) = chars.next() {
+            match ch {
+                ch if ch == CodePoint::from_char('{') => {
+                    if chars.next() != Some(CodePoint::from_char('}')) {
+                        return None;
+                    }
+                    field_count += 1;
+                }
+                ch if ch == CodePoint::from_char('}') => return None,
+                _ => {}
+            }
+        }
+        if field_count == 0 || field_count != args.args.len() {
+            return None;
+        }
+
+        let mut chars = self.as_wtf8().code_points();
+        let mut literal = Wtf8Buf::new();
+        let mut result = Wtf8Buf::new();
+        let mut arg_index = 0usize;
+        while let Some(ch) = chars.next() {
+            if ch == CodePoint::from_char('{') {
+                let _ = chars.next();
+                result.push_wtf8(literal.as_ref());
+                literal = Wtf8Buf::new();
+                let formatted = match vm.format(&args.args[arg_index], vm.ctx.empty_str.to_owned()) {
+                    Ok(value) => value,
+                    Err(err) => return Some(Err(err)),
+                };
+                result.push_wtf8(formatted.as_wtf8());
+                arg_index += 1;
+            } else {
+                literal.push(ch);
+            }
+        }
+        result.push_wtf8(literal.as_ref());
+        Some(Ok(result))
     }
 
     #[pymethod]
