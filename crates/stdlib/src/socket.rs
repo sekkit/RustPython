@@ -36,6 +36,26 @@ mod _socket {
         host_windows::init_winsock();
 
         __module_exec(vm, module);
+
+        // CPython exposes a tracked `_socket.CAPI` capsule. The pointer is
+        // opaque to RustPython; a stable non-null sentinel is enough for the
+        // capsule tracking/referrer contract exercised by the stdlib.
+        static SOCKET_CAPI_SENTINEL: u8 = 0;
+        let capsule: PyObjectRef = vm.ctx.new_capsule(
+
+            core::ptr::addr_of!(SOCKET_CAPI_SENTINEL).cast_mut().cast(),
+
+            Some(c"socket C API"),
+
+            None,
+
+        )
+        .into();
+        unsafe {
+            crate::vm::gc_state::gc_state()
+                .track_object(core::ptr::NonNull::from(capsule.as_object()));
+        }
+        module.set_attr("CAPI", capsule, vm)?;
         Ok(())
     }
 
