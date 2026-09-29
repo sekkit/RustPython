@@ -696,7 +696,6 @@ class TypesTests(unittest.TestCase):
         self.assertIsInstance(exc.__traceback__, types.TracebackType)
         self.assertIsInstance(exc.__traceback__.tb_frame, types.FrameType)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; AttributeError: 'NoneType' object has no attribute 'datetime_CAPI'
     def test_capsule_type(self):
         self.assertIsInstance(_datetime.datetime_CAPI, types.CapsuleType)
 

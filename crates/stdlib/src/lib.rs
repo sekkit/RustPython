@@ -12,6 +12,7 @@ extern crate alloc;
 pub(crate) mod macros;
 
 mod _asyncio;
+mod _datetime;
 mod _remote_debugging;
 pub mod array;
 mod binascii;
@@ -173,6 +174,7 @@ use crate::vm::{Context, builtins};
 pub fn stdlib_module_defs(ctx: &Context) -> Vec<&'static builtins::PyModuleDef> {
     vec![
         _asyncio::module_def(ctx),
+        _datetime::module_def(ctx),
         _decimal::module_def(ctx),
         _opcode::module_def(ctx),
         _remote_debugging::module_def(ctx),
