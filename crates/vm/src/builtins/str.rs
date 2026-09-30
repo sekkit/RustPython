@@ -1,6 +1,6 @@
 use super::{
     PositionIterInternal, PyBytesRef, PyDict, PyList, PyTuple, PyTupleRef, PyType, PyTypeRef,
-    int::{PyInt, PyIntRef},
+    int::{PyInt, PyIntRef, check_int_to_str_digits},
     iter::{
         IterStatus::{self, Exhausted},
         builtins_iter,
@@ -1174,11 +1174,19 @@ impl PyStr {
                 let _ = chars.next();
                 result.push_wtf8(literal.as_ref());
                 literal = Wtf8Buf::new();
-                let formatted = match vm.format(&args.args[arg_index], vm.ctx.empty_str.to_owned()) {
-                    Ok(value) => value,
-                    Err(err) => return Some(Err(err)),
-                };
-                result.push_wtf8(formatted.as_wtf8());
+                let argument = &args.args[arg_index];
+                if let Some(integer) = argument.downcast_ref_if_exact::<PyInt>(vm) {
+                    if let Err(err) = check_int_to_str_digits(integer.as_bigint(), vm) {
+                        return Some(Err(err));
+                    }
+                    result.push_str(&integer.to_str_radix_10());
+                } else {
+                    let formatted = match vm.format(argument, vm.ctx.empty_str.to_owned()) {
+                        Ok(value) => value,
+                        Err(err) => return Some(Err(err)),
+                    };
+                    result.push_wtf8(formatted.as_wtf8());
+                }
                 arg_index += 1;
             } else {
                 literal.push(ch);
