@@ -360,7 +360,7 @@ impl FuncArgs {
                         T::parameters().iter().copied(),
                     )
                 {
-                    msg.push_str(&format!(" Did you mean '{suggestion}'?"));
+                    msg.push_str(&format!(". Did you mean '{suggestion}'?"));
                 }
                 return Err(vm.new_type_error(msg));
             }
@@ -437,7 +437,7 @@ impl FuncArgs {
             if let Some(suggestion) =
                 crate::utils::suggest_keyword(s, parameters.iter().copied())
             {
-                msg.push_str(&format!(" Did you mean '{suggestion}'?"));
+                msg.push_str(&format!(". Did you mean '{suggestion}'?"));
             }
             return Some(vm.new_type_error(msg));
         }

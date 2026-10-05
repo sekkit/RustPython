@@ -269,7 +269,11 @@ pub(crate) fn callable_display_name(obj: &PyObject, vm: &VirtualMachine) -> Opti
         return Some(w.wrapper.name.as_str().to_owned());
     }
     if let Some(md) = obj.downcast_ref::<PyMethodDescriptor>() {
-        return Some(format!("{}.{}", md.objclass.name(), md.common.name.as_str()));
+        // A method descriptor is named without its class in error messages:
+        // `str.split(maxsplt=1)` reports `split() got an unexpected keyword
+        // argument 'maxsplt'`. A *bound* builtin method keeps the dotted form
+        // (`[].index(x=2)` -> `list.index`) and is handled below.
+        return Some(md.common.name.as_str().to_owned());
     }
     if let Some(bm) = obj.downcast_ref::<PyBoundMethod>()
         && let Some(f) = bm.function_obj().downcast_ref::<PyNativeFunction>()

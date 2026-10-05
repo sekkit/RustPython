@@ -412,7 +412,7 @@ impl PyFunction {
                         )
                     })
                 {
-                    msg.push_str(&format!(" Did you mean '{suggestion}'?"));
+                    msg.push_str(&format!(". Did you mean '{suggestion}'?"));
                 }
                 return Err(vm.new_type_error(msg));
             }
