@@ -580,7 +580,10 @@ mod tests {
                 .str()
                 .unwrap();
 
-            assert_eq!(implementation, "cpython");
+            // PEP 421: `name` identifies the implementation, so this is
+            // "rustpython", not "cpython" (the `cache_tag` is the cpython one,
+            // since our compiler is cpython compatible).
+            assert_eq!(implementation, "rustpython");
         })
     }
 

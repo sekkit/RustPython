@@ -110,7 +110,9 @@ fn get_or_create_stub(real_type: *const PyTypeObject) -> usize {
         }
     }
     let stub_addr = alloc_type_stub(real_type);
-    cache.get_or_insert_with(HashMap::new).insert(real_addr, stub_addr);
+    cache
+        .get_or_insert_with(HashMap::new)
+        .insert(real_addr, stub_addr);
     stub_addr
 }
 
@@ -157,6 +159,14 @@ pub(crate) unsafe fn looks_like_native_object(op: *mut PyObject) -> bool {
     if op.is_null() {
         return false;
     }
+    // A RustPython heap object always carries a live type pointer at offset 8.
+    // The type stubs handed to C extensions are `alloc_zeroed` blocks with
+    // ob_type deliberately left NULL, so this also rejects them — without it
+    // they pass the vtable test below and get dereferenced as `PyInner`, which
+    // reads the NULL `typ` and aborts.
+    if unsafe { *(op as *const usize).add(1) } == 0 {
+        return false;
+    }
     let vtable = unsafe {
         let vtable_ptr = (op as *const u8).sub(GCPREFIX_VTABLE_OFFSET_FROM_PYINNER);
         *(vtable_ptr as *const usize)
@@ -175,8 +185,11 @@ pub unsafe extern "C" fn Py_IS_TYPE(op: *mut PyObject, ty: *mut PyTypeObject) ->
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GetFlags(ptr: *const PyTypeObject) -> c_ulong {
-    let ty = unsafe { &*ptr };
-    ty.slots.flags.bits() as u32 as c_ulong
+    // `ptr` may be a type stub handed out by `Py_TYPE`; resolve it first.
+    with_vm(|vm| -> rustpython_vm::PyResult<c_ulong> {
+        let ty = resolve_type_ptr(vm, ptr)?;
+        Ok(ty.slots.flags.bits() as u32 as c_ulong)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -206,8 +219,9 @@ pub(crate) fn resolve_type_ptr(
     }
     for (vtable, ty) in vtable_probes(vm) {
         if addr == vtable {
-            let obj =
-                unsafe { rustpython_vm::PyObjectRef::from_raw(NonNull::new_unchecked(ty.cast())) };
+            // `to_owned` (incref): the probe holds a borrowed type address, so
+            // taking ownership of it would drop a reference never acquired.
+            let obj = unsafe { (&*(ty.cast::<PyObject>())).to_owned() };
             return obj
                 .downcast::<PyType>()
                 .map_err(|_| vm.new_system_error("PyType_IsSubtype: vtable probe is not a type"));
@@ -229,9 +243,10 @@ pub(crate) fn resolve_type_ptr(
     }
     // Check the dynamic type stub cache (stub addr -> real type addr)
     if let Some(real_addr) = resolve_dynamic_stub_addr(addr) {
-        let obj = unsafe {
-            rustpython_vm::PyObjectRef::from_raw(NonNull::new_unchecked(real_addr as *mut PyObject))
-        };
+        // `to_owned` (incref) rather than `from_raw`: the cache holds a bare
+        // address, not an owned reference, and taking ownership of it here
+        // would drop a reference this call never acquired.
+        let obj = unsafe { (&*(real_addr as *const PyObject)).to_owned() };
         return obj
             .downcast::<PyType>()
             .map_err(|_| vm.new_system_error("PyType_IsSubtype: stub does not point to a type"));
@@ -242,6 +257,34 @@ pub(crate) fn resolve_type_ptr(
     obj.downcast::<PyType>().map_err(|_| {
         vm.new_system_error("PyType_IsSubtype called with a pointer that is not a type")
     })
+}
+
+/// Interpret a C-visible type pointer as a native RustPython object.
+///
+/// Most type pointers reaching the C API are genuine RustPython heap objects and
+/// are used directly. The exceptions are our exported type stubs (header byte
+/// copies living in `objectstatics`) and foreign raw CPython-layout type
+/// objects from C extensions: neither is a `PyInner`, so reading their MRO or
+/// payload vtable through the native object model faults. Those are mapped back
+/// to the real type here.
+///
+/// Returns `None` when `ptr` is not resolvable to a type; the caller then
+/// decides whether to treat the pointer as an opaque object.
+pub(crate) fn native_type_object(
+    vm: &VirtualMachine,
+    ptr: *mut PyObject,
+) -> Option<rustpython_vm::PyObjectRef> {
+    if ptr.is_null() {
+        return None;
+    }
+    if !crate::objimpl::is_foreign_object(ptr as *const u8)
+        && unsafe { looks_like_native_object(ptr) }
+    {
+        return Some(unsafe { &*ptr }.to_owned());
+    }
+    resolve_type_ptr(vm, ptr.cast::<PyTypeObject>())
+        .ok()
+        .map(|ty| ty.as_object().to_owned())
 }
 
 /// Look up a dynamic type stub address to find the real type address.
@@ -343,33 +386,44 @@ fn vtable_probes(vm: &VirtualMachine) -> Vec<(usize, *mut u8)> {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GetName(ptr: *const PyTypeObject) -> *mut PyObject {
-    with_vm(|vm| unsafe { &*ptr }.__name__(vm))
+    with_vm(|vm| {
+        // `ptr` may be a type stub handed out by `Py_TYPE`; resolve it first.
+        let ty = resolve_type_ptr(vm, ptr)?;
+        Ok(ty.__name__(vm))
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GetQualName(ptr: *const PyTypeObject) -> *mut PyObject {
-    with_vm(|vm| unsafe { &*ptr }.__qualname__(vm))
+    with_vm(|vm| {
+        let ty = resolve_type_ptr(vm, ptr)?;
+        Ok(ty.__qualname__(vm))
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GetModuleName(ptr: *const PyTypeObject) -> *mut PyObject {
-    with_vm(|vm| unsafe { &*ptr }.__module__(vm))
+    with_vm(|vm| {
+        let ty = resolve_type_ptr(vm, ptr)?;
+        Ok(ty.__module__(vm))
+    })
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GetFullyQualifiedName(ptr: *const PyTypeObject) -> *mut PyObject {
     with_vm(|vm| {
-        let ty = unsafe { &*ptr };
+        let ty = resolve_type_ptr(vm, ptr)?;
         let qualname = ty.__qualname__(vm).try_downcast::<PyStr>(vm)?;
         let module = ty.__module__(vm);
 
-        if let Some(module) = module.downcast_ref::<PyStr>()
+        let full = if let Some(module) = module.downcast_ref::<PyStr>()
             && module.as_wtf8() != "builtins"
         {
-            Ok(vm.ctx.new_str(format!("{module}.{qualname}")))
+            vm.ctx.new_str(format!("{module}.{qualname}"))
         } else {
-            Ok(qualname)
-        }
+            qualname
+        };
+        Ok(full)
     })
 }
 

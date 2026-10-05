@@ -938,16 +938,36 @@ mod tests {
         })
     }
 
+    unsafe extern "C" fn sentinel_fn(_slf: *mut PyObject, _args: *mut PyObject) -> *mut PyObject {
+        core::ptr::null_mut()
+    }
+
     #[test]
     fn module_create_with_methods() {
-        let mut method = PyMethodDef {
-            ml_name: c"hello".as_ptr(),
-            ml_meth: PyMethodPointer {
-                PyCFunction: hello_fn,
+        let mut methods = [
+            PyMethodDef {
+                ml_name: c"hello".as_ptr(),
+                ml_meth: PyMethodPointer {
+                    PyCFunction: hello_fn,
+                },
+                ml_flags: PyMethodFlags::NOARGS.bits() as c_int,
+                ml_doc: c"say hello".as_ptr(),
             },
-            ml_flags: PyMethodFlags::NOARGS.bits() as c_int,
-            ml_doc: c"say hello".as_ptr(),
-        };
+            // The method table is scanned until an entry with a NULL ml_name,
+            // exactly as CPython's PyModule_AddFunctions does, so it must be
+            // terminated by a sentinel. Without one the scan runs past the
+            // array and PyModule_Create returns NULL.
+            PyMethodDef {
+                ml_name: core::ptr::null(),
+                // Never invoked - method_def_count stops at the NULL ml_name -
+                // but a real function pointer keeps the sentinel well-defined.
+                ml_meth: PyMethodPointer {
+                    PyCFunction: sentinel_fn,
+                },
+                ml_flags: 0,
+                ml_doc: core::ptr::null(),
+            },
+        ];
         let mut def = PyModuleDef {
             m_base: PyModuleDefBase {
                 ob_head: [0; 2],
@@ -966,7 +986,7 @@ mod tests {
         };
         Python::attach(|py| {
             unsafe {
-                def.m_methods = &mut method as *mut PyMethodDef;
+                def.m_methods = methods.as_mut_ptr();
                 let module_ptr = PyModule_Create(&mut def as *mut PyModuleDef);
                 assert!(!module_ptr.is_null(), "PyModule_Create returned NULL");
                 let module: Py<pyo3::PyAny> =

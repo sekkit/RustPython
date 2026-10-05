@@ -3,10 +3,7 @@ use core::ffi::c_int;
 use rustpython_vm::builtins::PyList;
 use rustpython_vm::{AsObject, PyObjectRef, PyResult, VirtualMachine};
 
-unsafe fn sequence_operand(
-    vm: &VirtualMachine,
-    raw: *mut PyObject,
-) -> PyResult<PyObjectRef> {
+unsafe fn sequence_operand(vm: &VirtualMachine, raw: *mut PyObject) -> PyResult<PyObjectRef> {
     if unsafe { crate::listobject::is_foreign_list_buffer(raw) } {
         unsafe { crate::listobject::foreign_list_to_native(vm, raw) }
     } else {
@@ -55,7 +52,8 @@ pub unsafe extern "C" fn PySequence_Count(obj: *mut PyObject, value: *mut PyObje
     with_vm(|vm| {
         let obj = unsafe { sequence_operand(vm, obj)? };
         let value = unsafe { &*value }.to_owned();
-        obj.try_sequence(vm)?.count(value.as_ref(), vm)
+        // Works for any iterable, as in CPython; see `PySequence_Contains`.
+        obj.sequence_unchecked().count(value.as_ref(), vm)
     })
 }
 
@@ -130,7 +128,9 @@ pub unsafe extern "C" fn PySequence_InPlaceConcat(
     with_vm(|vm| {
         let object = unsafe { sequence_operand(vm, obj1)? };
         let other = unsafe { sequence_operand(vm, obj2)? };
-        let result = object.try_sequence(vm)?.inplace_concat(other.as_ref(), vm)?;
+        let result = object
+            .try_sequence(vm)?
+            .inplace_concat(other.as_ref(), vm)?;
         if is_foreign {
             finish_foreign_inplace(vm, obj1, result)
         } else {
@@ -161,7 +161,8 @@ pub unsafe extern "C" fn PySequence_Index(obj: *mut PyObject, value: *mut PyObje
     with_vm(|vm| {
         let obj = unsafe { sequence_operand(vm, obj)? };
         let value = unsafe { &*value }.to_owned();
-        obj.try_sequence(vm)?.index(value.as_ref(), vm)
+        // Works for any iterable, as in CPython; see `PySequence_Contains`.
+        obj.sequence_unchecked().index(value.as_ref(), vm)
     })
 }
 
@@ -267,7 +268,12 @@ pub unsafe extern "C" fn PySequence_Contains(obj: *mut PyObject, value: *mut PyO
     with_vm(|vm| {
         let obj = unsafe { sequence_operand(vm, obj)? };
         let value = unsafe { &*value }.to_owned();
-        obj.try_sequence(vm)?.contains(value.as_ref(), vm)
+        // CPython defines Contains/Count/Index for any iterable, not only for
+        // objects that implement the sequence protocol: `dict` has no
+        // `sq_item` but `"k" in d` must work. `sequence_unchecked` skips the
+        // `sq_item` requirement, and `contains` falls back to `__contains__`
+        // and then to iteration, exactly like CPython.
+        obj.sequence_unchecked().contains(value.as_ref(), vm)
     })
 }
 

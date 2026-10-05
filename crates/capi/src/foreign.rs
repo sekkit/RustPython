@@ -86,8 +86,10 @@ fn is_exported_stub_addr(addr: usize) -> bool {
     }
     #[allow(static_mut_refs)]
     {
-        fn stub_addresses() -> Vec<usize> {
-            vec![
+        // Fixed-size array, not a `Vec`: `is_foreign_object` runs on every
+        // reference-count operation, so this must not allocate.
+        fn stub_addresses() -> [usize; 18] {
+            [
                 core::ptr::addr_of!(statics::PyFloat_Type) as usize,
                 core::ptr::addr_of!(statics::PySlice_Type) as usize,
                 core::ptr::addr_of!(statics::PyType_Type) as usize,
@@ -134,11 +136,24 @@ pub unsafe fn is_foreign_object(obj: *mut PyObject) -> bool {
     if obj.is_null() {
         return false;
     }
-    // Registry-only: every raw buffer allocated by _PyObject_New is
-    // registered here. The vtable/module heuristics produced false
-    // positives on native objects, routing them to libc::free and
-    // corrupting the heap (allocator mismatch).
-    crate::objimpl::is_foreign_object(obj as *const u8)
+    // Registry: every raw buffer allocated by _PyObject_New is registered here.
+    // The vtable/module heuristics produced false positives on native objects,
+    // routing them to libc::free and corrupting the heap (allocator mismatch).
+    //
+    // Reference counting and GC bookkeeping deliberately use the registry alone
+    // (see `objimpl::is_foreign_object`): they run on every ownership transfer,
+    // where scanning the stub table would be a measurable cost, and every
+    // buffer we allocate is registered anyway.
+    if crate::objimpl::is_foreign_object(obj as *const u8) {
+        return true;
+    }
+    // A type pointer naming one of our exported type stubs also identifies a
+    // foreign buffer: those stubs are header byte-copies in `objectstatics`,
+    // never the `typ` a native object carries, so this cannot match a native
+    // heap object. A NULL type pointer is never a stub — the relay copies are
+    // zero until the relay DLL is loaded, and 0 must not compare equal to them.
+    let ob_type = unsafe { *(obj as *const usize).add(1) };
+    ob_type != 0 && is_exported_stub_addr(ob_type)
 }
 
 /// True when `addr` lies inside a loaded module other than the main exe.
@@ -188,10 +203,7 @@ unsafe fn type_name(ty: *const usize) -> String {
 }
 
 /// Walk a NUL-terminated `PyGetSetDef` table looking for `want`.
-unsafe fn find_getset_entry(
-    ty: *const usize,
-    want: &str,
-) -> Option<&'static PyGetSetDef> {
+unsafe fn find_getset_entry(ty: *const usize, want: &str) -> Option<&'static PyGetSetDef> {
     if ty.is_null() || !tables_allowed(ty) {
         return None;
     }
@@ -212,10 +224,7 @@ unsafe fn find_getset_entry(
 }
 
 /// Walk a NUL-terminated `PyMethodDef` table looking for `want`.
-unsafe fn find_method_entry(
-    ty: *const usize,
-    want: &str,
-) -> Option<&'static PyMethodDef> {
+unsafe fn find_method_entry(ty: *const usize, want: &str) -> Option<&'static PyMethodDef> {
     if ty.is_null() || !tables_allowed(ty) {
         return None;
     }
@@ -278,11 +287,15 @@ pub unsafe fn foreign_getattr(obj: *mut PyObject, name: *mut PyObject) -> *mut P
 
     // tp_getattro unset: fall back to tp_getset / tp_methods lookups.
     with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
-        let name_obj = unsafe { &*name }.try_downcast_ref::<PyStr>(vm).map_err(|_| {
-            vm.new_type_error("attribute name must be a string, not '".to_owned()
-                + &unsafe { (&*name).class().to_string() }
-                + "'")
-        })?;
+        let name_obj = unsafe { &*name }
+            .try_downcast_ref::<PyStr>(vm)
+            .map_err(|_| {
+                vm.new_type_error(
+                    "attribute name must be a string, not '".to_owned()
+                        + &unsafe { (&*name).class().to_string() }
+                        + "'",
+                )
+            })?;
         let want = name_obj.to_str().unwrap_or("");
 
         if let Some(entry) = unsafe { find_getset_entry(ty, want) } {
@@ -305,15 +318,17 @@ pub unsafe fn foreign_getattr(obj: *mut PyObject, name: *mut PyObject) -> *mut P
 
         if let Some(md) = unsafe { find_method_entry(ty, want) } {
             let zelf: PyObjectRef = unsafe { (&*obj).to_owned() };
-            let method: PyObjectRef =
-                build_method_def(vm, md, true)?.build_function(vm, Some(zelf)).into();
+            let method: PyObjectRef = build_method_def(vm, md, true)?
+                .build_function(vm, Some(zelf))
+                .into();
             return Ok(method.into_raw().as_ptr());
         }
 
-        Err(vm.new_attribute_error(format!(
-            "'{}' object has no attribute '{want}'",
-            unsafe { type_name(ty) }
-        )))
+        Err(
+            vm.new_attribute_error(format!("'{}' object has no attribute '{want}'", unsafe {
+                type_name(ty)
+            })),
+        )
     })
 }
 
@@ -347,7 +362,8 @@ pub unsafe fn foreign_call(
 /// native shadows are leaked by design (a strong ref held in this map).
 fn cpy_type_material_cache() -> &'static Mutex<Option<HashMap<usize, rustpython_vm::PyObjectRef>>> {
     use std::sync::OnceLock;
-    static CELL: OnceLock<Mutex<Option<HashMap<usize, rustpython_vm::PyObjectRef>>>> = OnceLock::new();
+    static CELL: OnceLock<Mutex<Option<HashMap<usize, rustpython_vm::PyObjectRef>>>> =
+        OnceLock::new();
     CELL.get_or_init(|| Mutex::new(None))
 }
 
@@ -418,7 +434,8 @@ pub unsafe extern "C" fn materialize_cpy_type_object(raw: *mut PyObject) -> *mut
         let Ok(materialized) = (|| -> rustpython_vm::PyResult<rustpython_vm::PyObjectRef> {
             use rustpython_vm::function::FuncArgs;
             let dict = vm.ctx.new_dict();
-            let bases = vm.ctx
+            let bases = vm
+                .ctx
                 .new_tuple(vec![vm.ctx.types.object_type.to_owned().into()]);
             let args = FuncArgs::from(vec![
                 vm.ctx.new_str(name.to_owned()).into(),
@@ -568,8 +585,14 @@ mod tests {
             let kwds = 0x22 as *mut PyObject;
 
             assert_eq!(foreign_call(obj, args, kwds), SENTINEL);
-            assert_eq!(LAST_SELF.load(std::sync::atomic::Ordering::Relaxed), obj as usize);
-            assert_eq!(LAST_KWDS.load(std::sync::atomic::Ordering::Relaxed), kwds as usize);
+            assert_eq!(
+                LAST_SELF.load(std::sync::atomic::Ordering::Relaxed),
+                obj as usize
+            );
+            assert_eq!(
+                LAST_KWDS.load(std::sync::atomic::Ordering::Relaxed),
+                kwds as usize
+            );
 
             // No tp_call slot: NULL result.
             let empty_ty = fake_type();
@@ -613,10 +636,7 @@ mod tests {
             let getattro_fn: CGetAttrFunc = fake_getattro;
             ext_ty[CPYTHON_GETATTRO_BYTE / 8] = getattro_fn as usize;
             let (_ext_storage, ext_obj) = fake_object(ext_ty_ptr);
-            assert_eq!(
-                foreign_getattr(ext_obj, 0x44 as *mut PyObject),
-                SENTINEL
-            );
+            assert_eq!(foreign_getattr(ext_obj, 0x44 as *mut PyObject), SENTINEL);
         }
     }
 
@@ -821,14 +841,13 @@ mod tests {
                 let err = pyo3::PyErr::take(py).unwrap();
                 assert!(err.is_instance_of::<pyo3::exceptions::PyAttributeError>(py));
                 assert!(
-                    err.to_string().contains("'foreign object' object has no attribute 'no_such_attr'")
+                    err.to_string()
+                        .contains("'foreign object' object has no attribute 'no_such_attr'")
                         || err.to_string().contains("no_such_attr")
                 );
 
                 // Non-string name: rejected without touching the tables.
-                assert!(
-                    foreign_getattr(obj, pyo3::ffi::PyLong_FromLong(1).cast()).is_null()
-                );
+                assert!(foreign_getattr(obj, pyo3::ffi::PyLong_FromLong(1).cast()).is_null());
             }
         })
     }

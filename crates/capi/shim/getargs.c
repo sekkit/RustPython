@@ -97,15 +97,21 @@ static int rp_count_printf_slots(const char *format) {
 }
 
 /* Number of variadic slots consumed by a format string. Keep in sync with
- * the format walker in arg.rs. */
-static int rp_count_slots(const char *format) {
+ * the format walker in arg.rs.
+ *
+ * `stop_at_colon` is 1 only for the PyArg_Parse* family, where ':' (unit type)
+ * and ';' (function name) end the format. Py_BuildValue and the PyObject_Call*
+ * helpers use the Py_BuildValue format language instead, where ':' is an
+ * ordinary character and the whole string is scanned -- stopping early there
+ * undercounts the arguments (e.g. "{s:i}" would yield one slot, not two). */
+static int rp_count_slots_ex(const char *format, int stop_at_colon) {
     int n = 0;
     const char *p;
     for (p = format; *p; p++) {
         char c = *p;
         /* ':' and ';' terminate the format string: everything after is the
          * function name / custom error message, not conversion codes. */
-        if (c == ':' || c == ';') {
+        if (stop_at_colon && (c == ':' || c == ';')) {
             break;
         }
         if (c == ' ' || c == '(' || c == ')' || c == '[' || c == ']' ||
@@ -141,6 +147,16 @@ static int rp_count_slots(const char *format) {
         n += 1; /* every other conversion code takes exactly one slot */
     }
     return n;
+}
+
+/* The PyArg_Parse* family: ':' and ';' end the format. */
+static int rp_count_slots(const char *format) {
+    return rp_count_slots_ex(format, 1);
+}
+
+/* Py_BuildValue / PyObject_Call*: the whole format string is scanned. */
+static int rp_count_slots_build(const char *format) {
+    return rp_count_slots_ex(format, 0);
 }
 
 RP_EXPORT int PyArg_ParseTuple(void *args, const char *format, ...) {
@@ -204,7 +220,7 @@ RP_EXPORT void *Py_BuildValue(const char *format, ...) {
     uintptr_t slots[RP_MAX_SLOTS];
     int n;
     va_start(ap, format);
-    n = rp_count_slots(format == NULL ? "" : format);
+    n = rp_count_slots_build(format == NULL ? "" : format);
     if (n > RP_MAX_SLOTS) {
         n = RP_MAX_SLOTS;
     }
@@ -220,7 +236,7 @@ RP_EXPORT void *PyObject_CallFunction(void *callable, const char *format, ...) {
     uintptr_t slots[RP_MAX_SLOTS];
     int n;
     va_start(ap, format);
-    n = rp_count_slots(format == NULL ? "" : format);
+    n = rp_count_slots_build(format == NULL ? "" : format);
     if (n > RP_MAX_SLOTS) {
         n = RP_MAX_SLOTS;
     }
@@ -236,7 +252,7 @@ RP_EXPORT void *PyObject_CallMethod(void *obj, const char *name, const char *for
     uintptr_t slots[RP_MAX_SLOTS];
     int n;
     va_start(ap, format);
-    n = rp_count_slots(format == NULL ? "" : format);
+    n = rp_count_slots_build(format == NULL ? "" : format);
     if (n > RP_MAX_SLOTS) {
         n = RP_MAX_SLOTS;
     }

@@ -262,9 +262,16 @@ pub unsafe extern "C" fn PyObject_IsSubclass(derived: *mut PyObject, cls: *mut P
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_IsInstance(inst: *mut PyObject, cls: *mut PyObject) -> c_int {
     with_vm(|vm| {
+        if inst.is_null() || cls.is_null() {
+            return Ok(false);
+        }
         let inst = unsafe { &*inst };
-        let cls = unsafe { &*cls };
-        inst.is_instance(cls, vm)
+        // `cls` may be a C-visible type pointer that is not a RustPython heap
+        // object (our exported type stubs, a foreign raw CPython type); such a
+        // buffer must be mapped back to the real type before native dispatch.
+        let cls = crate::object::pytype::native_type_object(vm, cls)
+            .unwrap_or_else(|| unsafe { &*cls }.to_owned());
+        inst.is_instance(cls.as_object(), vm)
     })
 }
 
@@ -290,7 +297,15 @@ pub unsafe extern "C" fn PyObject_Length(obj: *mut PyObject) -> isize {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Type(obj: *mut PyObject) -> *mut PyObject {
-    with_vm(|_vm| unsafe { &*obj }.obj_type())
+    with_vm(|_vm| {
+        // CPython returns a *new* reference; callers (pyo3 among them) own it.
+        unsafe { &*obj }
+            .obj_type()
+            .as_object()
+            .to_owned()
+            .into_raw()
+            .as_ptr()
+    })
 }
 
 #[cfg(test)]

@@ -94,9 +94,7 @@ pub(crate) unsafe fn foreign_list_to_native(
             // PyList_New leaves slots NULL until the extension initializes
             // them. Do not silently compress positional slots into a shorter
             // native list; reject the incomplete buffer at the boundary.
-            return Err(vm.new_system_error(
-                "foreign list contains an uninitialized slot",
-            ));
+            return Err(vm.new_system_error("foreign list contains an uninitialized slot"));
         }
         let owned = if crate::objimpl::is_foreign_object(item as *const u8) {
             // A foreign element has CPython layout, not a RustPython PyInner
@@ -107,9 +105,8 @@ pub(crate) unsafe fn foreign_list_to_native(
             }
             let wrapped = unsafe { crate::foreign::wrap_foreign_object(item) };
             let ptr = NonNull::new(wrapped).ok_or_else(|| {
-                vm.take_raised_exception().unwrap_or_else(|| {
-                    vm.new_system_error("failed to wrap foreign list element")
-                })
+                vm.take_raised_exception()
+                    .unwrap_or_else(|| vm.new_system_error("failed to wrap foreign list element"))
             })?;
             unsafe { PyObjectRef::from_raw(ptr) }
         } else {
@@ -123,11 +120,33 @@ pub(crate) unsafe fn foreign_list_to_native(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn PyList_New(size: isize) -> *mut PyObject {
-    // Boundary materialization: return a CPython-layout raw buffer so the
-    // inlined PyList_SET_ITEM macro (numpy & co.) can write ob_item@0x18
-    // safely. The buffer is materialized into a native PyList when it crosses
-    // back into Python (wrap_foreign_object), and the foreign branch of the
-    // PyList_* API reads/writes the raw arrays directly.
+    // A real RustPython list, matching CPython: callers own the returned object
+    // and free it through the normal deallocation path.
+    //
+    // It starts empty but with room for `size` items, which is the CPython
+    // "allocated but not yet filled" state that `PyList_New` +
+    // `PyList_SetItem`/`PyList_SET_ITEM` producers rely on. Returning a raw
+    // CPython-layout buffer here instead would leave ordinary consumers
+    // (pyo3 included) unable to deallocate the result.
+    with_vm(|vm| {
+        if size < 0 {
+            return Err(vm.new_system_error("Negative size passed to PyList_New"));
+        }
+        Ok(vm
+            .ctx
+            .new_list(Vec::with_capacity(size as usize))
+            .as_object()
+            .to_owned()
+            .into_raw()
+            .as_ptr())
+    })
+}
+
+/// Allocate a CPython-layout list buffer for extensions that fill it through
+/// the inlined `PyList_SET_ITEM` macro, which writes `ob_item[i]` at 0x18.
+/// `PyList_New` cannot serve that purpose, so this explicit entry point does.
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_NewForeign(size: isize) -> *mut PyObject {
     with_vm(|vm| new_foreign_list(vm, size))
 }
 
@@ -144,11 +163,6 @@ pub(crate) unsafe fn header_obj_size(raw: *mut PyObject) -> isize {
 /// `raw` must be a valid CPython-layout list buffer.
 pub(crate) unsafe fn header_obj_item(raw: *mut PyObject) -> *mut *mut PyObject {
     unsafe { *(raw as *const usize).add(3) as *mut *mut PyObject }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn PyList_NewForeign(size: isize) -> *mut PyObject {
-    with_vm(|vm| new_foreign_list(vm, size))
 }
 
 /// CPython-layout PyListObject header, mirrors the offsets numpy's inlined
@@ -576,9 +590,7 @@ pub unsafe extern "C" fn PyList_SetSlice(
             let native_list = native.try_downcast_ref::<PyList>(vm)?;
             let slice = SaturatedSlice::from_parts(low, high, 1);
             if itemlist.is_null() {
-                native_list
-                    .borrow_vec_mut()
-                    .delitem_by_slice(vm, slice)?;
+                native_list.borrow_vec_mut().delitem_by_slice(vm, slice)?;
             } else {
                 let itemlist = if unsafe { is_foreign_list_buffer(itemlist) } {
                     unsafe { foreign_list_to_native(vm, itemlist)? }

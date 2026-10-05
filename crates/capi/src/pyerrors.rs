@@ -8,7 +8,7 @@ use core::slice;
 use rustpython_vm::builtins::{PyBaseException, PyTuple, PyType};
 use rustpython_vm::convert::IntoObject;
 use rustpython_vm::exceptions::ExceptionZoo;
-use rustpython_vm::{AsObject, PyObjectRef, PyRef, PyResult};
+use rustpython_vm::{AsObject, PyObjectRef, PyRef, PyResult, VirtualMachine};
 use std::ffi::CString;
 
 macro_rules! define_exception_statics {
@@ -198,8 +198,11 @@ pub extern "C" fn PyErr_Print() {
 #[used]
 static PYERR_CLEAR_ANCHOR: extern "C" fn() = PyErr_Clear;
 #[used]
-static PYERR_FETCH_ANCHOR: unsafe extern "C" fn(*mut *mut PyObject, *mut *mut PyObject, *mut *mut PyObject) =
-    PyErr_Fetch;
+static PYERR_FETCH_ANCHOR: unsafe extern "C" fn(
+    *mut *mut PyObject,
+    *mut *mut PyObject,
+    *mut *mut PyObject,
+) = PyErr_Fetch;
 #[used]
 static PYERR_RESTORE_ANCHOR: unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) =
     PyErr_Restore;
@@ -219,7 +222,10 @@ pub unsafe extern "C" fn PyErr_NoMemory() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rp_va_err_bad_argument() {
     with_vm(|vm| {
-        let exc = vm.new_exception_msg(vm.ctx.exceptions.type_error.to_owned(), "bad argument".into());
+        let exc = vm.new_exception_msg(
+            vm.ctx.exceptions.type_error.to_owned(),
+            "bad argument".into(),
+        );
         vm.set_exception(Some(exc));
     })
 }
@@ -228,7 +234,10 @@ pub extern "C" fn rp_va_err_bad_argument() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rp_va_err_bad_internal_call() {
     with_vm(|vm| {
-        let exc = vm.new_exception_msg(vm.ctx.exceptions.system_error.to_owned(), "Bad internal call".into());
+        let exc = vm.new_exception_msg(
+            vm.ctx.exceptions.system_error.to_owned(),
+            "Bad internal call".into(),
+        );
         vm.set_exception(Some(exc));
     })
 }
@@ -424,18 +433,29 @@ pub unsafe extern "C" fn rp_va_err_syntax_location_ex(
         let filename_str = if filename.is_null() {
             ""
         } else {
-            unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or("")
+            unsafe { core::ffi::CStr::from_ptr(filename) }
+                .to_str()
+                .unwrap_or("")
         };
-        if let Err(e) = exc.as_object().set_attr("filename", vm.ctx.new_str(filename_str), vm) {
+        if let Err(e) = exc
+            .as_object()
+            .set_attr("filename", vm.ctx.new_str(filename_str), vm)
+        {
             vm.set_exception(Some(e));
             return;
         }
-        if let Err(e) = exc.as_object().set_attr("lineno", vm.ctx.new_int(lineno), vm) {
+        if let Err(e) = exc
+            .as_object()
+            .set_attr("lineno", vm.ctx.new_int(lineno), vm)
+        {
             vm.set_exception(Some(e));
             return;
         }
         if col_offset >= 0 {
-            if let Err(e) = exc.as_object().set_attr("offset", vm.ctx.new_int(col_offset), vm) {
+            if let Err(e) = exc
+                .as_object()
+                .set_attr("offset", vm.ctx.new_int(col_offset), vm)
+            {
                 vm.set_exception(Some(e));
             }
         }
@@ -460,17 +480,20 @@ pub extern "C" fn rp_va_err_set_interrupt_ex(_signum: c_int) {
 /// Rust impl of PyErr_SetFromErrno: set an OSError based on errno.
 /// Returns NULL.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rp_va_err_set_from_errno(
-    exception: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn rp_va_err_set_from_errno(exception: *mut PyObject) -> *mut PyObject {
     with_vm(|vm| -> rustpython_vm::PyResult<*mut PyObject> {
         let errno_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         let exc_type = if exception.is_null() {
             vm.ctx.exceptions.os_error.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
-        let exc = vm.new_exception_msg(exc_type, format!("[Errno {errno_val}] {}", std::io::Error::last_os_error()).into());
+        let exc = vm.new_exception_msg(
+            exc_type,
+            format!("[Errno {errno_val}] {}", std::io::Error::last_os_error()).into(),
+        );
         vm.set_exception(Some(exc));
         Ok(core::ptr::null_mut())
     })
@@ -488,21 +511,33 @@ pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename(
         let exc_type = if exception.is_null() {
             vm.ctx.exceptions.os_error.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
         let filename_str = if filename.is_null() {
             None
         } else {
-            Some(unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or(""))
+            Some(
+                unsafe { core::ffi::CStr::from_ptr(filename) }
+                    .to_str()
+                    .unwrap_or(""),
+            )
         };
         let msg = if let Some(fname) = filename_str {
-            format!("[Errno {errno_val}] {}: '{}'", std::io::Error::last_os_error(), fname)
+            format!(
+                "[Errno {errno_val}] {}: '{}'",
+                std::io::Error::last_os_error(),
+                fname
+            )
         } else {
             format!("[Errno {errno_val}] {}", std::io::Error::last_os_error())
         };
         let exc = vm.new_exception_msg(exc_type, msg.into());
         if let Some(fname) = filename_str {
-            let _ = exc.as_object().set_attr("filename", vm.ctx.new_str(fname), vm);
+            let _ = exc
+                .as_object()
+                .set_attr("filename", vm.ctx.new_str(fname), vm);
         }
         vm.set_exception(Some(exc));
         Ok(core::ptr::null_mut())
@@ -520,7 +555,9 @@ pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename_object(
         let exc_type = if exception.is_null() {
             vm.ctx.exceptions.os_error.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
         let msg = format!("[Errno {errno_val}]");
         let exc = vm.new_exception_msg(exc_type, msg.into());
@@ -545,14 +582,24 @@ pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename_objects(
         let exc_type = if exception.is_null() {
             vm.ctx.exceptions.os_error.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
         let msg = format!("[Errno {errno_val}]");
         let exc = vm.new_exception_msg(exc_type, msg.into());
         if !filename.is_null() || !filename2.is_null() {
             let filename_tuple = vm.ctx.new_tuple(vec![
-                if filename.is_null() { vm.ctx.none() } else { unsafe { &*filename }.to_owned() },
-                if filename2.is_null() { vm.ctx.none() } else { unsafe { &*filename2 }.to_owned() },
+                if filename.is_null() {
+                    vm.ctx.none()
+                } else {
+                    unsafe { &*filename }.to_owned()
+                },
+                if filename2.is_null() {
+                    vm.ctx.none()
+                } else {
+                    unsafe { &*filename2 }.to_owned()
+                },
             ]);
             let filename_obj: rustpython_vm::PyObjectRef = filename_tuple.into();
             exc.as_object().set_attr("filename", filename_obj, vm)?;
@@ -573,14 +620,17 @@ pub unsafe extern "C" fn rp_va_err_program_text(
         if filename.is_null() || lineno < 1 {
             return Ok(core::ptr::null_mut());
         }
-        let fname = unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or("");
+        let fname = unsafe { core::ffi::CStr::from_ptr(filename) }
+            .to_str()
+            .unwrap_or("");
         // Try to read the file and extract the line.
         match std::fs::read_to_string(fname) {
             Ok(content) => {
                 let line = content.lines().nth((lineno - 1) as usize);
                 match line {
                     Some(line) => {
-                        let obj: rustpython_vm::PyObjectRef = vm.ctx.new_str(line.to_string()).into();
+                        let obj: rustpython_vm::PyObjectRef =
+                            vm.ctx.new_str(line.to_string()).into();
                         Ok(obj.into_raw().as_ptr())
                     }
                     None => Ok(core::ptr::null_mut()),
@@ -603,12 +653,16 @@ pub unsafe extern "C" fn rp_va_err_warn_format(
             return Err(vm.new_system_error("PyErr_WarnFormat called with NULL format"));
         }
         let format_bytes = unsafe { core::ffi::CStr::from_ptr(format) }.to_bytes();
-        let mut va = crate::arg::VaSlots::new(unsafe { core::slice::from_raw_parts(slots, nslots as usize) });
+        let mut va = crate::arg::VaSlots::new(unsafe {
+            core::slice::from_raw_parts(slots, nslots as usize)
+        });
         let message = crate::arg::format_message(vm, format_bytes, &mut va)?;
         let category = if exception.is_null() {
             vm.ctx.exceptions.resource_warning.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
         rustpython_vm::warn::warn(vm.ctx.new_str(message).into(), Some(category), 1, None, vm)?;
         Ok(0)
@@ -648,11 +702,10 @@ pub unsafe extern "C" fn PyErr_ExceptionMatches(exc: *mut PyObject) -> c_int {
         Ok(match current {
             Some(current) => {
                 let current_type = current.class();
-                let matches = current_type.is_subtype(
-                    exc.downcast_ref::<PyType>().ok_or_else(|| {
+                let matches =
+                    current_type.is_subtype(exc.downcast_ref::<PyType>().ok_or_else(|| {
                         vm.new_type_error("PyErr_ExceptionMatches: exc is not a type")
-                    })?,
-                );
+                    })?);
                 matches as c_int
             }
             None => 0,
@@ -705,11 +758,7 @@ pub unsafe extern "C" fn rp_va_err_set_import_error(
         } else {
             unsafe { &*path }.to_owned()
         };
-        let exc = vm
-            .invoke_exception(
-                vm.ctx.exceptions.import_error,
-                vec![msg_obj],
-            )?;
+        let exc = vm.invoke_exception(vm.ctx.exceptions.import_error, vec![msg_obj])?;
         exc.as_object().set_attr("name", name_obj, vm)?;
         exc.as_object().set_attr("path", path_obj, vm)?;
         vm.set_exception(Some(exc));
@@ -729,7 +778,9 @@ pub unsafe extern "C" fn rp_va_err_set_import_error_subclass(
         let exc_type = if exception.is_null() {
             vm.ctx.exceptions.import_error.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
         let msg_obj = unsafe { &*msg }.to_owned();
         let name_obj = if name.is_null() {
@@ -765,7 +816,9 @@ pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err(
         let exc_type = if exception.is_null() {
             vm.ctx.exceptions.os_error.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
         let msg = format!("[WinError {errno_val}]");
         let exc = vm.new_exception_msg(exc_type, msg.into());
@@ -796,18 +849,25 @@ pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err_with_filename(
         let exc_type = if exception.is_null() {
             vm.ctx.exceptions.os_error.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
         let msg = if !filename.is_null() {
-            let fname = unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or("");
+            let fname = unsafe { core::ffi::CStr::from_ptr(filename) }
+                .to_str()
+                .unwrap_or("");
             format!("[WinError {errno_val}] '{}'", fname)
         } else {
             format!("[WinError {errno_val}]")
         };
         let exc = vm.new_exception_msg(exc_type, msg.into());
         if !filename.is_null() {
-            let fname = unsafe { core::ffi::CStr::from_ptr(filename) }.to_str().unwrap_or("");
-            exc.as_object().set_attr("filename", vm.ctx.new_str(fname), vm)?;
+            let fname = unsafe { core::ffi::CStr::from_ptr(filename) }
+                .to_str()
+                .unwrap_or("");
+            exc.as_object()
+                .set_attr("filename", vm.ctx.new_str(fname), vm)?;
         }
         vm.set_exception(Some(exc));
         Ok(core::ptr::null_mut())
@@ -830,7 +890,9 @@ pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err_with_filename_object
         let exc_type = if exception.is_null() {
             vm.ctx.exceptions.os_error.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
         let msg = format!("[WinError {errno_val}]");
         let exc = vm.new_exception_msg(exc_type, msg.into());
@@ -860,14 +922,24 @@ pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err_with_filename_object
         let exc_type = if exception.is_null() {
             vm.ctx.exceptions.os_error.to_owned()
         } else {
-            unsafe { &*exception }.try_downcast_ref::<PyType>(vm)?.to_owned()
+            unsafe { &*exception }
+                .try_downcast_ref::<PyType>(vm)?
+                .to_owned()
         };
         let msg = format!("[WinError {errno_val}]");
         let exc = vm.new_exception_msg(exc_type, msg.into());
         if !filename.is_null() || !filename2.is_null() {
             let filename_tuple = vm.ctx.new_tuple(vec![
-                if filename.is_null() { vm.ctx.none() } else { unsafe { &*filename }.to_owned() },
-                if filename2.is_null() { vm.ctx.none() } else { unsafe { &*filename2 }.to_owned() },
+                if filename.is_null() {
+                    vm.ctx.none()
+                } else {
+                    unsafe { &*filename }.to_owned()
+                },
+                if filename2.is_null() {
+                    vm.ctx.none()
+                } else {
+                    unsafe { &*filename2 }.to_owned()
+                },
             ]);
             let filename_obj: rustpython_vm::PyObjectRef = filename_tuple.into();
             exc.as_object().set_attr("filename", filename_obj, vm)?;
@@ -949,9 +1021,9 @@ pub unsafe extern "C" fn PyErr_NewException(
             .unwrap_or_else(|| vec![vm.ctx.exceptions.exception_type.to_owned()]);
 
         if !dict.is_null() {
-            return Err(vm.new_system_error(
-                "PyErr_NewException with non-null dict is not supported yet",
-            ));
+            return Err(
+                vm.new_system_error("PyErr_NewException with non-null dict is not supported yet")
+            );
         }
 
         let exc = vm.ctx.new_exception_type(module, name, Some(bases));
@@ -982,19 +1054,54 @@ pub unsafe extern "C" fn PyErr_NewExceptionWithDoc(
     unsafe { PyErr_NewException(name, base, dict) }
 }
 
+/// `PyErr_GivenExceptionMatches(err, exc)` follows CPython: `exc` may be a
+/// tuple of exception types, an exception instance is compared through its
+/// class, and `class_of_err` must be a subtype of `exc`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
-    given: *mut PyObject,
+    err: *mut PyObject,
     exc: *mut PyObject,
 ) -> c_int {
     with_vm(|vm| {
-        let given = unsafe { &*given };
-        let exc = unsafe { &*exc };
-
-        given.is_subclass(exc, vm)
+        if err.is_null() || exc.is_null() {
+            return Ok(0);
+        }
+        // A tuple is recognized only on `exc`, not on `err`. C-visible type
+        // stubs and foreign type objects are resolved before native dispatch.
+        if let Some(exc_obj) = crate::object::pytype::native_type_object(vm, exc)
+            && let Ok(tuple) = exc_obj.clone().downcast::<PyTuple>()
+        {
+            for item in &*tuple {
+                if given_exception_matches_single(vm, err, item.as_object())? {
+                    return Ok(1);
+                }
+            }
+            return Ok(0);
+        }
+        Ok(given_exception_matches_single(vm, err, unsafe { &*exc })? as c_int)
     })
 }
 
+fn given_exception_matches_single(
+    vm: &VirtualMachine,
+    err: *mut PyObject,
+    exc: &PyObject,
+) -> PyResult<bool> {
+    let err_obj = crate::object::pytype::native_type_object(vm, err)
+        .ok_or_else(|| vm.new_system_error("invalid err object"))?;
+    // An exception instance matches through its class.
+    let err_class: PyObjectRef = match err_obj.downcast::<PyBaseException>() {
+        Ok(instance) => instance.class().as_object().to_owned(),
+        Err(not_an_instance) => not_an_instance,
+    };
+    if let (Ok(err_type), Some(exc_type)) = (
+        err_class.clone().downcast::<PyType>(),
+        exc.downcast_ref::<PyType>(),
+    ) {
+        return Ok(err_type.is_subtype(exc_type));
+    }
+    Ok(err_class.is(exc))
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyException_GetTraceback(exc: *mut PyObject) -> *mut PyObject {
     with_vm(|vm| {
@@ -1019,7 +1126,10 @@ pub unsafe extern "C" fn rp_va_exception_get_args(exc: *mut PyObject) -> *mut Py
 
 /// Rust impl of PyException_SetArgs.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rp_va_exception_set_args(exc: *mut PyObject, args: *mut PyObject) -> c_int {
+pub unsafe extern "C" fn rp_va_exception_set_args(
+    exc: *mut PyObject,
+    args: *mut PyObject,
+) -> c_int {
     with_vm(|vm| {
         let exc = unsafe { &*exc }.try_downcast_ref::<PyBaseException>(vm)?;
         let args_obj = unsafe { &*args }.to_owned();
@@ -1153,8 +1263,9 @@ pub extern "C" fn PyErr_CheckSignals() -> c_int {
 mod tests {
     use pyo3::PyTypeInfo;
     use pyo3::create_exception;
-    use pyo3::exceptions::{PyException, PyTypeError};
+    use pyo3::exceptions::{PyBaseException, PyException, PyTypeError, PyValueError};
     use pyo3::prelude::*;
+    use pyo3::types::PyTuple;
 
     #[test]
     fn raised_exception() {
