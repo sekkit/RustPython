@@ -23,7 +23,7 @@ pub(crate) mod module {
     #[pyfunction]
     #[pyfunction(name = "unlink")]
     fn remove(path: OsPath, dir_fd: DirFd<'_, 0>, vm: &VirtualMachine) -> PyResult<()> {
-        let [] = dir_fd.0;
+        let _ = dir_fd.0;
         fs::remove_file(&path).map_err(|err| err.into_pyexception(vm))
     }
 

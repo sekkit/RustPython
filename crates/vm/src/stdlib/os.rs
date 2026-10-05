@@ -65,13 +65,20 @@ impl DirFdKeyword for DstDirFd {
 // XXX: AVAILABLE should be a bool, but we can't yet have it as a bool and just cast it to usize
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct DirFd<'fd, const AVAILABLE: usize, KW: DirFdKeyword = DefaultDirFd>(
-    pub(crate) [crt_fd::Borrowed<'fd>; AVAILABLE],
+    // `Option`, not `[Borrowed; AVAILABLE]`. A zero-length array makes every
+    // `DirFd<'_, 0>` zero-sized; switching to Option was tried on the theory
+    // that this stopped the FromArgs derive from consuming the keyword. It did
+    // not - os.mkdir and os.readlink kept raising TypeError afterwards. The
+    // actual cause was those functions' Windows counterparts (nt::mkdir,
+    // nt::readlink) not declaring the parameter at all. The Option payload is
+    // kept because it is simpler, NOT because it fixes anything.
+    pub(crate) Option<crt_fd::Borrowed<'fd>>,
     PhantomData<KW>,
 );
 
 impl<const AVAILABLE: usize, KW: DirFdKeyword> Default for DirFd<'_, AVAILABLE, KW> {
     fn default() -> Self {
-        Self([DEFAULT_DIR_FD; AVAILABLE], PhantomData)
+        Self(None, PhantomData)
     }
 }
 
@@ -80,8 +87,7 @@ impl<const AVAILABLE: usize, KW: DirFdKeyword> Default for DirFd<'_, AVAILABLE, 
 impl<'fd, KW: DirFdKeyword> DirFd<'fd, 1, KW> {
     #[inline(always)]
     pub(crate) fn get_opt(self) -> Option<crt_fd::Borrowed<'fd>> {
-        let [fd] = self.0;
-        (fd != DEFAULT_DIR_FD).then_some(fd)
+        self.0
     }
 
     #[inline]
@@ -91,16 +97,20 @@ impl<'fd, KW: DirFdKeyword> DirFd<'fd, 1, KW> {
 
     #[inline(always)]
     pub(crate) const fn get(self) -> crt_fd::Borrowed<'fd> {
-        let [fd] = self.0;
-        fd
+        match self.0 {
+            Some(fd) => fd,
+            None => DEFAULT_DIR_FD,
+        }
     }
 }
 
 impl<const AVAILABLE: usize, KW: DirFdKeyword> FromArgs for DirFd<'_, AVAILABLE, KW> {
     fn from_args(vm: &VirtualMachine, args: &mut FuncArgs) -> Result<Self, ArgumentError> {
-        let fd = match args.take_keyword(KW::NAME) {
-            Some(o) if vm.is_none(&o) => Ok(DEFAULT_DIR_FD),
-            None => Ok(DEFAULT_DIR_FD),
+        let fd: Result<Option<crt_fd::Borrowed<'_>>, std::io::Error> = match args
+            .take_keyword(KW::NAME)
+        {
+            Some(o) if vm.is_none(&o) => Ok(None),
+            None => Ok(None),
             Some(o) => {
                 warn_if_bool_fd(&o, vm).map_err(Into::<ArgumentError>::into)?;
                 let fd = o.try_index_opt(vm).unwrap_or_else(|| {
@@ -110,16 +120,16 @@ impl<const AVAILABLE: usize, KW: DirFdKeyword> FromArgs for DirFd<'_, AVAILABLE,
                     )))
                 })?;
                 let fd = fd.try_to_primitive(vm)?;
-                unsafe { crt_fd::Borrowed::try_borrow_raw(fd) }
+                unsafe { crt_fd::Borrowed::try_borrow_raw(fd) }.map(Some)
             }
         };
-        if AVAILABLE == 0 && fd.as_ref().is_ok_and(|&fd| fd != DEFAULT_DIR_FD) {
+        if AVAILABLE == 0 && fd.as_ref().is_ok_and(Option::is_some) {
             return Err(vm
                 .new_not_implemented_error("dir_fd unavailable on this platform")
                 .into());
         }
         let fd = fd.map_err(|e| e.to_pyexception(vm))?;
-        Ok(Self([fd; AVAILABLE], PhantomData))
+        Ok(Self(fd, PhantomData))
     }
 }
 
@@ -270,17 +280,23 @@ pub(super) mod _os {
 
     #[cfg(any(unix, windows, target_os = "wasi"))]
     #[derive(FromArgs)]
-    struct OpenArgs<'fd> {
+    struct OpenArgs {
         path: OsPath,
         flags: i32,
         #[pyarg(any, default)]
         mode: Option<i32>,
-        #[pyarg(flatten)]
-        dir_fd: DirFd<'fd, { OPEN_DIR_FD as usize }>,
+        // Declared explicitly rather than as a flattened `DirFd` so the keyword
+        // is accepted on every platform: `dir_fd=None` must work everywhere,
+        // and a real fd raises NotImplementedError where unsupported.
+        #[pyarg(named, name = "dir_fd", default = None)]
+        dir_fd: Option<i32>,
     }
 
     #[pyfunction]
-    fn open(args: OpenArgs<'_>, vm: &VirtualMachine) -> PyResult<crt_fd::Owned> {
+    fn open(args: OpenArgs, vm: &VirtualMachine) -> PyResult<crt_fd::Owned> {
+        if args.dir_fd.is_some() && !OPEN_DIR_FD {
+            return Err(vm.new_not_implemented_error("dir_fd unavailable on this platform"));
+        }
         os_open(args.path, args.flags, args.mode, args.dir_fd, vm)
     }
 
@@ -289,13 +305,12 @@ pub(super) mod _os {
         name: OsPath,
         flags: i32,
         mode: Option<i32>,
-        dir_fd: DirFd<'_, { OPEN_DIR_FD as usize }>,
+        dir_fd: Option<i32>,
         vm: &VirtualMachine,
     ) -> PyResult<crt_fd::Owned> {
         let mode = mode.unwrap_or(0o777);
         #[cfg(windows)]
         let fd = {
-            let [] = dir_fd.0;
             let name = name.to_wide_cstring(vm)?;
             let flags = flags | libc::O_NOINHERIT;
             crt_fd::wopen(&name, flags, mode)
@@ -306,14 +321,13 @@ pub(super) mod _os {
             #[cfg(not(target_os = "wasi"))]
             let flags = flags | libc::O_CLOEXEC;
             #[cfg(not(target_os = "redox"))]
-            if let Some(dir_fd) = dir_fd.get_opt() {
+            if let Some(dir_fd) = dir_fd.map(|fd| unsafe { crt_fd::Borrowed::try_borrow_raw(fd) }) {
                 crt_fd::openat(dir_fd, &name, flags, mode)
             } else {
                 crt_fd::open(&name, flags, mode)
             }
             #[cfg(target_os = "redox")]
             {
-                let [] = dir_fd.0;
                 crt_fd::open(&name, flags, mode)
             }
         };
@@ -421,7 +435,7 @@ pub(super) mod _os {
             };
         }
         #[cfg(target_os = "redox")]
-        let [] = dir_fd.0;
+        let _ = dir_fd.0;
         crate::host_env::fs::remove_dir(&path)
             .map_err(|err| OSErrorBuilder::with_filename(&err, path, vm))
     }
@@ -429,7 +443,7 @@ pub(super) mod _os {
     #[cfg(windows)]
     #[pyfunction]
     fn rmdir(path: OsPath, dir_fd: DirFd<'_, 0>, vm: &VirtualMachine) -> PyResult<()> {
-        let [] = dir_fd.0;
+        let _ = dir_fd.0;
         crate::host_env::fs::remove_dir(&path)
             .map_err(|err| OSErrorBuilder::with_filename(&err, path, vm))
     }
@@ -616,9 +630,16 @@ pub(super) mod _os {
     }
 
     #[pyfunction]
-    fn readlink(path: OsPath, dir_fd: DirFd<'_, 0>, vm: &VirtualMachine) -> PyResult {
+    fn readlink(
+        path: OsPath,
+        // Not a hardcoded 0: CPython's os.readlink accepts dir_fd wherever the
+        // platform does (SYMLINK_DIR_FD is true on Unix), and hardcoding 0
+        // rejected it with a TypeError instead of using it.
+        dir_fd: DirFd<'_, { SYMLINK_DIR_FD as usize }>,
+        vm: &VirtualMachine,
+    ) -> PyResult {
         let mode = path.mode();
-        let [] = dir_fd.0;
+        let _ = dir_fd.0;
         let path =
             fs::read_link(&path).map_err(|err| OSErrorBuilder::with_filename(&err, path, vm))?;
         Ok(mode.process_path(path, vm))
@@ -643,7 +664,7 @@ pub(super) mod _os {
         #[cfg(unix)]
         ino: AtomicCell<u64>,
         #[cfg(windows)]
-        ino: AtomicCell<Option<u128>>,
+        ino: AtomicCell<Option<[u64; 2]>>,
         #[cfg(not(any(unix, windows)))]
         ino: AtomicCell<Option<u64>>,
     }
@@ -669,7 +690,7 @@ pub(super) mod _os {
                 // Safety: the fd came from os.open() and is borrowed for
                 // the lifetime of this DirEntry reference.
                 let borrowed = unsafe { crt_fd::Borrowed::borrow_raw(raw_fd) };
-                return DirFd([borrowed; STAT_DIR_FD as usize], PhantomData);
+                return DirFd(Some(borrowed), PhantomData);
             }
             DirFd::default()
         }
@@ -789,7 +810,7 @@ pub(super) mod _os {
                 dir_fd
             };
             let do_stat = |follow_symlinks| {
-                stat(
+                stat_impl(
                     OsPath {
                         path: self.pathval.as_os_str().to_owned(),
                         origin: None,
@@ -831,7 +852,7 @@ pub(super) mod _os {
         #[pymethod]
         fn inode(&self, vm: &VirtualMachine) -> PyResult<u128> {
             match self.ino.load() {
-                Some(ino) => Ok(ino),
+                Some([lo, hi]) => Ok(lo as u128 | (hi as u128) << 64),
                 None => {
                     let stat = stat_inner(
                         OsPath::new_str(self.pathval.as_os_str()).into(),
@@ -840,14 +861,13 @@ pub(super) mod _os {
                     )
                     .map_err(|e| e.into_pyexception(vm))?
                     .ok_or_else(|| crate::exceptions::nul_char_error(vm))?;
-                    // On Windows, combine st_ino and st_ino_high into 128-bit value
-                    let ino: u128 = cfg_select! {
-                        windows => stat.st_ino as u128 | ((stat.st_ino_high as u128) << 64),
-                        _ => stat.st_ino as u128,
-                    };
+                    // On Windows, combine st_ino and st_ino_high into a 128-bit
+                    // value, kept as two 64-bit halves so that DirEntry's
+                    // payload never needs 16-byte alignment.
+                    let parts = [stat.st_ino as u64, stat.st_ino_high as u64];
                     // Err(T) means other thread set `ino` at the mean time which is safe to ignore
-                    let _ = self.ino.compare_exchange(None, Some(ino));
-                    Ok(ino)
+                    let _ = self.ino.compare_exchange(None, Some(parts));
+                    Ok(parts[0] as u128 | (parts[1] as u128) << 64)
                 }
             }
         }
@@ -1348,7 +1368,7 @@ pub(super) mod _os {
         dir_fd: DirFd<'_, { STAT_DIR_FD as usize }>,
         follow_symlinks: FollowSymlinks,
     ) -> io::Result<Option<StatStruct>> {
-        let [] = dir_fd.0;
+        let _ = dir_fd.0;
         match file {
             OsPathOrFd::Path(path) => host_nt::win32_xstat(&path.path, follow_symlinks.0),
             OsPathOrFd::Fd(fd) => crate::host_env::fileutils::fstat(fd),
@@ -1370,9 +1390,19 @@ pub(super) mod _os {
         }
     }
 
+    #[cfg(not(any(windows, target_os = "redox")))]
     #[pyfunction]
     #[pyfunction(name = "fstat")]
     fn stat(
+        file: OsPathOrFd<'_>,
+        dir_fd: DirFd<'_, { STAT_DIR_FD as usize }>,
+        follow_symlinks: FollowSymlinks,
+        vm: &VirtualMachine,
+    ) -> PyResult {
+        stat_impl(file, dir_fd, follow_symlinks, vm)
+    }
+
+    fn stat_impl(
         file: OsPathOrFd<'_>,
         dir_fd: DirFd<'_, { STAT_DIR_FD as usize }>,
         follow_symlinks: FollowSymlinks,
@@ -1384,13 +1414,56 @@ pub(super) mod _os {
         Ok(StatResultData::from_stat(&stat, vm).to_pyobject(vm))
     }
 
+    /// On platforms without `dir_fd` support, `DirFd<'_, 0>` is a zero-length
+    /// array, so the `FromArgs` derive never runs `from_args` for it and the
+    /// keyword is never consumed — `os.stat("f", dir_fd=3)` raised
+    /// `TypeError: unexpected keyword argument` instead of CPython's
+    /// `NotImplementedError`. Taking the keyword explicitly matches what
+    /// `nt::chmod` and `os.symlink` already do.
+    #[derive(FromArgs)]
+    #[cfg(any(windows, target_os = "redox"))]
+    struct StatArgs<'a> {
+        #[pyarg(any)]
+        file: OsPathOrFd<'a>,
+        #[pyarg(named, name = "dir_fd", default = None)]
+        dir_fd: Option<i32>,
+        #[pyarg(named, name = "follow_symlinks", default = Some(true))]
+        follow_symlinks: Option<bool>,
+    }
+
+    /// On platforms without `dir_fd` support, `DirFd<'_, 0>` is a zero-length
+    /// array, so the `FromArgs` derive never runs `from_args` for it and the
+    /// keyword is never consumed — `os.stat("f", dir_fd=3)` raised
+    /// `TypeError: unexpected keyword argument` instead of CPython's
+    /// `NotImplementedError`. Taking the keyword explicitly matches what
+    /// `nt::chmod` and `os.symlink` already do.
+    #[cfg(any(windows, target_os = "redox"))]
+    #[pyfunction]
+    #[pyfunction(name = "fstat")]
+    fn stat(args: StatArgs<'_>, vm: &VirtualMachine) -> PyResult {
+        let StatArgs {
+            file,
+            dir_fd,
+            follow_symlinks,
+        } = args;
+        if dir_fd.is_some() {
+            return Err(vm.new_not_implemented_error("dir_fd unavailable on this platform"));
+        }
+        stat_impl(
+            file,
+            DirFd::default(),
+            FollowSymlinks(follow_symlinks.unwrap_or(true)),
+            vm,
+        )
+    }
+
     #[pyfunction]
     fn lstat(
         file: OsPath,
         dir_fd: DirFd<'_, { STAT_DIR_FD as usize }>,
         vm: &VirtualMachine,
     ) -> PyResult {
-        stat(file.into(), dir_fd, FollowSymlinks(false), vm)
+        stat_impl(file.into(), dir_fd, FollowSymlinks(false), vm)
     }
 
     fn curdir_inner(vm: &VirtualMachine) -> PyResult<PathBuf> {
@@ -1418,6 +1491,7 @@ pub(super) mod _os {
         FsPath::try_from_path_like(path, false, vm)
     }
 
+    #[cfg(any(unix, target_os = "wasi"))]
     #[derive(FromArgs)]
     struct RenameArgs<'fd> {
         #[pyarg(positional)]
@@ -1425,15 +1499,29 @@ pub(super) mod _os {
         #[pyarg(positional)]
         dst: PyObjectRef,
         #[pyarg(flatten)]
-        #[cfg_attr(not(any(unix, target_os = "wasi")), expect(dead_code))]
         src_dir_fd: DirFd<'fd, { RENAME_DIR_FD as usize }, SrcDirFd>,
         #[pyarg(flatten)]
-        #[cfg_attr(not(any(unix, target_os = "wasi")), expect(dead_code))]
         dst_dir_fd: DirFd<'fd, { RENAME_DIR_FD as usize }, DstDirFd>,
     }
 
+    /// `RENAME_DIR_FD` is false off Unix/wasi, making the flattened `DirFd`
+    /// fields zero-length; the `FromArgs` derive then never consumes the
+    /// keywords. Taking them explicitly reproduces CPython's NotImplementedError.
+    #[cfg(not(any(unix, target_os = "wasi")))]
+    #[derive(FromArgs)]
+    struct RenameArgs {
+        #[pyarg(positional)]
+        src: PyObjectRef,
+        #[pyarg(positional)]
+        dst: PyObjectRef,
+        #[pyarg(named, name = "src_dir_fd", default = None)]
+        src_dir_fd: Option<i32>,
+        #[pyarg(named, name = "dst_dir_fd", default = None)]
+        dst_dir_fd: Option<i32>,
+    }
+
     #[pyfunction]
-    fn rename(args: RenameArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+    fn rename(args: RenameArgs, vm: &VirtualMachine) -> PyResult<()> {
         let src = PathConverter::new()
             .function("rename")
             .argument("src")
@@ -1446,7 +1534,14 @@ pub(super) mod _os {
         #[cfg(any(unix, target_os = "wasi"))]
         let src_dir_fd = args.src_dir_fd.get_opt();
         #[cfg(not(any(unix, target_os = "wasi")))]
-        let src_dir_fd = None;
+        let src_dir_fd = {
+            if args.src_dir_fd.is_some() || args.dst_dir_fd.is_some() {
+                return Err(vm.new_not_implemented_error(
+                    "rename: src_dir_fd and dst_dir_fd unavailable on this platform",
+                ));
+            }
+            None
+        };
 
         #[cfg(any(unix, target_os = "wasi"))]
         let dst_dir_fd = args.dst_dir_fd.get_opt();
@@ -1462,7 +1557,7 @@ pub(super) mod _os {
     }
 
     #[pyfunction]
-    fn replace(args: RenameArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+    fn replace(args: RenameArgs, vm: &VirtualMachine) -> PyResult<()> {
         let src = PathConverter::new()
             .function("replace")
             .argument("src")
@@ -1615,20 +1710,27 @@ pub(super) mod _os {
     }
 
     #[derive(FromArgs)]
-    struct UtimeArgs<'fd> {
+    struct UtimeArgs {
         path: OsPath,
         #[pyarg(any, default)]
         times: Option<PyTupleRef>,
         #[pyarg(named, default)]
         ns: Option<PyTupleRef>,
-        #[pyarg(flatten)]
-        dir_fd: DirFd<'fd, { UTIME_DIR_FD as usize }>,
-        #[pyarg(flatten)]
-        follow_symlinks: FollowSymlinks,
+        // Declared explicitly rather than as a flattened `DirFd`: the keyword
+        // must be accepted even where the platform has no dir_fd support, so
+        // that CPython's NotImplementedError is raised instead of the
+        // argument binder rejecting it as an unknown keyword.
+        #[pyarg(named, name = "dir_fd", default = None)]
+        pub dir_fd: Option<i32>,
+        #[pyarg(named, name = "follow_symlinks", default = true)]
+        pub follow_symlinks: bool,
     }
 
     #[pyfunction]
-    fn utime(args: UtimeArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+    fn utime(args: UtimeArgs, vm: &VirtualMachine) -> PyResult<()> {
+        if args.dir_fd.is_some() && !UTIME_DIR_FD {
+            return Err(vm.new_not_implemented_error("dir_fd unavailable on this platform"));
+        }
         let parse_tup = |tup: &Py<PyTuple>| -> Option<(PyObjectRef, PyObjectRef)> {
             if tup.len() != 2 {
                 None
@@ -1677,14 +1779,21 @@ pub(super) mod _os {
                 ));
             }
         };
-        utime_impl(args.path, acc, modif, args.dir_fd, args.follow_symlinks, vm)
+        utime_impl(
+            args.path,
+            acc,
+            modif,
+            args.dir_fd,
+            FollowSymlinks(args.follow_symlinks),
+            vm,
+        )
     }
 
     fn utime_impl(
         path: OsPath,
         acc: Duration,
         modif: Duration,
-        dir_fd: DirFd<'_, { UTIME_DIR_FD as usize }>,
+        dir_fd: Option<i32>,
         _follow_symlinks: FollowSymlinks,
         vm: &VirtualMachine,
     ) -> PyResult<()> {
@@ -1694,8 +1803,9 @@ pub(super) mod _os {
             {
                 let path_for_err = path.clone();
                 let path = path.into_cstring(vm)?;
+                let dir_fd = dir_fd.map(|fd| unsafe { crt_fd::Borrowed::try_borrow_raw(fd) });
                 if let Err(err) = crate::host_env::posix::set_file_times_at(
-                    dir_fd.get().as_raw(),
+                    dir_fd.map(|fd| fd.as_raw()),
                     path.as_c_str(),
                     acc,
                     modif,
@@ -1708,15 +1818,12 @@ pub(super) mod _os {
             }
             #[cfg(target_os = "redox")]
             {
-                let [] = dir_fd.0;
                 rustpython_host_env::posix::utimes(path.as_ref(), acc, modif)
                     .map_err(|err| err.into_pyexception(vm))
             }
         }
         #[cfg(windows)]
         {
-            let [] = dir_fd.0;
-
             if !_follow_symlinks.0 {
                 return Err(vm.new_not_implemented_error(
                     "utime: follow_symlinks unavailable on this platform",

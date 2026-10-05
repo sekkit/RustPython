@@ -286,7 +286,14 @@ pub fn format_error_message(code: Option<u32>) -> Option<String> {
 
     let message = unsafe {
         let slice = core::slice::from_raw_parts(buffer, len as usize);
-        let msg = String::from_utf16_lossy(slice).trim_end().to_string();
+        // FormatMessage appends "\r\n" and, for many codes, a final period.
+        // CPython reports the sentence without either, e.g. WinError 1314 is
+        // "A required privilege is not held by the client", not
+        // "A required privilege is not held by the client."
+        let msg = String::from_utf16_lossy(slice)
+            .trim_end()
+            .trim_end_matches('.')
+            .to_string();
         windows_sys::Win32::Foundation::LocalFree(buffer as *mut _);
         msg
     };

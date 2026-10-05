@@ -447,7 +447,7 @@ pub mod module {
                 .map_err(|err| OSErrorBuilder::with_filename(&err, path, vm));
         }
         #[cfg(target_os = "redox")]
-        let [] = dir_fd.0;
+        let _ = dir_fd.0;
         crate::host_env::fs::remove_file(&path)
             .map_err(|err| OSErrorBuilder::with_filename(&err, path, vm))
     }
@@ -952,7 +952,7 @@ pub mod module {
         follow_symlinks: FollowSymlinks,
         vm: &VirtualMachine,
     ) -> PyResult<()> {
-        let [] = dir_fd.0;
+        let _ = dir_fd.0;
         let err_path = path.clone();
         let body = move || {
             use std::os::unix::fs::PermissionsExt;

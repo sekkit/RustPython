@@ -58,10 +58,41 @@ pub(crate) mod module {
         LOAD_LIBRARY_SEARCH_USER_DIRS as _LOAD_LIBRARY_SEARCH_USER_DIRS,
     };
 
+    #[derive(FromArgs)]
+    struct AccessArgs {
+        #[pyarg(any)]
+        path: OsPath,
+        #[pyarg(any)]
+        mode: u8,
+        // CPython declares all three on Windows and raises NotImplementedError
+        // rather than TypeError, so they have to be declared here too. Order of
+        // the checks matches CPython: dir_fd, then effective_ids, then
+        // follow_symlinks.
+        #[pyarg(named, name = "dir_fd", default = None)]
+        dir_fd: Option<i32>,
+        #[pyarg(named, name = "effective_ids", default = false)]
+        effective_ids: bool,
+        #[pyarg(named, name = "follow_symlinks", default = true)]
+        follow_symlinks: bool,
+    }
+
     #[pyfunction]
-    pub(super) fn access(path: OsPath, mode: u8, vm: &VirtualMachine) -> PyResult<bool> {
-        let _ = path.to_wide_cstring(vm)?;
-        Ok(host_nt::access(path.as_ref(), mode))
+    pub(super) fn access(args: AccessArgs, vm: &VirtualMachine) -> PyResult<bool> {
+        if args.dir_fd.is_some() {
+            return Err(vm.new_not_implemented_error("dir_fd unavailable on this platform"));
+        }
+        if args.effective_ids {
+            return Err(
+                vm.new_not_implemented_error("access: effective_ids unavailable on this platform")
+            );
+        }
+        if !args.follow_symlinks {
+            return Err(
+                vm.new_not_implemented_error("access: follow_symlinks unavailable on this platform")
+            );
+        }
+        let _ = args.path.to_wide_cstring(vm)?;
+        Ok(host_nt::access(args.path.as_ref(), args.mode))
     }
 
     #[pyfunction]
@@ -71,7 +102,7 @@ pub(crate) mod module {
         dir_fd: DirFd<'static, 0>,
         vm: &VirtualMachine,
     ) -> PyResult<()> {
-        let [] = dir_fd.0;
+        let _ = dir_fd.0;
         let _ = path.to_wide_cstring(vm)?;
         host_nt::remove(path.as_ref()).map_err(|err| OSErrorBuilder::with_filename(&err, path, vm))
     }
@@ -98,18 +129,24 @@ pub(crate) mod module {
     }
 
     #[derive(FromArgs)]
-    pub(super) struct SymlinkArgs<'fd> {
+    pub(super) struct SymlinkArgs {
         src: OsPath,
         dst: OsPath,
         #[pyarg(flatten)]
         target_is_directory: TargetIsDirectory,
-        #[pyarg(flatten)]
-        _dir_fd: DirFd<'fd, { _os::SYMLINK_DIR_FD as usize }>,
+        // Declared explicitly rather than as a flattened `DirFd`, so that
+        // `dir_fd=None` is accepted here as it is on every platform. A real fd
+        // is rejected below; symlink has no dir_fd support at all.
+        #[pyarg(named, name = "dir_fd", default = None)]
+        _dir_fd: Option<i32>,
     }
 
     #[pyfunction]
-    pub(super) fn symlink(args: SymlinkArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+    pub(super) fn symlink(args: SymlinkArgs, vm: &VirtualMachine) -> PyResult<()> {
         use crate::exceptions::ToOSErrorBuilder;
+        if args._dir_fd.is_some() {
+            return Err(vm.new_not_implemented_error("dir_fd unavailable on this platform"));
+        }
         let src = args.src.to_wide_cstring(vm)?;
         let dst = args.dst.to_wide_cstring(vm)?;
         if let Err(err) = host_nt::symlink(
@@ -167,8 +204,13 @@ pub(crate) mod module {
         path: OsPathOrFd<'a>,
         #[pyarg(any)]
         mode: u32,
-        #[pyarg(flatten)]
-        dir_fd: DirFd<'static, 0>,
+        // Declared explicitly rather than as a flattened `DirFd<'_, 0>`, so that
+        // `dir_fd=None` is accepted here as it is on every platform. A zero-length
+        // `DirFd` array never consumes the keyword, which made a real fd raise
+        // `TypeError: unexpected keyword argument 'dir_fd'` instead of
+        // CPython's `NotImplementedError: dir_fd unavailable on this platform`.
+        #[pyarg(named, name = "dir_fd", default = None)]
+        dir_fd: Option<i32>,
         #[pyarg(named, name = "follow_symlinks", optional)]
         follow_symlinks: OptionalArg<bool>,
     }
@@ -197,7 +239,9 @@ pub(crate) mod module {
             dir_fd,
             follow_symlinks,
         } = args;
-        let [] = dir_fd.0;
+        if dir_fd.is_some() {
+            return Err(vm.new_not_implemented_error("dir_fd unavailable on this platform"));
+        }
 
         // If path is a file descriptor, use fchmod
         if let OsPathOrFd::Fd(fd) = path {
@@ -222,6 +266,14 @@ pub(crate) mod module {
         } else {
             win32_lchmod(&path, mode, vm)
         }
+    }
+
+    /// Change the access permissions of a file, without following symbolic links.
+    ///
+    /// Equivalent to `chmod(path, mode, follow_symlinks=False)`.
+    #[pyfunction]
+    fn lchmod(path: OsPath, mode: u32, vm: &VirtualMachine) -> PyResult<()> {
+        win32_lchmod(&path, mode, vm)
     }
 
     /// Get the real file name (with correct case) without accessing the file.
@@ -1029,18 +1081,24 @@ pub(crate) mod module {
     }
 
     #[derive(FromArgs)]
-    struct MkdirArgs<'a> {
+    struct MkdirArgs {
         #[pyarg(any)]
         path: OsPath,
         #[pyarg(any, default = 0o777)]
         mode: i32,
-        #[pyarg(flatten)]
-        dir_fd: DirFd<'a, { _os::MKDIR_DIR_FD as usize }>,
+        // Taken explicitly rather than as a flattened `DirFd<'_, 0>`: that is
+        // zero-length on Windows and the derive never consumed the keyword, so
+        // os.mkdir(p, dir_fd=3) raised `TypeError: unexpected keyword argument
+        // 'dir_fd'`. Same pattern as nt::chmod.
+        #[pyarg(named, name = "dir_fd", default = None)]
+        dir_fd: Option<i32>,
     }
 
     #[pyfunction]
-    fn mkdir(args: MkdirArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
-        let [] = args.dir_fd.0;
+    fn mkdir(args: MkdirArgs, vm: &VirtualMachine) -> PyResult<()> {
+        if args.dir_fd.is_some() {
+            return Err(vm.new_not_implemented_error("dir_fd unavailable on this platform"));
+        }
         let wide = args.path.to_wide_cstring(vm)?;
         host_nt::mkdir(&wide, args.mode).map_err(|e| e.to_pyexception(vm))
     }
@@ -1083,7 +1141,17 @@ pub(crate) mod module {
     /// Windows-specific readlink that preserves \\?\ prefix for junctions
     /// returns the substitute name from reparse data which includes the prefix
     #[pyfunction]
-    fn readlink(path: OsPath, vm: &VirtualMachine) -> PyResult {
+    fn readlink(
+        path: OsPath,
+        dir_fd: DirFd<'static, 0>,
+        vm: &VirtualMachine,
+    ) -> PyResult {
+        // Without this parameter the keyword could not be consumed at all, so
+        // os.readlink(p, dir_fd=3) raised `TypeError: nt.readlink() takes no
+        // keyword arguments` instead of CPython's NotImplementedError.
+        if dir_fd.0.is_some() {
+            return Err(vm.new_not_implemented_error("dir_fd unavailable on this platform"));
+        }
         let mode = path.mode();
         match host_nt::readlink(path.as_ref()) {
             Ok(result_path) => Ok(mode.process_path(std::path::PathBuf::from(result_path), vm)),

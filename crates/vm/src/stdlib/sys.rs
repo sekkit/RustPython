@@ -668,9 +668,13 @@ pub mod sys {
 
     #[pyattr]
     fn implementation(vm: &VirtualMachine) -> PyRef<PyNamespace> {
-        const NAME: &str = "cpython";
+        // PEP 421: `name` identifies the implementation, so it must not claim
+        // to be CPython. Reporting "cpython" here made `@support.cpython_only`
+        // tests run instead of skip (they import CPython-only modules such as
+        // `_testcapi`), and made `sys.implementation.name` lie to user code.
+        const NAME: &str = "rustpython";
 
-        // cache tag uses 'cpython' because our compiler is cpython compatible
+        // cache tag stays 'cpython' because our compiler is cpython compatible
         let cache_tag = format!("cpython-{}{}", version::MAJOR, version::MINOR);
         let ctx = &vm.ctx;
         py_namespace!(vm, {
@@ -769,7 +773,10 @@ pub mod sys {
 
     #[pyfunction]
     const fn _is_gil_enabled() -> bool {
-        false // RustPython has no GIL (like free-threaded Python)
+        // RustPython serialises execution behind the VM's thread lock, so it is
+        // not a free-threaded build: like a regular CPython build, the GIL is
+        // always considered enabled.
+        true
     }
 
     /// Return True if remote debugging is enabled, False otherwise.
