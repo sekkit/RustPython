@@ -276,8 +276,20 @@ impl SequenceIndex {
                 .map_err(|_| vm.new_index_error("cannot fit 'int' into an index-sized integer"))
                 .map(Self::Int)
         } else {
+            // CPython: "list indices must be integers or slices, not %.200s"
+            // (Objects/listobject.c). The type name is interpolated bare, not
+            // quoted, and the message says nothing about __index__.
+            if type_name == "str" {
+                // str is the exception: "string indices must be integers, not
+                // '%.200s'" (Objects/unicodeobject.c) - "string" rather than
+                // "str", no "or slices", and the type is quoted.
+                return Err(vm.new_type_error(format!(
+                    "string indices must be integers, not '{}'",
+                    obj.class()
+                )));
+            }
             Err(vm.new_type_error(format!(
-                "{} indices must be integers or slices or classes that override __index__ operator, not '{}'",
+                "{} indices must be integers or slices, not {}",
                 type_name,
                 obj.class()
             )))

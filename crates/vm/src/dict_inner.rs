@@ -1465,6 +1465,11 @@ impl DictKey for PyObject {
         if let Some(s) = self.downcast_ref_if_exact::<PyStr>(vm) {
             return Ok(s.hash(vm));
         }
+        // NB: do NOT wrap an unhashable-key TypeError here. This trait is shared
+        // with sets, which raise `cannot use 'list' as a set element (...)`;
+        // wrapping in the shared hash path double-wraps that into
+        // "cannot use 'list' as a set element (cannot use 'list' as a dict key
+        // (...))". The dict-only wrapper lives in dict.rs's subscript.
         self.hash(vm)
     }
 

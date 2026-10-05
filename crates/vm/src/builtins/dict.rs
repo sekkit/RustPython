@@ -284,7 +284,9 @@ impl PyDict {
         value: PyObjectRef,
         vm: &VirtualMachine,
     ) -> PyResult<()> {
-        self.entries.insert(vm, key, value)
+        self.entries
+            .insert(vm, key, value)
+            .map_err(|e| dict_unhashable_error(vm, &key.to_pyobject(vm), e))
     }
 
     pub(crate) fn inner_delitem<K: DictKey + ?Sized>(
@@ -292,7 +294,9 @@ impl PyDict {
         key: &K,
         vm: &VirtualMachine,
     ) -> PyResult<()> {
-        self.entries.delete(vm, key)
+        self.entries
+            .delete(vm, key)
+            .map_err(|e| dict_unhashable_error(vm, &key.to_pyobject(vm), e))
     }
 
     pub fn get_or_insert(
@@ -409,7 +413,9 @@ impl PyDict {
     }
 
     fn __contains__(&self, key: PyObjectRef, vm: &VirtualMachine) -> PyResult<bool> {
-        self.entries.contains(vm, &*key)
+        self.entries
+            .contains(vm, &*key)
+            .map_err(|e| dict_unhashable_error(vm, &key, e))
     }
 
     fn __delitem__(&self, key: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
@@ -439,7 +445,8 @@ impl PyDict {
     ) -> PyResult {
         Ok(self
             .entries
-            .get(vm, &*key)?
+            .get(vm, &*key)
+            .map_err(|e| dict_unhashable_error(vm, &key, e))?
             .unwrap_or_else(|| default.unwrap_or_none(vm)))
     }
 
@@ -452,6 +459,7 @@ impl PyDict {
     ) -> PyResult {
         self.entries
             .setdefault(vm, &*key, || default.unwrap_or_none(vm))
+            .map_err(|e| dict_unhashable_error(vm, &key, e))
     }
 
     #[pymethod]
@@ -495,7 +503,10 @@ impl PyDict {
         default: OptionalArg<PyObjectRef>,
         vm: &VirtualMachine,
     ) -> PyResult {
-        match self.entries.pop(vm, &*key)? {
+        match self
+            .entries
+            .pop(vm, &*key)
+            .map_err(|e| dict_unhashable_error(vm, &key, e))? {
             Some(value) => Ok(value),
             None => default.ok_or_else(|| vm.new_key_error(key)),
         }
@@ -645,7 +656,8 @@ impl AsSequence for PyDict {
         static AS_SEQUENCE: LazyLock<PySequenceMethods> = LazyLock::new(|| PySequenceMethods {
             contains: atomic_func!(|seq, target, vm| PyDict::sequence_downcast(seq)
                 .entries
-                .contains(vm, target)),
+                .contains(vm, target)
+                .map_err(|e| dict_unhashable_error(vm, target, e))),
             ..PySequenceMethods::NOT_IMPLEMENTED
         });
         &AS_SEQUENCE
@@ -748,7 +760,9 @@ impl Py<PyDict> {
         key: &K,
         vm: &VirtualMachine,
     ) -> PyResult<PyObjectRef> {
-        if let Some(value) = self.entries.get(vm, key)? {
+        if let Some(value) = self.entries.get(vm, key).map_err(|e| {
+            dict_unhashable_error(vm, &key.to_pyobject(vm), e)
+        })? {
             Ok(value)
         } else if let Some(value) = self.missing_opt(key, vm)? {
             Ok(value)
@@ -1778,4 +1792,30 @@ pub(crate) fn init(context: &'static Context) {
     PyDictItems::extend_class(context, context.types.dict_items_type);
     PyDictItemIterator::extend_class(context, context.types.dict_itemiterator_type);
     PyDictReverseItemIterator::extend_class(context, context.types.dict_reverseitemiterator_type);
+}
+
+/// CPython's `dict_unhashable_type` (Objects/dictobject.c): a `TypeError` raised
+/// while hashing the key is re-raised as `cannot use '<type>' as a dict key
+/// (<original message>)`. Any other exception propagates unchanged.
+///
+/// Wrapped in `inner_getitem` rather than in `DictKey::key_hash`, because sets
+/// share that trait and raise `cannot use '...' as a set element (...)` of their
+/// own; wrapping there double-wraps the set message.
+fn dict_unhashable_error(
+    vm: &VirtualMachine,
+    key: &PyObject,
+    err: PyBaseExceptionRef,
+) -> PyBaseExceptionRef {
+    if !err.fast_isinstance(vm.ctx.exceptions.type_error) {
+        return err;
+    }
+    let detail = err
+        .args()
+        .first()
+        .and_then(|arg| arg.str(vm).ok())
+        .map_or_else(String::new, |s| s.to_string());
+    vm.new_type_error(format!(
+        "cannot use '{}' as a dict key ({detail})",
+        key.class().name()
+    ))
 }
