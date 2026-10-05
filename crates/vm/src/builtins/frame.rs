@@ -497,21 +497,32 @@ impl FrameObject {
 
     #[pygetset]
     pub fn f_lineno(&self) -> usize {
-        // If lasti is 0, execution hasn't started yet - use first line number
-        if self.lasti() == 0 {
-            return self
-                .iframe()
-                .code()
-                .first_line_number
-                .map_or(1, |n| n.get());
+        // Report the position of the frame that is actually running. While the
+        // frame is still on this thread's execution chain the live
+        // `InterpreterFrame` is authoritative: it holds the current `lasti` and
+        // the code object being executed. The materialized frame's own copy can
+        // lag behind, and for the module-level frame it is never updated at
+        // all, which made every suspended module frame report line 1.
+        let live = self.find_live_source_iframe();
+        let iframe = if live.is_null() { self.iframe() } else { live };
+        // SAFETY: `iframe` is either this frame's own iframe or one from this
+        // thread's execution chain; both outlive this call.
+        let iframe = unsafe { &*iframe };
+        let code = iframe.code();
+        // `lasti` counts code units and is stored one past the instruction
+        // being executed; a position past the end of the table cannot name an
+        // instruction, so fall back to the last one that can.
+        let index = iframe.lasti.load(Relaxed).min(code.locations.len() as u32);
+        if index == 0 {
+            // Execution hasn't started yet: use the first line number.
+            return code.first_line_number.map_or(1, |n| n.get());
         }
         // Compute the line lazily from the instruction position (CPython
-        // 3.12+ semantics). lasti points PAST the instruction being executed
-        // (advanced before execution), so locations[lasti - 1] is the
-        // currently-executing instruction's line. This is also correct when
-        // observed mid-CALL from a callee: lasti has advanced past CALL, so
-        // the reported line is the call site — matching CPython.
-        self.current_location().line.get()
+        // 3.12+ semantics). locations[lasti - 1] is the currently-executing
+        // instruction's line. This is also correct when observed mid-CALL from
+        // a callee: lasti has advanced past CALL, so the reported line is the
+        // call site — matching CPython.
+        code.locations[(index - 1) as usize].0.line.get()
     }
 
     #[pygetset(setter)]
