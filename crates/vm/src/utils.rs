@@ -148,28 +148,28 @@ pub fn suggest_keyword<'a>(
     name: &str,
     candidates: impl Iterator<Item = &'a str>,
 ) -> Option<&'a str> {
-    const SUBSTITUTION_COST: f32 = 1.0;
-    const ADDITION_COST: f32 = 2.0;
-    const ELIMINATION_COST: f32 = 2.0;
-    const CASE_COST: f32 = 0.5;
-    // CPython suggests when the best distance is within the combined
-    // insertion/deletion budget (Objects/call.c): e.g. "bluch"->"bluchin"
-    // (two insertions, cost 4) is suggested, so the bound is 4, not 2.
-    const MAX_SUGGESTION_COST: f32 = ELIMINATION_COST + ADDITION_COST;
+    // Python/suggestions.c weights. LEAST_FIVE_BITS is `n & 31`, not a byte
+    // XOR: two characters differing outside the low five bits are unrelated and
+    // cost MOVE_COST outright, which is what makes "c"->"a" and "c"->"b" both
+    // cost 2.
+    const MOVE_COST: f32 = 2.0;
+    const CASE_COST: f32 = 1.0;
 
     let a: Vec<char> = name.chars().collect();
     let mut best: Option<(&'a str, f32)> = None;
     for candidate in candidates {
         let b: Vec<char> = candidate.chars().collect();
-        let dist = levenshtein_costs(
-            &a,
-            &b,
-            SUBSTITUTION_COST,
-            ELIMINATION_COST,
-            ADDITION_COST,
-            CASE_COST,
-        );
-        if dist <= MAX_SUGGESTION_COST && best.is_none_or(|(_, best_dist)| dist < best_dist) {
+        // "No more than 1/3 of the involved characters should need changed",
+        // scaled by the two lengths. This is why `def e(a=1, b=2)` then
+        // `e(c=4)` stays silent: the cutoff is (1+1+3)*2/6 == 1 while any
+        // substitution costs 2. Ties keep the first candidate, matching
+        // suggestions.c's strict `current_distance < suggestion_distance`.
+        let max_distance = ((a.len() + b.len() + 3) * MOVE_COST as usize / 6) as f32;
+        let dist = levenshtein_costs(&a, &b, MOVE_COST, MOVE_COST, MOVE_COST, CASE_COST);
+        if dist > max_distance {
+            continue;
+        }
+        if best.is_none_or(|(_, best_dist)| dist < best_dist) {
             best = Some((candidate, dist));
         }
     }
@@ -192,7 +192,10 @@ fn levenshtein_costs(
         let mut cur: Vec<f32> = vec![0.0; b.len() + 1];
         cur[0] = (i as f32 + 1.0) * elimination;
         for (j, cb) in b.iter().enumerate() {
-            let sub_cost = if ca == cb {
+            let sub_cost = if (*ca as u32 & 31) != (*cb as u32 & 31) {
+                // LEAST_FIVE_BITS differs, so this is not a case flip.
+                substitution
+            } else if ca == cb {
                 0.0
             } else if ca.eq_ignore_ascii_case(cb) {
                 case
