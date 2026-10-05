@@ -14,6 +14,7 @@ from test import support
 from test.support import MISSING_C_DOCSTRINGS, script_helper
 
 
+@unittest.skip("TODO: RUSTPYTHON; the _test* extension test modules are not built in this configuration, so find_spec returns None and setUp's `assert self.spec` fails")
 class LoaderTests:
 
     """Test ExtensionFileLoader."""
@@ -101,6 +102,7 @@ class LoaderTests:
  ) = util.test_both(LoaderTests, machinery=machinery)
 
 
+@unittest.skip("TODO: RUSTPYTHON; the _test* extension test modules are not built in this configuration, so find_spec returns None and setUp's `assert self.spec` fails")
 class SinglePhaseExtensionModuleTests(abc.LoaderTests):
     # Test loading extension modules without multi-phase initialization.
 
@@ -189,6 +191,7 @@ class SinglePhaseExtensionModuleTests(abc.LoaderTests):
  ) = util.test_both(SinglePhaseExtensionModuleTests, machinery=machinery)
 
 
+@unittest.skip("TODO: RUSTPYTHON; the _test* extension test modules are not built in this configuration, so find_spec returns None and setUp's `assert self.spec` fails")
 class MultiPhaseExtensionModuleTests(abc.LoaderTests):
     # Test loading extension modules with multi-phase initialization (PEP 489).
 
@@ -379,6 +382,7 @@ class MultiPhaseExtensionModuleTests(abc.LoaderTests):
  ) = util.test_both(MultiPhaseExtensionModuleTests, machinery=machinery)
 
 
+@unittest.skip("TODO: RUSTPYTHON; the _test* extension test modules are not built in this configuration, so find_spec returns None and setUp's `assert self.spec` fails")
 class NonModuleExtensionTests(unittest.TestCase):
     def test_nonmodule_cases(self):
         # The test cases in this file cause the GIL to be enabled permanently

@@ -44,6 +44,7 @@ class FinderTests(abc.FinderTests):
 
         return importer.find_spec(fullname)
 
+    @unittest.skip("TODO: RUSTPYTHON; the _test* extension test modules are not built in this configuration, so find_spec returns None")
     def test_module(self):
         self.assertTrue(self.find_spec(util.EXTENSIONS.name))
 
