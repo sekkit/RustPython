@@ -2971,7 +2971,6 @@ class ImplementationTest(unittest.TestCase):
                 del sys.modules[name]
 
     @cpython_only
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; unicode_iscased has different definition
     def test_case_helpers(self):
         import _sre
         for i in range(128):

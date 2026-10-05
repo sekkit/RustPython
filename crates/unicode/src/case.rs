@@ -157,7 +157,12 @@ pub fn is_titlecase(c: char) -> bool {
     category_of(c) == GeneralCategory::TitlecaseLetter
 }
 
-/// Whether `c` has the `Cased` property.
+/// Whether `c` is cased, matching CPython's `_sre.unicode_iscased`.
+///
+/// A code point is cased when full lowercasing or uppercasing changes it, which
+/// is not the same as the UCD `Cased` property: that property also covers
+/// letters with no case mapping (U+00AA, U+0295), which CPython reports as not
+/// cased. See `write_cased_prop` in `build.rs` for how the table is built.
 #[must_use]
 pub fn is_cased(c: char) -> bool {
     lookup_range(CASED_PROP, c)

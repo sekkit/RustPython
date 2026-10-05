@@ -631,7 +631,6 @@ fn generate_unicode_latest() {
     for (prop, static_name) in [
         ("Lowercase", "LOWERCASE_PROP"),
         ("Uppercase", "UPPERCASE_PROP"),
-        ("Cased", "CASED_PROP"),
         ("Case_Ignorable", "CASE_IGNORABLE_PROP"),
     ] {
         write_derived(
@@ -650,6 +649,110 @@ fn generate_unicode_latest() {
             },
         );
     }
+
+    write_cased_prop(&base, &mut writer);
+}
+
+/// Generate `CASED_PROP` the way CPython defines "cased".
+///
+/// `_sre.unicode_iscased` and the word boundaries of `str.title` treat a code
+/// point as cased when full lowercasing or uppercasing changes it: CPython's own
+/// `Lib/test/test_re.py::test_case_helpers` asserts
+/// `_sre.unicode_iscased(i) == (c != c.lower() or c != c.upper())`. The UCD
+/// `Cased` property is not that set -- it also covers letters with no case
+/// mapping at all (U+00AA FEMININE ORDINAL INDICATOR, U+0295 CYRILLIC SMALL
+/// LETTER SEMI-SOFT SIGN, ...), which would make `str.title` treat them as word
+/// letters and make `_sre.unicode_iscased` disagree with CPython on 1597 code
+/// points.
+///
+/// Nearly every cased code point carries a non-identity simple mapping
+/// (UnicodeData.txt fields 12/13). The remainder are cased only through an
+/// unconditional SpecialCasing entry whose simple mapping is the identity: the
+/// `ﬀ` ligatures, U+00DF -> "SS", U+0130, and the Greek and Armenian forms.
+/// Those are listed explicitly below.
+fn write_cased_prop<W: Write>(base: &Path, writer: &mut W) {
+    /// Code points whose unconditional *full* case mapping is non-identity while
+    /// their simple mapping is the identity, as `start..=end` pairs in UCD 16.0.0.
+    const FULL_CASE_ONLY: &[(u32, u32)] = &[
+        (0x00DF, 0x00DF), // LATIN SMALL LETTER SHARP S
+        (0x0149, 0x0149), // LATIN SMALL LETTER N PRECEDED BY APOSTROPHE
+        (0x01F0, 0x01F0), // LATIN SMALL LETTER J WITH CARON
+        (0x0390, 0x0390), // GREEK SMALL LETTER IOTA WITH DIALYTIKA AND TONOS
+        (0x03B0, 0x03B0), // GREEK SMALL LETTER UPSILON WITH DIALYTIKA AND TONOS
+        (0x0587, 0x0587), // ARMENIAN SMALL LIGATURE ECH YIWN
+        (0x1E96, 0x1E9A), // LATIN SMALL LETTER H WITH LINE BELOW .. H WITH DIAERESIS
+        (0x1F50, 0x1F50), // GREEK SMALL LETTER UPSILON WITH PSILI
+        (0x1F52, 0x1F52), // GREEK SMALL LETTER UPSILON WITH PSILI AND PROSGEGRAMMENI
+        (0x1F54, 0x1F54), // GREEK SMALL LETTER UPSILON WITH PSILI AND PERISPOMENI
+        (0x1F56, 0x1F56), // GREEK SMALL LETTER UPSILON WITH DIALYTIKA AND PERISPOMENI
+        (0x1FB2, 0x1FB2), // GREEK SMALL LETTER ALPHA WITH VARIA AND YPOGEGRAMMENI
+        (0x1FB4, 0x1FB4), // GREEK SMALL LETTER ALPHA WITH OXIA AND YPOGEGRAMMENI
+        (0x1FB6, 0x1FB7), // GREEK SMALL LETTER ALPHA WITH PERISPOMENI
+        (0x1FC2, 0x1FC2), // GREEK SMALL LETTER ETA WITH VARIA AND YPOGEGRAMMENI
+        (0x1FC4, 0x1FC4), // GREEK SMALL LETTER ETA WITH OXIA AND YPOGEGRAMMENI
+        (0x1FC6, 0x1FC7), // GREEK SMALL LETTER ETA WITH PERISPOMENI
+        (0x1FD2, 0x1FD3), // GREEK SMALL LETTER IOTA WITH DIALYTIKA AND VARIA
+        (0x1FD6, 0x1FD7), // GREEK SMALL LETTER IOTA WITH DIALYTIKA AND OXIA
+        (0x1FE2, 0x1FE4), // GREEK SMALL LETTER UPSILON WITH DIALYTIKA AND VARIA
+        (0x1FE6, 0x1FE7), // GREEK SMALL LETTER UPSILON WITH DIALYTIKA AND OXIA
+        (0x1FF2, 0x1FF2), // GREEK SMALL LETTER OMEGA WITH DIALYTIKA AND VARIA
+        (0x1FF4, 0x1FF4), // GREEK SMALL LETTER OMEGA WITH DIALYTIKA AND OXIA
+        (0x1FF6, 0x1FF7), // GREEK SMALL LETTER OMEGA WITH PERISPOMENI
+        (0xFB00, 0xFB06), // LATIN SMALL LIGATURE FF .. LIGATURE ST
+        (0xFB13, 0xFB17), // ARMENIAN SMALL LIGATURE ECH YIWN .. MEN XEH
+    ];
+
+    let reader = BufReader::new(File::open(base.join("UnicodeData.txt")).unwrap());
+    let mut cased: BTreeSet<u32> = BTreeSet::new();
+    // A "<..., First>" / "<..., Last>" pair shares one mapping across a range.
+    let mut pending: Option<(u32, Option<u32>, Option<u32>)> = None;
+
+    for line in reader.lines().map(Result::unwrap) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let fields: alloc::vec::Vec<&str> = line.split(';').collect();
+        let cp = u32::from_str_radix(fields[0], 16).unwrap();
+        let upper = u32::from_str_radix(fields[12], 16).ok();
+        let lower = u32::from_str_radix(fields[13], 16).ok();
+        let is_cased = |c: u32, upper: Option<u32>, lower: Option<u32>| {
+            upper.is_some_and(|m| m != c) || lower.is_some_and(|m| m != c)
+        };
+
+        if fields[1].ends_with(", First>") {
+            pending = Some((cp, upper, lower));
+        } else if fields[1].ends_with(", Last>") {
+            let (start, upper, lower) = pending.expect("UnicodeData Last> without First>");
+            for c in start..=cp {
+                if is_cased(c, upper, lower) {
+                    cased.insert(c);
+                }
+            }
+            pending = None;
+        } else if is_cased(cp, upper, lower) {
+            cased.insert(cp);
+        }
+    }
+    assert!(
+        pending.is_none(),
+        "UnicodeData ended with an unterminated First> range"
+    );
+
+    for &(start, end) in FULL_CASE_ONLY {
+        cased.extend(start..=end);
+    }
+
+    let mut ranges: alloc::vec::Vec<(u32, u32)> = alloc::vec::Vec::new();
+    for cp in cased {
+        match ranges.last_mut() {
+            Some(last) if last.1 + 1 == cp => last.1 = cp,
+            _ => ranges.push((cp, cp)),
+        }
+    }
+
+    write!(writer, "pub(crate) static CASED_PROP: &[(u32, u32)] = ").unwrap();
+    writeln!(writer, "&{ranges:?};").unwrap();
 }
 
 #[expect(clippy::too_many_arguments)]
