@@ -13,12 +13,10 @@ class Codec(codecs.Codec):
     encode = codec.encode
     decode = codec.decode
 
-class IncrementalEncoder(mbc.MultibyteIncrementalEncoder,
-                         codecs.IncrementalEncoder):
+class IncrementalEncoder(_codecs_cn.IncrementalEncoder):
     codec = codec
 
-class IncrementalDecoder(mbc.MultibyteIncrementalDecoder,
-                         codecs.IncrementalDecoder):
+class IncrementalDecoder(_codecs_cn.IncrementalDecoder):
     codec = codec
 
 class StreamReader(Codec, mbc.MultibyteStreamReader, codecs.StreamReader):
