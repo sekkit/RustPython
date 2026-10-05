@@ -214,6 +214,33 @@ impl Py<PyModule> {
                     "cannot access submodule '{name}' of module '{mod_display}' \
                      (most likely due to a circular import)"
                 )))
+            } else if PyModule::is_initializing(&dict, vm) {
+                // CPython's module_getattro checks these in order
+                // (Objects/moduleobject.c): a script on sys.path that shadows a
+                // name gets the "library you intended to import" wording, and
+                // only a module that is not shadowing is reported as partially
+                // initialized.
+                if is_possibly_shadowing {
+                    let origin = origin.as_ref().expect("shadowing implies an origin");
+                    Err(vm.new_attribute_error(format!(
+                        "module '{mod_display}' has no attribute '{name}' \
+                         (consider renaming '{origin}' if it has the same \
+                         name as a library you intended to import)"
+                    )))
+                } else {
+                    // CPython reports the origin path when it has one.
+                    match origin.as_deref() {
+                        Some(origin) => Err(vm.new_attribute_error(format!(
+                            "partially initialized module '{mod_display}' from \
+                             '{origin}' has no attribute '{name}' \
+                             (most likely due to a circular import)"
+                        ))),
+                        None => Err(vm.new_attribute_error(format!(
+                            "partially initialized module '{mod_display}' has no \
+                             attribute '{name}' (most likely due to a circular import)"
+                        ))),
+                    }
+                }
             } else {
                 Err(vm.new_attribute_error(format!(
                     "module '{mod_display}' has no attribute '{name}'"
