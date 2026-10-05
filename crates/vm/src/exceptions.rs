@@ -1491,8 +1491,19 @@ impl ToOSErrorBuilder for std::io::Error {
         let errno = self.posix_errno();
         #[cfg(windows)]
         let msg = 'msg: {
-            // Use C runtime's strerror for POSIX errno values.
-            // For Windows-specific error codes, fall back to FormatMessage.
+            // CPython reports the Win32 system message when the operation failed
+            // with a Windows error code, not the POSIX errno string the code
+            // happens to translate to. `CreateSymbolicLinkW` failing with 1314
+            // (ERROR_PRIVILEGE_NOT_HELD) reports "A required privilege is not
+            // held by the client", whereas errno EINVAL would say "Invalid
+            // argument".
+            if let Some(winerror) = self.raw_os_error()
+                && let Some(s) =
+                    crate::host_env::windows::format_error_message(Some(winerror as u32))
+            {
+                break 'msg s;
+            }
+            // Otherwise use the C runtime's strerror for POSIX errno values.
             const MAX_POSIX_ERRNO: i32 = 127;
             if errno > 0
                 && errno <= MAX_POSIX_ERRNO
@@ -2069,7 +2080,7 @@ pub(super) mod types {
                         ["name", "path", "name_from"].iter().copied(),
                     )
                 {
-                    msg.push_str(&format!(" Did you mean '{suggestion}'?"));
+                    msg.push_str(&format!(". Did you mean '{suggestion}'?"));
                 }
                 return Err(vm.new_type_error(msg));
             }
