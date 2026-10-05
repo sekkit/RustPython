@@ -60,14 +60,19 @@ mod _decimal {
     // Shared DecimalTuple namedtuple class (created once per process).
     static DECIMAL_TUPLE: SyncMutex<Option<PyObjectRef>> = SyncMutex(PyMutex::new(None));
 
-    fn get_current_context(vm: &VirtualMachine) -> PyObjectRef {
-        CURRENT_CONTEXT.with(|c| {
-            c.borrow().clone().unwrap_or_else(|| {
-                DEFAULT_CTX.0.lock().clone().unwrap_or_else(|| {
-                    PyContext::new_ctx(vm, 28).into_ref(&vm.ctx).into()
-                })
-            })
-        })
+    fn get_current_context(vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        if let Some(ctx) = CURRENT_CONTEXT.with(|c| c.borrow().clone()) {
+            return Ok(ctx);
+        }
+        // A thread with no context yet gets a fresh *copy* of DefaultContext,
+        // as CPython does (`getcontext() is DefaultContext` is False there).
+        // Handing back the DefaultContext object itself aliased the two: flags
+        // and traps mutated through one were visible through the other.
+        let template = DEFAULT_CTX.0.lock().clone();
+        match template {
+            Some(obj) => vm.call_method(&obj, "copy", ()),
+            None => Ok(PyContext::new_ctx(vm, 28).into_ref(&vm.ctx).into()),
+        }
     }
 
     fn set_current_context(ctx: PyObjectRef) {
@@ -75,7 +80,7 @@ mod _decimal {
     }
 
     fn current_ctx(vm: &VirtualMachine) -> PyResult<Ctx> {
-        let obj = get_current_context(vm);
+        let obj = get_current_context(vm)?;
         let pc = obj
             .downcast_ref::<PyContext>()
             .ok_or_else(|| vm.new_type_error("context must be a Context object".to_string()))?;
@@ -85,7 +90,7 @@ mod _decimal {
     /// Read the current context's `capitals` (whether 'E' is shown for
     /// scientific exponents). Defaults to 1.
     fn current_capitals(vm: &VirtualMachine) -> PyResult<isize> {
-        let obj = get_current_context(vm);
+        let obj = get_current_context(vm)?;
         let pc = obj
             .downcast_ref::<PyContext>()
             .ok_or_else(|| vm.new_type_error("context must be a Context object".to_string()))?;
@@ -234,7 +239,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float/str) to Dec.
-    /// Used by Decimal constructor ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â accepts str.
+    /// Used by Decimal constructor — accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -265,7 +270,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float) to Dec.
-    /// Used by Context methods ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â rejects str (CPython behavior).
+    /// Used by Context methods — rejects str (CPython behavior).
     fn to_dec_ctx(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -582,8 +587,66 @@ mod _decimal {
         Ok(())
     }
 
-    /// Validate that a coefficient consists only of 0/1 digits (logical ops);
+    /// Digit-wise logical binary operation shared by the Decimal methods and
+    /// the Context methods. CPython's `_islogical` requires a non-negative
+    /// operand with exponent 0 whose coefficient digits are all 0 or 1; on a
+    /// violation it signals InvalidOperation and returns NaN, raising only
+    /// when the context traps it.
+    fn logical_binary_op<F>(
+        vm: &VirtualMachine,
+        ctx: &Ctx,
+        a: &Dec,
+        b: &Dec,
+        name: &str,
+        op: F,
+    ) -> PyResult<Dec>
+    where
+        F: Fn(u32, u32) -> u32,
+    {
+        let nan = Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN };
+        // Specials are never logical: NaN and Infinity carry exponent 0 and a
+        // zero sign, so the exp/sign checks alone would let them through
+        // (andx834: and 0 NaN -> NaN; CPython rejects rather than computing 0).
+        if a.special != Special::Finite
+            || b.special != Special::Finite
+            || a.exp != 0
+            || b.exp != 0
+            || a.sign
+            || b.sign
+        {
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", name));
+            }
+            return Ok(nan);
+        }
+        if !logical_valid(vm, ctx, &a.coeff)? || !logical_valid(vm, ctx, &b.coeff)? {
+            return Ok(nan);
+        }
+        Ok(Dec {
+            sign: false,
+            coeff: logical_digit_op(&a.coeff, &b.coeff, ctx.prec, op),
+            exp: 0,
+            special: Special::Finite,
+        })
+    }
+
 /// raises InvalidOperation (with flag) otherwise, matching CPython.
+    /// Drop the fractional part of a decimal, truncating toward zero and
+    /// preserving the sign of zero (divmod(1, -2) -> (-0, 1)).
+    fn truncate_toward_zero(d: &Dec) -> Dec {
+        if d.is_special() || d.is_zero() || d.exp >= 0 {
+            return d.clone();
+        }
+        let divisor = BigInt::from(10).pow((-d.exp) as u32);
+        Dec {
+            sign: d.sign,
+            coeff: &d.coeff / &divisor,
+            exp: 0,
+            special: Special::Finite,
+        }
+    }
+
 fn logical_valid(vm: &VirtualMachine, ctx: &Ctx, coeff: &BigInt) -> PyResult<bool> {
     let s = coeff.to_string();
     if s.chars().all(|c| c == '0' || c == '1') {
@@ -826,7 +889,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             };
             // Wrap in the DecimalTuple namedtuple (sign, digits, exponent).
             // A process-level shared class so all _decimal module instances
-            // (fresh re-imports) use the same type ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â matches the pickle
+            // (fresh re-imports) use the same type — matches the pickle
             // interchange test's identity expectations.
             let dt_cls = DECIMAL_TUPLE
                 .lock()
@@ -896,6 +959,11 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             d.sign = !d.sign;
             PyDecimal { d }
         }
+
+        // Unlike copy_abs/copy_negate, the unary operators round the result to
+        // the current context's precision (and re-check its Emin/Emax), so they
+        // must not simply fall back to the copy_* variants. The number slots
+        // below implement exactly this.
         #[pymethod]
         fn copy_sign(zelf: PyRef<Self>, other: PyObjectRef, vm: &VirtualMachine) -> PyResult<PyDecimal> {
             let b = to_dec_ctx(&other, vm)?;
@@ -985,7 +1053,11 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         #[pymethod]
         fn same_quantum(&self, other: PyObjectRef, vm: &VirtualMachine) -> PyResult<bool> {
             let b = to_dec(&other, vm)?;
-            Ok(self.d.exp == b.exp)
+            // Any special operand makes the result 0, whatever its exponent
+            // is (CPython: samq0317 samequantum NaN -0 -> 0).
+            Ok(self.d.special == Special::Finite
+                && b.special == Special::Finite
+                && self.d.exp == b.exp)
         }
 
         #[pymethod]
@@ -1189,33 +1261,37 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
 
         #[pymethod]
         fn exp(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-            let ctx = ctx_from_noargs(&args, vm)?;
-            if self.d.is_special() {
-                if self.d.special == Special::Infinity {
-                    let r = _decimal_core::apply_context(vm, &ctx, self.d.clone())?;
-                    return Ok(PyDecimal::to_py(vm, r));
-                }
-                ctx.set_flag(vm, "InvalidOperation")?;
-                if ctx.trap(vm, "InvalidOperation")? {
-                    return Err(new_decimal_error(vm, "InvalidOperation", "exp of NaN"));
-                }
-                return Ok(PyDecimal::to_py(vm, self.d.clone()));
-            }
-            let prec = ctx.prec as usize + 4;
-            let xf = self.d.to_string().parse::<f64>().unwrap_or(0.0);
-            // exp of a huge positive value overflows to infinity; CPython
-            // raises Overflow (trapped) / returns Infinity.
-            if xf > 709.0 {
-                ctx.set_flag(vm, "Overflow")?;
-                if ctx.trap(vm, "Overflow")? {
-                    return Err(new_decimal_error(vm, "Overflow", "exp overflow"));
-                }
-                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity }));
-            }
-            let result = xf.exp();
-            let s = format!("{:.*}", prec, result);
-            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
-            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+let ctx = ctx_from_noargs(&args, vm)?;
+if self.d.is_special() {
+match self.d.special {
+// exp(+Infinity) = +Infinity; exp(-Infinity) = 0.
+Special::Infinity => {
+if self.d.sign {
+return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite,
+}));
+}
+let r = _decimal_core::apply_context(vm, &ctx, self.d.clone())?;
+return Ok(PyDecimal::to_py(vm, r));
+}
+// Only a signaling NaN traps; a quiet NaN propagates.
+Special::SignalingNaN => {
+ctx.set_flag(vm, "InvalidOperation")?;
+if ctx.trap(vm, "InvalidOperation")? {
+return Err(new_decimal_error(vm, "InvalidOperation", "exp of sNaN"));
+}
+return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+sign: self.d.sign, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+}));
+}
+_ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
+}
+}
+// Overflow for a huge positive argument is decided inside dec_exp by
+// comparing the result's decimal exponent against emax (exp(2.3e6) is still
+// representable; only exp(>~2.3e6) overflows). A coarse threshold here
+// would wrongly overflow the representable range.
+            let r = _decimal_core::dec_exp(vm, &ctx, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -1228,19 +1304,21 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: true, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
                 }));
             }
-            if self.d.is_special() || self.d.sign {
+            if self.d.is_special() {
+                // ln/log10 of a special returns the special itself.
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            if self.d.sign {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "ln of non-positive"));
                 }
-                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+                // InvalidOperation yields NaN, not the operand.
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
-            let prec = ctx.prec as usize + 4;
-            let xf = self.d.to_string().parse::<f64>().unwrap_or(1.0);
-            let result = xf.ln();
-            let s = format!("{:.*}", prec, result);
-            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
-            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            let r = _decimal_core::dec_ln(vm, &ctx, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -1253,19 +1331,21 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: true, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
                 }));
             }
-            if self.d.is_special() || self.d.sign {
+            if self.d.is_special() {
+                // ln/log10 of a special returns the special itself.
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            if self.d.sign {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "log10 of non-positive"));
                 }
-                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+                // InvalidOperation yields NaN, not the operand.
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
-            let prec = ctx.prec as usize + 4;
-            let xf = self.d.to_string().parse::<f64>().unwrap_or(1.0);
-            let result = xf.log10();
-            let s = format!("{:.*}", prec, result);
-            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
-            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            let r = _decimal_core::dec_log10(vm, &ctx, &self.d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -1799,18 +1879,8 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("logical_and requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec_ctx(&other, vm)?;
-            if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
-                return Err(new_decimal_error(vm, "InvalidOperation", "logical_and requires non-negative integers"));
-            }
-            if !logical_valid(vm, &ctx, &self.d.coeff)? || !logical_valid(vm, &ctx, &b.coeff)? {
-                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
-                }));
-            }
-            let coeff = logical_digit_op(&self.d.coeff, &b.coeff, ctx.prec, |x, y| x & y);
-            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                sign: false, coeff, exp: 0, special: Special::Finite,
-            }))
+            let r = logical_binary_op(vm, &ctx, &self.d, &b, "logical_and requires non-negative integers", |x, y| x & y)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
@@ -1819,18 +1889,8 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("logical_or requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec_ctx(&other, vm)?;
-            if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
-                return Err(new_decimal_error(vm, "InvalidOperation", "logical_or requires non-negative integers"));
-            }
-            if !logical_valid(vm, &ctx, &self.d.coeff)? || !logical_valid(vm, &ctx, &b.coeff)? {
-                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
-                }));
-            }
-            let coeff = logical_digit_op(&self.d.coeff, &b.coeff, ctx.prec, |x, y| x | y);
-            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                sign: false, coeff, exp: 0, special: Special::Finite,
-            }))
+            let r = logical_binary_op(vm, &ctx, &self.d, &b, "logical_or requires non-negative integers", |x, y| x | y)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
@@ -1838,25 +1898,15 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let other = args.args.get(0).cloned()
                 .ok_or_else(|| vm.new_type_error("logical_xor requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let b = to_dec(&other, vm)?;
-            if self.d.exp != 0 || b.exp != 0 || self.d.sign || b.sign {
-                return Err(new_decimal_error(vm, "InvalidOperation", "logical_xor requires non-negative integers"));
-            }
-            if !logical_valid(vm, &ctx, &self.d.coeff)? || !logical_valid(vm, &ctx, &b.coeff)? {
-                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
-                }));
-            }
-            let coeff = logical_digit_op(&self.d.coeff, &b.coeff, ctx.prec, |x, y| x ^ y);
-            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                sign: false, coeff, exp: 0, special: Special::Finite,
-            }))
+            let b = to_dec_ctx(&other, vm)?;
+            let r = logical_binary_op(vm, &ctx, &self.d, &b, "logical_xor requires non-negative integers", |x, y| x ^ y)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
         fn logical_invert(&self, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
             let ctx = ctx_from_noargs(&args, vm)?;
-            if self.d.exp != 0 || self.d.sign
+            if self.d.special != Special::Finite || self.d.exp != 0 || self.d.sign
                 || !self.d.coeff.to_string().chars().all(|c| c == '0' || c == '1')
             {
                 ctx.set_flag(vm, "InvalidOperation")?;
@@ -1896,50 +1946,9 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 .ok_or_else(|| vm.new_type_error("rotate requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let n_obj = to_dec_ctx(&n_argv, vm)?;
-            if self.d.exp < 0 || n_obj.exp != 0 {
-                return Err(new_decimal_error(vm, "InvalidOperation", "rotate requires non-negative integers"));
-            }
             let n: i64 = n_obj.coeff.to_string().parse().unwrap_or(0);
             let n = if n_obj.sign { -n } else { n };
-            // CPython bounds the rotation amount to [-prec, prec].
-            if !(-(ctx.prec as i64) <= n && n <= ctx.prec as i64) {
-                ctx.set_flag(vm, "InvalidOperation")?;
-                if ctx.trap(vm, "InvalidOperation")? {
-                    return Err(new_decimal_error(vm, "InvalidOperation", "rotate amount out of range"));
-                }
-                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
-                }));
-            }
-            if self.d.special == Special::Infinity {
-                return Ok(PyDecimal::to_py(vm, self.d.clone()));
-            }
-            // Pad or truncate the coefficient to the context precision.
-            let mut digits = self.d.coeff.to_string();
-            let topad = ctx.prec - digits.len() as isize;
-            if topad > 0 {
-                digits = format!("{}{}", "0".repeat(topad as usize), digits);
-            } else if topad < 0 {
-                digits = digits[digits.len() - ctx.prec as usize..].to_string();
-            }
-            let len = digits.len() as i64;
-            if len == 0 {
-                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec::zero()));
-            }
-            let nshift = ((n % len) + len) % len;
-            // CPython rotate: positive n is a LEFT rotation
-            // (rotdig[n:] + rotdig[:n]); negative n becomes nshift which the
-            // modulo handles as the equivalent left rotation.
-            let cut = nshift as usize;
-            let rotated = format!("{}{}", &digits[cut..], &digits[..cut]);
-            let cleaned = rotated.trim_start_matches('0');
-            let coeff: BigInt = if cleaned.is_empty() {
-                BigInt::from(0)
-            } else {
-                cleaned.parse().unwrap_or_else(|_| BigInt::from(0))
-            };
-            let result = _decimal_core::Dec { sign: self.d.sign, coeff, exp: self.d.exp, special: Special::Finite };
-            let r = _decimal_core::apply_context(vm, &ctx, result)?;
+            let r = rotate_value(vm, &ctx, &self.d, n)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -2052,39 +2061,30 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             if self.d.special == Special::Infinity {
                 return Ok(PyDecimal::to_py(vm, self.d.clone()));
             }
-            // Pad or truncate the coefficient to the context precision.
-            let mut digits = self.d.coeff.to_string();
-            let topad = ctx.prec - digits.len() as isize;
-            if topad > 0 {
-                digits = format!("{}{}", "0".repeat(topad as usize), digits);
-            } else if topad < 0 {
-                digits = digits[digits.len() - ctx.prec as usize..].to_string();
-            }
-            let shifted = if n < 0 {
-                // Shift right: drop the last |n| digits (Python negative slice).
-                let drop = (-n) as usize;
-                if drop >= digits.len() {
-                    String::new()
-                } else {
-                    digits[..digits.len() - drop].to_string()
+            // CPython's mpd_qshiftn shifts the coefficient and leaves the
+            // exponent alone; any padding to the context precision happens
+            // afterwards, in _mpd_cap. Shifting inside a prec-wide digit window
+            // (as this used to) instead invents a borrow and reported a rounded
+            // zero where ddshi005 expects 1E+16.
+            let result = if n >= 0 {
+                _decimal_core::Dec {
+                    sign: self.d.sign,
+                    coeff: &self.d.coeff * BigInt::from(10).pow(n as u32),
+                    exp: self.d.exp,
+                    special: Special::Finite,
                 }
             } else {
-                // Shift left: append zeros, keep last prec digits.
-                let s = format!("{}{}", digits, "0".repeat(n as usize));
-                let plen = ctx.prec as usize;
-                if s.len() > plen {
-                    s[s.len() - plen..].to_string()
-                } else {
-                    s
+                // Shift right: drop the last |n| digits of the value, toward
+                // zero, and fold them into the exponent (mpd_qshiftr).
+                let drop = (-n) as u32;
+                let pow10 = BigInt::from(10).pow(drop);
+                _decimal_core::Dec {
+                    sign: self.d.sign,
+                    coeff: &self.d.coeff / &pow10,
+                    exp: self.d.exp + n as isize,
+                    special: Special::Finite,
                 }
             };
-            let cleaned = shifted.trim_start_matches('0');
-            let coeff: BigInt = if cleaned.is_empty() {
-                BigInt::from(0)
-            } else {
-                cleaned.parse().unwrap_or_else(|_| BigInt::from(0))
-            };
-            let result = _decimal_core::Dec { sign: self.d.sign, coeff, exp: self.d.exp, special: Special::Finite };
             let r = _decimal_core::apply_context(vm, &ctx, result)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -2235,7 +2235,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            // CPython: Decimal(value[, context]) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â the second positional may be
+            // CPython: Decimal(value[, context]) — the second positional may be
             // a Context; anything more or a non-Context second arg -> TypeError.
             if args.args.len() > 2 {
                 return Err(vm.new_type_error(
@@ -2371,7 +2371,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 Ok(b) => b,
                 Err(_) => {
                     // Fraction comparison: exact via numerator/denominator.
-                    // self (Decimal) vs other (Fraction) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â compare the exact
+                    // self (Decimal) vs other (Fraction) — compare the exact
                     // rational self.d against num/den.
                     // Specials first: Infinity/NaN never convert to Dec here
                     // (Fraction is not a Decimal), but compare naturally.
@@ -2410,7 +2410,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                                     let result = matches!(op, PyComparisonOp::Ne);
                                     return Ok(PyComparisonValue::Implemented(result));
                                 }
-                                // Infinity ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±: always greater/less than any
+                                // Infinity ±: always greater/less than any
                                 // finite rational.
                                 let self_pos = !zelf.d.sign;
                                 let result = match op {
@@ -2603,7 +2603,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                         "unhashable type: 'decimal.Decimal'".to_string(),
                     )),
                     Special::NaN => Ok(zelf.as_object().get_id() as hash::PyHash),
-                    // CPython: hash matches the float hash (ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±inf).
+                    // CPython: hash matches the float hash (±inf).
                     Special::Infinity => {
                         let f: f64 = if d.sign { f64::NEG_INFINITY } else { f64::INFINITY };
                         let float_obj: PyObjectRef = vm.ctx.new_float(f).into();
@@ -2780,20 +2780,28 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                         PyDecimal::to_py(vm, m),
                     ]).into())
                 }),
+                // Unlike copy_negate/copy_abs, the unary operators round to the
+                // current context's precision and re-check its Emin/Emax.
                 negative: Some(|num, vm| {
                     let pd = PyDecimal::number_downcast(num);
                     let mut d = pd.d.clone();
                     d.sign = !d.sign;
+                    let ctx = current_ctx(vm)?;
+                    let d = _decimal_core::apply_context(vm, &ctx, d)?;
                     Ok(PyDecimal::to_py(vm, d))
                 }),
                 positive: Some(|num, vm| {
                     let pd = PyDecimal::number_downcast(num);
-                    Ok(PyDecimal::to_py(vm, pd.d.clone()))
+                    let ctx = current_ctx(vm)?;
+                    let d = _decimal_core::apply_context(vm, &ctx, pd.d.clone())?;
+                    Ok(PyDecimal::to_py(vm, d))
                 }),
                 absolute: Some(|num, vm| {
                     let pd = PyDecimal::number_downcast(num);
                     let mut d = pd.d.clone();
                     d.sign = false;
+                    let ctx = current_ctx(vm)?;
+                    let d = _decimal_core::apply_context(vm, &ctx, d)?;
                     Ok(PyDecimal::to_py(vm, d))
                 }),
                 boolean: Some(|num, _vm| {
@@ -3495,41 +3503,12 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
 
         #[pymethod]
         fn sqrt(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            // Newton's method for sqrt, context-applied
             let xd = to_dec_ctx(&x, vm)?;
-            if xd.is_special() || xd.is_zero() {
-                return Ok(PyDecimal::to_py(vm, xd));
-            }
-            if xd.sign {
-                // negative: InvalidOperation
-                return Err(new_decimal_error(vm, "InvalidOperation", "sqrt of negative"));
-            }
             let ctx = self.ctx();
-            let prec = ctx.prec as usize + 4;
-            let mut x_val = xd.coeff.clone();
-            let mut x_exp = xd.exp;
-            // scale so we get prec extra digits
-            x_val *= &BigInt::from(10).pow(prec as u32);
-            x_exp -= prec as isize;
-            // Newton: r_{n+1} = (r_n + x/r_n) / 2
-            // initial guess from float
-            let f = xd.to_string().parse::<f64>().unwrap_or(1.0);
-            let mut r = BigInt::from((f.sqrt() * 10f64.powi(prec as i32)) as u64);
-            let two = BigInt::from(2);
-            let num = &x_val * &BigInt::from(10).pow((prec as u32));
-            for _ in 0..50 {
-                let q = &num / &r;
-                let next = (&r + &q) / &two;
-                if next == r { break; }
-                r = next;
-            }
-            let result_exp = (x_exp + prec as isize) / 2 - prec as isize;
-            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                sign: false,
-                coeff: r,
-                exp: result_exp,
-                special: _decimal_core::Special::Finite,
-            }))
+            // Share the core with Decimal.sqrt; this used to carry a
+            // separate f64-seeded Newton loop that ignored the context.
+            let r = _decimal_core::dec_sqrt(vm, &ctx, &xd)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
@@ -3659,7 +3638,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let trap_list = vm.ctx.new_list(trap_names);
             let flag_list = vm.ctx.new_list(flag_names);
             // CPython order: (prec, rounding, Emin, Emax, capitals, clamp,
-            // flags, traps) Ã¢â‚¬â€ flags is the 7th positional arg, traps the 8th.
+            // flags, traps) — flags is the 7th positional arg, traps the 8th.
             let args: PyObjectRef = vm.ctx.new_tuple(vec![
                 vm.ctx.new_int(prec).into(),
                 vm.ctx.new_str(rounding_str).into(),
@@ -3928,39 +3907,108 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            // CPython divmod flag semantics (see AsNumber divmod slot).
-            let divided = _decimal_core::floor_div_mod(&xd, &yd, ctx.prec);
-            if xd.is_special() || yd.is_special() || yd.is_zero() || divided.is_none() {
-                ctx.set_flag(vm, "InvalidOperation")?;
-            }
-            if !xd.is_special() && !yd.is_special() && !xd.is_zero() && yd.is_zero() {
-                ctx.set_flag(vm, "DivisionByZero")?;
-            }
-            // InvalidOperation takes precedence over DivisionByZero when both
-            // are trapped (CPython).
-            if ctx.trap(vm, "InvalidOperation")? {
-                return Err(new_decimal_error(vm, "InvalidOperation", "invalid operation"));
-            }
-            if ctx.trap(vm, "DivisionByZero")? {
-                return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
-            }
-            let (floor, m) = match divided {
-                Some(rm) => rm,
-                None => {
-                    let nan = _decimal_core::Dec {
-                        sign: false,
-                        coeff: BigInt::from(0),
-                        exp: 0,
-                        special: Special::NaN,
-                    };
-                    (nan.clone(), nan)
-                }
+            let nan = _decimal_core::Dec {
+                sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
             };
-            let f = _decimal_core::apply_context(vm, &ctx, floor)?;
-            let r = _decimal_core::apply_context(vm, &ctx, m)?;
-            Ok(vm.ctx.new_tuple(vec![PyDecimal::to_py(vm, f), PyDecimal::to_py(vm, r)]).into())
+            let tuple = |a: _decimal_core::Dec, b: _decimal_core::Dec| {
+                Ok(vm.ctx.new_tuple(vec![PyDecimal::to_py(vm, a), PyDecimal::to_py(vm, b)]).into())
+            };
+            let is_nan = |d: &Dec| d.special == Special::NaN || d.special == Special::SignalingNaN;
+            if is_nan(&xd) || is_nan(&yd) {
+                // A NaN operand yields (NaN, NaN); only an sNaN signals.
+                if xd.special == Special::SignalingNaN || yd.special == Special::SignalingNaN {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "sNaN operand"));
+                    }
+                }
+                return tuple(nan.clone(), nan);
+            }
+            if xd.is_special() || yd.is_special() {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "invalid operation"));
+                }
+                return tuple(nan.clone(), nan);
+            }
+            if yd.is_zero() {
+                // InvalidOperation takes precedence over DivisionByZero.
+                ctx.set_flag(vm, "InvalidOperation")?;
+                ctx.set_flag(vm, "DivisionByZero")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "invalid operation"));
+                }
+                if ctx.trap(vm, "DivisionByZero")? {
+                    return Err(new_decimal_error(vm, "DivisionByZero", "division by zero"));
+                }
+                let inf = _decimal_core::Dec {
+                    sign: xd.sign,
+                    coeff: BigInt::from(0),
+                    exp: 0,
+                    special: Special::Infinity,
+                };
+                return tuple(inf, nan);
+            }
+            // CPython's divmod truncates the quotient toward zero (unlike //,
+            // which floors), then takes the remainder against that quotient.
+            let quotient = _decimal_core::dec_div(&ctx, vm, &xd, &yd)?;
+            let q = truncate_toward_zero(&quotient);
+            // The integral part must fit the context, else InvalidOperation:
+            // divmod(1E+10, 1) at prec 5 raises rather than returning 1E+10.
+            // Digit count of the VALUE, so 1E+10 counts as eleven digits
+            // even though its coefficient is a single 1.
+            let mut q_digits = _decimal_core::coeff_digits_of(&q.coeff);
+            if q.exp > 0 {
+                q_digits += q.exp as usize;
+            }
+            if !q.is_zero() && q_digits > ctx.prec as usize {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "invalid operation"));
+                }
+                return tuple(nan.clone(), nan);
+            }
+            let product = _decimal_core::dec_mul(&ctx, vm, &q, &yd)?;
+            let mut remainder = _decimal_core::dec_sub(&ctx, vm, &xd, &product)?;
+            let mut q = if q.is_zero() {
+                _decimal_core::Dec {
+                    sign: xd.sign ^ yd.sign,
+                    coeff: BigInt::from(0),
+                    exp: 0,
+                    special: Special::Finite,
+                }
+            } else {
+                q
+            };
+            if remainder.is_zero() {
+                // A zero remainder takes the sign of x alone, whatever the
+                // divisor: divmod(-1, 1) -> (-1, -0) but divmod(2, -2) -> (-1, 0).
+                // It also keeps the divisor exponent, so divmod(0, 0.5) -> (0, 0.0).
+                remainder.sign = xd.sign;
+                // A zero remainder takes min(dividend exp, divisor exp):
+                // divmod(1.00, 0.5) -> (2, 0.00) wants -2, divmod(1, 0.5) ->
+                // (2, 0.0) wants -1, and divmod(1E+10, 1) -> (10000000000, 0)
+                // wants 0. No single operand explains all three; the minimum
+                // does.
+                remainder.exp = xd.exp.min(yd.exp);
+            }
+            if !q.is_zero() {
+                // The integral quotient is written with exponent 0, the same rule
+                // log10 uses: divmod(1E+10, 1) is 10000000000, not 1E+10.
+                let ten = BigInt::from(10);
+                while (&q.coeff % &ten) == BigInt::from(0) {
+                    q.coeff = &q.coeff / &ten;
+                    q.exp += 1;
+                }
+                if q.exp > 0 {
+                    q.coeff *= BigInt::from(10).pow(q.exp as u32);
+                    q.exp = 0;
+                }
+            }
+            let q = _decimal_core::apply_context(vm, &ctx, q)?;
+            let remainder = _decimal_core::apply_context(vm, &ctx, remainder)?;
+            tuple(q, remainder)
         }
-
         #[pymethod]
         fn logb(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
@@ -4289,7 +4337,37 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            let n: isize = yd.coeff.to_string().parse().unwrap_or(0);
+            // The shift count must be a plain integer; shift(1, 0.1) is
+            // InvalidOperation. A negative count is legal (shifts right).
+            if yd.exp != 0 || yd.special != Special::Finite {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "shift requires an integer count"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
+            let mut n: isize = yd.coeff.to_string().parse().unwrap_or(0);
+            if yd.sign {
+                n = -n;
+            }
+            // CPython's mpd_qshiftn only shifts when the count fits the
+            // context: 0 <= n <= prec shifts left, -prec <= n < 0 shifts right,
+            // and anything else is InvalidOperation rather than a rounded zero.
+            // A count too large for isize cannot be in range either.
+            let in_range = yd.coeff.to_string().parse::<isize>().is_ok()
+                && -(ctx.prec as isize) <= n
+                && n <= ctx.prec as isize;
+            if !in_range {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "shift amount out of range"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let coeff = if n >= 0 {
                 &xd.coeff * BigInt::from(10).pow(n as u32)
             } else {
@@ -4303,53 +4381,62 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             Ok(PyDecimal::to_py(vm, r))
         }
 
+        /// Logical operations are digit-wise over 0/1 coefficients (CPython
+        /// `_islogical`), not integer bitwise ops: logical_and(12, 10) is
+        /// InvalidOperation, not 8.
+        fn logical_binary(
+            &self,
+            x: &PyObjectRef,
+            y: &PyObjectRef,
+            vm: &VirtualMachine,
+            name: &str,
+            op: fn(u32, u32) -> u32,
+        ) -> PyResult {
+            let ctx = self.ctx();
+            let xd = to_dec_ctx(x, vm)?;
+            let yd = to_dec_ctx(y, vm)?;
+            let r = logical_binary_op(vm, &ctx, &xd, &yd, name, op)?;
+            Ok(PyDecimal::to_py(vm, r))
+        }
+
         #[pymethod]
         fn logical_and(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec_ctx(&x, vm)?;
-            let yd = to_dec_ctx(&y, vm)?;
-            if xd.exp != 0 || yd.exp != 0 || xd.sign || yd.sign {
-                return Err(new_decimal_error(vm, "InvalidOperation", "logical_and requires non-negative integers"));
-            }
-            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                sign: false, coeff: &xd.coeff & &yd.coeff, exp: 0, special: Special::Finite,
-            }))
+            self.logical_binary(&x, &y, vm, "logical_and requires non-negative integers", |a, b| a & b)
         }
 
         #[pymethod]
         fn logical_or(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec_ctx(&x, vm)?;
-            let yd = to_dec_ctx(&y, vm)?;
-            if xd.exp != 0 || yd.exp != 0 || xd.sign || yd.sign {
-                return Err(new_decimal_error(vm, "InvalidOperation", "logical_or requires non-negative integers"));
-            }
-            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                sign: false, coeff: &xd.coeff | &yd.coeff, exp: 0, special: Special::Finite,
-            }))
+            self.logical_binary(&x, &y, vm, "logical_or requires non-negative integers", |a, b| a | b)
         }
 
         #[pymethod]
         fn logical_xor(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            let xd = to_dec_ctx(&x, vm)?;
-            let yd = to_dec_ctx(&y, vm)?;
-            if xd.exp != 0 || yd.exp != 0 || xd.sign || yd.sign {
-                return Err(new_decimal_error(vm, "InvalidOperation", "logical_xor requires non-negative integers"));
-            }
-            Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                sign: false, coeff: &xd.coeff ^ &yd.coeff, exp: 0, special: Special::Finite,
-            }))
+            self.logical_binary(&x, &y, vm, "logical_xor requires non-negative integers", |a, b| a ^ b)
         }
 
         #[pymethod]
         fn logical_invert(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+            let ctx = self.ctx();
             let xd = to_dec_ctx(&x, vm)?;
-            if xd.exp != 0 || xd.sign {
-                return Err(new_decimal_error(vm, "InvalidOperation", "logical_invert requires non-negative integer"));
+            if xd.special != Special::Finite || xd.exp != 0 || xd.sign {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "logical_invert requires non-negative integer"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
-            let bits = xd.coeff.bits() as u32;
-            let all_ones = (BigInt::from(1).pow(bits) - BigInt::from(1)) | BigInt::from(0);
-            let all_ones = if bits == 0 { BigInt::from(0) } else { all_ones };
+            if !logical_valid(vm, &ctx, &xd.coeff)? {
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
+            // CPython: logical_invert is logical_xor(self, 1*prec).
+            let ones = BigInt::from(10).pow(ctx.prec.max(1) as u32) - BigInt::from(1);
+            let coeff = logical_digit_op(&xd.coeff, &ones, ctx.prec, |a, _| a ^ 1);
             Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                sign: false, coeff: all_ones ^ &xd.coeff, exp: 0, special: Special::Finite,
+                sign: false, coeff, exp: 0, special: Special::Finite,
             }))
         }
 
@@ -4549,9 +4636,10 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             // CPython: str input raises TypeError (exact object conversion).
             let d = to_dec_ctx(&x, vm)?;
             let ctx = self.ctx();
-            // Apply the context first (rounds to precision and sets
-            // Rounded/Inexact): toSci(1.23450) at prec 5 -> 1.2345 Rounded.
-            let d = _decimal_core::apply_context(vm, &ctx, d)?;
+            // CPython preserves the value: to_sci_string does not round to the
+            // context precision, so toSci(1.1123450) stays 1.1123450 even at
+            // prec 6. Only the exponent presentation changes.
+            let d = d;
             let mut s = d.to_string();
             // capitals=0 renders exponents with lowercase 'e'.
             if *self.capitals.lock() == 0 {
@@ -4564,7 +4652,10 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         fn same_quantum(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
-            Ok(vm.ctx.new_bool(xd.exp == yd.exp).into())
+            let same = xd.special == Special::Finite
+                && yd.special == Special::Finite
+                && xd.exp == yd.exp;
+            Ok(vm.ctx.new_bool(same).into())
         }
 
         #[pymethod]
@@ -4674,32 +4765,14 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
 
         #[pymethod]
         fn exp(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            // e^x via Taylor series, context-applied
             let xd = to_dec_ctx(&x, vm)?;
-            if xd.is_special() {
-                if xd.special == Special::Infinity {
-                    let ctx = self.ctx();
-                    let r = _decimal_core::apply_context(vm, &ctx, xd)?;
-                    return Ok(PyDecimal::to_py(vm, r));
-                }
-                let ctx = self.ctx();
-                ctx.set_flag(vm, "InvalidOperation")?;
-                if ctx.trap(vm, "InvalidOperation")? {
-                    return Err(new_decimal_error(vm, "InvalidOperation", "exp of NaN"));
-                }
-                return Ok(PyDecimal::to_py(vm, xd));
-            }
             let ctx = self.ctx();
-            let prec = ctx.prec as usize + 4;
-            // e^x = 1 + x + x^2/2! + x^3/3! + ...
-            let xf = xd.to_string().parse::<f64>().unwrap_or(0.0);
-            let result = xf.exp();
-            let s = format!("{:.*}", prec, result);
-            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
-            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            // Share the core with Decimal.exp; this intercepted specials with
+            // its own rules (NaN signalled InvalidOperation, -Infinity came
+            // back unchanged) instead of letting dec_exp decide.
+            let r = _decimal_core::dec_exp(vm, &ctx, &xd)?;
             Ok(PyDecimal::to_py(vm, r))
         }
-
         #[pymethod]
         fn ln(&self, x: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
@@ -4710,20 +4783,21 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: true, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
                 }));
             }
-            if xd.is_special() || xd.sign {
-                let ctx = self.ctx();
+            let ctx = self.ctx();
+            // A negative operand is InvalidOperation even when it is infinite:
+            // ln(-Infinity) raises. Checked before is_special so -Infinity does
+            // not pass through. A NaN keeps its sign instead (ln(-NaN) is -NaN).
+            if xd.sign && xd.special != Special::NaN && xd.special != Special::SignalingNaN {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "ln of non-positive"));
                 }
-                return Ok(PyDecimal::to_py(vm, xd));
+                // InvalidOperation yields NaN, not the operand.
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
-            let xf = xd.to_string().parse::<f64>().unwrap_or(1.0);
-            let result = xf.ln();
-            let prec = ctx.prec as usize + 4;
-            let s = format!("{:.*}", prec, result);
-            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
-            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            let r = _decimal_core::dec_ln(vm, &ctx, &xd)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -4737,20 +4811,21 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                     sign: true, coeff: BigInt::from(0), exp: 0, special: Special::Infinity,
                 }));
             }
-            if xd.is_special() || xd.sign {
-                let ctx = self.ctx();
+            let ctx = self.ctx();
+            // A negative operand is InvalidOperation even when it is infinite:
+            // ln(-Infinity) raises. Checked before is_special so -Infinity does
+            // not pass through. A NaN keeps its sign instead (ln(-NaN) is -NaN).
+            if xd.sign && xd.special != Special::NaN && xd.special != Special::SignalingNaN {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "log10 of non-positive"));
                 }
-                return Ok(PyDecimal::to_py(vm, xd));
+                // InvalidOperation yields NaN, not the operand.
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
-            let xf = xd.to_string().parse::<f64>().unwrap_or(1.0);
-            let result = xf.log10();
-            let prec = ctx.prec as usize + 4;
-            let s = format!("{:.*}", prec, result);
-            let d = _decimal_core::parse_decimal(&s).unwrap_or(_decimal_core::Dec::zero());
-            let r = _decimal_core::apply_context(vm, &ctx, d)?;
+            let r = _decimal_core::dec_log10(vm, &ctx, &xd)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -4769,26 +4844,22 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
 
         #[pymethod]
         fn rotate(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
-            // rotate: like shift but wraps digits
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            let n: isize = yd.coeff.to_string().parse().unwrap_or(0);
-            let n = if yd.sign { -n } else { n };
-            let digits = xd.coeff.to_string();
-            let len = digits.len();
-            if len == 0 || n == 0 {
-                let r = _decimal_core::apply_context(vm, &ctx, xd)?;
-                return Ok(PyDecimal::to_py(vm, r));
+            if yd.exp != 0 || yd.special != Special::Finite {
+                let ctx = self.ctx();
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "rotate requires non-negative integers"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
-            let n = ((n % len as isize) + len as isize) % len as isize;
-            let n = n as usize;
-            let rotated = format!("{}{}", &digits[len-n..], &digits[..len-n]);
-            let coeff = rotated.parse::<BigInt>().unwrap_or(BigInt::from(0));
-            let result = _decimal_core::Dec {
-                sign: xd.sign, coeff, exp: xd.exp, special: xd.special,
-            };
-            let r = _decimal_core::apply_context(vm, &ctx, result)?;
+            let n: i64 = yd.coeff.to_string().parse().unwrap_or(0);
+            let n = if yd.sign { -n } else { n };
+            let r = rotate_value(vm, &ctx, &xd, n)?;
             Ok(PyDecimal::to_py(vm, r))
         }
 
@@ -4799,6 +4870,55 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         }
     }
 
+    /// Shared implementation of `rotate` for both the Decimal method and the
+    /// Context method. The operand is padded (or truncated) to the context
+    /// precision before rotating, which is what makes rotating a single-digit
+    /// value meaningful: rotate(1, 3) is 1000, not 1.
+    fn rotate_value(
+        vm: &VirtualMachine,
+        ctx: &_decimal_core::Ctx,
+        d: &Dec,
+        n: i64,
+    ) -> PyResult<Dec> {
+        // rotate works on the coefficient and leaves the exponent alone, so a
+        // negative exponent is fine (rotate(0.5, 3) is 500.0) and specials
+        // pass straight through (rotate(Infinity, 3) is Infinity). Only the
+        // rotation amount is validated, by the caller.
+        if d.special != Special::Finite {
+            return Ok(d.clone());
+        }
+        // CPython bounds the rotation amount to [-prec, prec].
+        if !(-(ctx.prec as i64) <= n && n <= ctx.prec as i64) {
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "rotate amount out of range"));
+            }
+            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+        }
+
+        let mut digits = d.coeff.to_string();
+        let topad = ctx.prec - digits.len() as isize;
+        if topad > 0 {
+            digits = format!("{}{}", "0".repeat(topad as usize), digits);
+        } else if topad < 0 {
+            digits = digits[digits.len() - ctx.prec as usize..].to_string();
+        }
+        if digits.is_empty() {
+            return Ok(Dec::zero());
+        }
+        // Positive n is a left rotation: rotdig[n:] + rotdig[:n].
+        let len = digits.len() as i64;
+        let cut = (((n % len) + len) % len) as usize;
+        let rotated = format!("{}{}", &digits[cut..], &digits[..cut]);
+        let cleaned = rotated.trim_start_matches('0');
+        let coeff: BigInt = if cleaned.is_empty() {
+            BigInt::from(0)
+        } else {
+            cleaned.parse().unwrap_or_else(|_| BigInt::from(0))
+        };
+        let result = Dec { sign: d.sign, coeff, exp: d.exp, special: Special::Finite };
+        _decimal_core::apply_context(vm, ctx, result)
+    }
     impl Representable for PyContext {
         fn repr(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyStrRef> {
             Ok(vm.ctx.new_str(ctx_repr_string_impl(zelf, vm)))
@@ -4881,7 +5001,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             let mut c = Self::new_ctx(vm, 28);
-            // Context(prec, rounding, Emin, Emax, capitals, clamp) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â accept
+            // Context(prec, rounding, Emin, Emax, capitals, clamp) — accept
             // both positional and keyword forms (the test suite uses keyword
             // args like Context(prec=9, rounding=..., traps=...)).
             let mut pos_iter = args.args.iter();
@@ -5037,7 +5157,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         #[pymethod]
         fn __enter__(&self, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
             // Save the current context for __exit__ restoration
-            let current = get_current_context(vm);
+            let current = get_current_context(vm)?;
             *self.saved.lock() = Some(current.clone());
             // Create a copy of the source context (either the provided ctx
             // or the current one), set it as current, and return it.
@@ -5122,7 +5242,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
     }
 
     #[pyfunction]
-    fn getcontext(vm: &VirtualMachine) -> PyObjectRef {
+    fn getcontext(vm: &VirtualMachine) -> PyResult<PyObjectRef> {
         get_current_context(vm)
     }
 
