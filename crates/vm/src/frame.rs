@@ -8382,6 +8382,17 @@ impl ExecutingFrame<'_> {
         let self_or_null_idx = stack_len - nargs_usize - 1;
         let args_start = stack_len - nargs_usize;
 
+        // Take the callable up front so the small-argument fast path below can
+        // branch on it before any argument vector has been materialised. The
+        // self/argument slots sit at higher indices and stay valid until the
+        // truncate at the end.
+        let callable_obj = self
+            .localsplus
+            .stack_index_mut(callable_idx)
+            .take()
+            .unwrap()
+            .to_pyobj();
+
         // Build args: [self?, arg1, ..., argN]
         let self_or_null = self
             .localsplus
@@ -8395,6 +8406,70 @@ impl ExecutingFrame<'_> {
         } else {
             nargs_usize
         };
+
+        // Fast path: a simple Python function invoked with the exact number of
+        // positional arguments is by far the most common call shape. Build the
+        // arguments in a stack buffer and prepare the callee frame directly,
+        // skipping both the per-call `Vec` allocation and the generic
+        // vectorcall dispatch (to_callable / call_context / with_call_context).
+        // This mirrors vectorcall_function's own fast path exactly; the slow
+        // path there (kwargs, *args, generators, mismatched arity) and every
+        // non-Python callable still go through the generic vectorcall below.
+        const FAST_ARGS: usize = 8;
+        if effective_nargs <= FAST_ARGS && !vm.use_tracing.get() {
+            let mut buf: [Option<PyObjectRef>; FAST_ARGS] = [const { None }; FAST_ARGS];
+            let mut i = 0;
+            if let Some(self_val) = self_or_null {
+                buf[i] = Some(self_val);
+                i += 1;
+            }
+            for stack_idx in args_start..stack_len {
+                buf[i] = Some(
+                    self.localsplus
+                        .stack_index_mut(stack_idx)
+                        .take()
+                        .unwrap()
+                        .to_pyobj(),
+                );
+                i += 1;
+            }
+            self.localsplus.stack_truncate(callable_idx);
+
+            if let Some(func) = callable_obj.downcast_ref_if_exact::<PyFunction>(vm) {
+                let code: &Py<PyCode> = &func.code;
+                let fast_ok = code.flags.contains(bytecode::CodeFlags::OPTIMIZED)
+                    && !code.flags.intersects(
+                        bytecode::CodeFlags::VARARGS
+                            | bytecode::CodeFlags::VARKEYWORDS
+                            | bytecode::CodeFlags::GENERATOR
+                            | bytecode::CodeFlags::COROUTINE
+                            | bytecode::CodeFlags::ASYNC_GENERATOR,
+                    )
+                    && code.kwonlyarg_count == 0
+                    && effective_nargs == code.arg_count as usize;
+                if fast_ok {
+                    let frame = func.prepare_exact_args_frame(
+                        buf[..effective_nargs].iter_mut().map(|o| o.take().unwrap()),
+                        vm,
+                    );
+                    let result = vm.run_frame(frame.clone());
+                    crate::frame::release_datastack_frame(&frame, vm);
+                    self.push_value(result?);
+                    return Ok(None);
+                }
+            }
+
+            // Not a fast-path candidate: hand the very same arguments to the
+            // generic vectorcall path, collecting them into a Vec now.
+            let args_vec: Vec<PyObjectRef> = buf[..effective_nargs]
+                .iter_mut()
+                .filter_map(|o| o.take())
+                .collect();
+            let result = callable_obj.vectorcall(args_vec, effective_nargs, None, vm)?;
+            self.push_value(result);
+            return Ok(None);
+        }
+
         // One spare slot lets a bound native method prepend its self in place.
         let mut args_vec = Vec::with_capacity(effective_nargs + 1);
         if let Some(self_val) = self_or_null {
@@ -8409,13 +8484,6 @@ impl ExecutingFrame<'_> {
                 .to_pyobj();
             args_vec.push(val);
         }
-
-        let callable_obj = self
-            .localsplus
-            .stack_index_mut(callable_idx)
-            .take()
-            .unwrap()
-            .to_pyobj();
         self.localsplus.stack_truncate(callable_idx);
 
         // invoke_vectorcall falls back to FuncArgs if no vectorcall slot
