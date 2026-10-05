@@ -108,6 +108,66 @@ file   : program read from script file
 arg ...: arguments passed to program in sys.argv[1:]
 ";
 
+const ENV_HELP_STRING: &str = "\
+Environment variables that change behavior:
+PYTHONBREAKPOINT: if this variable is set to 0, it disables the default
+                  debugger.  It can be set to the callable of your debugger of
+                  choice.
+PYTHONHOME      : alternate <prefix> directory (or <prefix>;<exec_prefix>).
+                  The default module search path uses <prefix>\\python{major}{minor}.
+PYTHONIOENCODING: encoding[:errors] used for stdin/stdout/stderr
+PYTHONMALLOC    : set the Python memory allocators and/or install debug hooks
+                  on Python memory allocators.  Use PYTHONMALLOC=debug to
+                  install debug hooks.
+PYTHONMALLOCSTATS: print memory allocator statistics
+PYTHONPATH      : ';'-separated list of directories prefixed to the
+                  default module search path.  The result is sys.path.
+PYTHONSTARTUP   : file executed on interactive startup (no default)
+PYTHONUSERBASE  : defines the user base directory (site.USER_BASE)
+
+These variables have equivalent command-line options (see --help for details):
+PYTHONDEVMODE   : enable Python Development Mode (-X dev)
+PYTHONDONTWRITEBYTECODE: don't write .pyc files (-B)
+PYTHONFAULTHANDLER: dump the Python traceback on fatal errors (-X faulthandler)
+PYTHONINSPECT   : inspect interactively after running script (-i)
+PYTHONINTMAXSTRDIGITS: limit the size of int<->str conversions;
+                  0 disables the limit (-X int_max_str_digits=N)
+PYTHONNOUSERSITE: disable user site directory (-s)
+PYTHONOPTIMIZE  : enable level 1 optimizations (-O)
+PYTHONPROFILEIMPORTTIME: show how long each import takes (-X importtime)
+PYTHONPYCACHEPREFIX: root directory for bytecode cache (pyc) files
+                  (-X pycache_prefix)
+PYTHONSAFEPATH  : don't prepend a potentially unsafe path to sys.path.
+PYTHONTRACEMALLOC: trace Python memory allocations (-X tracemalloc)
+PYTHONUNBUFFERED: disable stdout/stderr buffering (-u)
+PYTHONVERBOSE   : trace import statements (-v)
+PYTHONWARNINGS  : warning control (-W)
+";
+
+const XOPTIONS_HELP_STRING: &str = "\
+The following implementation-specific options are available:
+-X dev : enable Python Development Mode; also PYTHONDEVMODE
+-X faulthandler: dump the Python traceback on fatal errors;
+         also PYTHONFAULTHANDLER
+-X frozen_modules=[on|off]: whether to use frozen modules; the default is \"on\"
+         for installed Python and \"off\" for a local build;
+         also PYTHON_FROZEN_MODULES
+-X importtime[=2]: show how long each import takes; use -X importtime=2 to
+         log imports of already-loaded modules; also PYTHONPROFILEIMPORTTIME
+-X int_max_str_digits=N: limit the size of int<->str conversions;
+         0 disables the limit; also PYTHONINTMAXSTRDIGITS
+-X pycache_prefix=PATH: write .pyc files to a parallel tree instead of to the
+         code tree; also PYTHONPYCACHEPREFIX
+-X tracemalloc[=N]: trace Python memory allocations; N sets a traceback limit
+         of N frames (default: 1); also PYTHONTRACEMALLOC=N
+-X utf8[=0|1]: enable (1) or disable (0) UTF-8 mode; also PYTHONUTF8
+";
+
+/// The `--help` text with the program name substituted in.
+pub fn usage_string(prog: &str) -> String {
+    USAGE_STRING.replace("{PROG}", prog)
+}
+
 fn parse_args() -> Result<(CliArgs, RunMode, Vec<String>), lexopt::Error> {
     let mut args = CliArgs::default();
     let mut parser = lexopt::Parser::from_env();
@@ -116,6 +176,7 @@ fn parse_args() -> Result<(CliArgs, RunMode, Vec<String>), lexopt::Error> {
             .chain(parser.raw_args()?.map(|arg| arg.string()))
             .collect()
     }
+    let prog = parser.bin_name().unwrap_or("rustpython").to_owned();
     while let Some(arg) = parser.next()? {
         match arg {
             Short('b') => args.bytes_warning += 1,
@@ -130,7 +191,7 @@ fn parse_args() -> Result<(CliArgs, RunMode, Vec<String>), lexopt::Error> {
             }
             Short('d') => args.debug += 1,
             Short('E') => args.ignore_environment = true,
-            Short('h' | '?') | Long("help") => help(parser),
+            Short('h' | '?') | Long("help") => help(parser, Help::Usage),
             Short('i') => args.inspect = true,
             Short('I') => args.isolate = true,
             Short('m') => {
@@ -156,9 +217,9 @@ fn parse_args() -> Result<(CliArgs, RunMode, Vec<String>), lexopt::Error> {
             }
 
             // TODO: make these more specific
-            Long("help-env") => help(parser),
-            Long("help-xoptions") => help(parser),
-            Long("help-all") => help(parser),
+            Long("help-env") => help(parser, Help::Env),
+            Long("help-xoptions") => help(parser, Help::XOptions),
+            Long("help-all") => help(parser, Help::All),
 
             #[cfg(feature = "flame-it")]
             Long("profile-output") => args.profile_output = Some(parser.value()?),
@@ -190,15 +251,50 @@ fn parse_args() -> Result<(CliArgs, RunMode, Vec<String>), lexopt::Error> {
                 };
                 return Ok((args, mode, argv(script_name, parser)?));
             }
-            _ => return Err(arg.unexpected()),
+            // CPython reports an unknown option as "Unknown option: -z", then
+            // the usage line, on stderr, with status 2.
+            _ => unknown_option(&prog, arg),
         }
     }
     Ok((args, RunMode::Repl, vec![]))
 }
 
-fn help(parser: lexopt::Parser) -> ! {
-    let usage = USAGE_STRING.replace("{PROG}", parser.bin_name().unwrap_or("rustpython"));
-    print!("{usage}");
+/// Which slice of `--help` output the user asked for.
+#[derive(Clone, Copy)]
+enum Help {
+    /// `-h` / `--help`: the option list only.
+    Usage,
+    /// `--help-env`: the environment-variable list only.
+    Env,
+    /// `--help-xoptions`: the `-X` option list only.
+    XOptions,
+    /// `--help-all`: everything, in the order CPython prints it.
+    All,
+}
+
+fn unknown_option(prog: &str, arg: lexopt::Arg<'_>) -> ! {
+    let rendered = match arg {
+        lexopt::Arg::Short(c) => format!("-{c}"),
+        lexopt::Arg::Long(name) => format!("--{name}"),
+        other => format!("{other:?}"),
+    };
+    eprintln!("Unknown option: {rendered}");
+    eprint!(
+        "{}\nTry `{prog} -h' for more information.\n",
+        usage_string(prog)
+    );
+    std::process::exit(2);
+}
+
+fn help(parser: lexopt::Parser, which: Help) -> ! {
+    let prog = parser.bin_name().unwrap_or("rustpython").to_owned();
+    let usage = usage_string(&prog);
+    match which {
+        Help::Usage => print!("{usage}"),
+        Help::Env => print!("{ENV_HELP_STRING}"),
+        Help::XOptions => print!("{XOPTIONS_HELP_STRING}"),
+        Help::All => print!("{usage}{ENV_HELP_STRING}{XOPTIONS_HELP_STRING}"),
+    }
     std::process::exit(0);
 }
 

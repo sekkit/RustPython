@@ -106,14 +106,6 @@ pub fn run(mut builder: InterpreterBuilder) -> ExitCode {
         };
     }
 
-    let (settings, run_mode) = match parse_opts() {
-        Ok(x) => x,
-        Err(e) => {
-            println!("{e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
     // don't translate newlines (\r\n <=> \n)
     #[cfg(windows)]
     {
@@ -126,6 +118,24 @@ pub fn run(mut builder: InterpreterBuilder) -> ExitCode {
             _setmode(2, libc::O_BINARY);
         }
     }
+
+    let (settings, run_mode) = match parse_opts() {
+        Ok(x) => x,
+        Err(e) => {
+            // CPython reports command-line errors on stderr, followed by the
+            // usage line, and exits with status 2.
+            let prog = env::args_os()
+                .next()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "rustpython".to_owned());
+            eprintln!("{e}");
+            eprint!(
+                "{}\nTry `{prog} -h' for more information.\n",
+                settings::usage_string(&prog)
+            );
+            return ExitCode::from(2);
+        }
+    };
 
     builder = builder.settings(settings);
 

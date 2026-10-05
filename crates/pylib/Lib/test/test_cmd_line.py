@@ -163,6 +163,7 @@ class CmdLineTest(unittest.TestCase):
             self.assertEqual(err, b'')
 
     @support.cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; frozen modules are not implemented
     def test_xoption_frozen_modules(self):
         tests = {
             ('=on', 'FrozenImporter'),
@@ -178,6 +179,7 @@ class CmdLineTest(unittest.TestCase):
                 self.assertRegex(res.out.decode('utf-8'), expected)
 
     @support.cpython_only
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; frozen modules are not implemented
     def test_env_var_frozen_modules(self):
         tests = {
             ('on', 'FrozenImporter'),
