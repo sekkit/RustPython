@@ -68,11 +68,20 @@ mod _decimal {
         // as CPython does (`getcontext() is DefaultContext` is False there).
         // Handing back the DefaultContext object itself aliased the two: flags
         // and traps mutated through one were visible through the other.
+        //
+        // Cache the copy: CPython's getcontext() returns the *same* current
+        // context object on every call. Without caching, each getcontext()
+        // handed back a distinct context, so precision/flag/trap changes made
+        // through it were invisible to the arithmetic operators (which read
+        // this same function), and flags raised by an operator never appeared
+        // on the object the caller holds.
         let template = DEFAULT_CTX.0.lock().clone();
-        match template {
-            Some(obj) => vm.call_method(&obj, "copy", ()),
-            None => Ok(PyContext::new_ctx(vm, 28).into_ref(&vm.ctx).into()),
-        }
+        let new_ctx: PyObjectRef = match template {
+            Some(obj) => vm.call_method(&obj, "copy", ())?,
+            None => PyContext::new_ctx(vm, 28).into_ref(&vm.ctx).into(),
+        };
+        set_current_context(new_ctx.clone());
+        Ok(new_ctx)
     }
 
     fn set_current_context(ctx: PyObjectRef) {
