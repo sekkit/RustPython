@@ -1447,6 +1447,15 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
         // operand unchanged where CPython computes 1 + (-77e-11) = 0.999999999
         // at prec 9 (addx444) - so the fast-path predicate needs narrowing
         // before Rounded can be added here.
+        //
+        // When the dominant operand already uses the full precision, the
+        // dropped operand's digits are discarded by rounding, so CPython
+        // reports Rounded alongside Inexact (123456789 + 0.000001 at prec 9
+        // -> 123456789 with [Inexact, Rounded]).
+        ctx.set_flag(vm, "Rounded")?;
+        if ctx.trap(vm, "Rounded")? {
+            return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+        }
         return apply_context(vm, ctx, dominant.clone());
     }
     let e = a.exp.min(b.exp);
