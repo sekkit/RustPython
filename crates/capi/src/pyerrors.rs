@@ -5,7 +5,8 @@ use core::convert::Infallible;
 use core::ffi::{c_char, c_int};
 use core::ptr::NonNull;
 use core::slice;
-use rustpython_vm::builtins::{PyBaseException, PyTuple, PyType};
+use rustpython_vm::builtins::{PyBaseException, PyTuple, PyType, PyTypeRef};
+use rustpython_vm::common::wtf8::Wtf8Buf;
 use rustpython_vm::convert::IntoObject;
 use rustpython_vm::exceptions::ExceptionZoo;
 use rustpython_vm::{AsObject, PyObjectRef, PyRef, PyResult, VirtualMachine};
@@ -477,6 +478,28 @@ pub extern "C" fn rp_va_err_set_interrupt_ex(_signum: c_int) {
     })
 }
 
+/// Build an exception of `exc_type` carrying a single `msg` argument.
+///
+/// `new_exception_msg` can only lay out exception types whose instance size
+/// equals `PyBaseException`. OSError -- and any subclass a caller passes to
+/// the PyErr_SetFrom*/PyErr_SetExcFrom* families -- carries extra payload, so
+/// constructing it through `new_exception_msg` aborts inside `new_exception`
+/// (the OSError instance does not fit the base-exception layout). Route
+/// OSError types through `new_os_subtype_error`, which lays the payload out
+/// correctly, and keep `new_exception_msg` for plain base exceptions.
+fn new_os_or_base_exception(
+    vm: &VirtualMachine,
+    exc_type: PyTypeRef,
+    errno: Option<i32>,
+    msg: Wtf8Buf,
+) -> PyRef<PyBaseException> {
+    if exc_type.fast_issubclass(vm.ctx.exceptions.os_error) {
+        vm.new_os_subtype_error(exc_type, errno, msg).upcast()
+    } else {
+        vm.new_exception_msg(exc_type, msg)
+    }
+}
+
 /// Rust impl of PyErr_SetFromErrno: set an OSError based on errno.
 /// Returns NULL.
 #[unsafe(no_mangle)]
@@ -490,8 +513,10 @@ pub unsafe extern "C" fn rp_va_err_set_from_errno(exception: *mut PyObject) -> *
                 .try_downcast_ref::<PyType>(vm)?
                 .to_owned()
         };
-        let exc = vm.new_exception_msg(
+        let exc = new_os_or_base_exception(
+            vm,
             exc_type,
+            None,
             format!("[Errno {errno_val}] {}", std::io::Error::last_os_error()).into(),
         );
         vm.set_exception(Some(exc));
@@ -533,7 +558,7 @@ pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename(
         } else {
             format!("[Errno {errno_val}] {}", std::io::Error::last_os_error())
         };
-        let exc = vm.new_exception_msg(exc_type, msg.into());
+        let exc = new_os_or_base_exception(vm, exc_type, None, msg.into());
         if let Some(fname) = filename_str {
             let _ = exc
                 .as_object()
@@ -560,7 +585,7 @@ pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename_object(
                 .to_owned()
         };
         let msg = format!("[Errno {errno_val}]");
-        let exc = vm.new_exception_msg(exc_type, msg.into());
+        let exc = new_os_or_base_exception(vm, exc_type, None, msg.into());
         if !filename.is_null() {
             let fn_obj = unsafe { &*filename }.to_owned();
             exc.as_object().set_attr("filename", fn_obj, vm)?;
@@ -587,7 +612,7 @@ pub unsafe extern "C" fn rp_va_err_set_from_errno_with_filename_objects(
                 .to_owned()
         };
         let msg = format!("[Errno {errno_val}]");
-        let exc = vm.new_exception_msg(exc_type, msg.into());
+        let exc = new_os_or_base_exception(vm, exc_type, None, msg.into());
         if !filename.is_null() || !filename2.is_null() {
             let filename_tuple = vm.ctx.new_tuple(vec![
                 if filename.is_null() {
@@ -821,7 +846,7 @@ pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err(
                 .to_owned()
         };
         let msg = format!("[WinError {errno_val}]");
-        let exc = vm.new_exception_msg(exc_type, msg.into());
+        let exc = new_os_or_base_exception(vm, exc_type, None, msg.into());
         vm.set_exception(Some(exc));
         Ok(core::ptr::null_mut())
     })
@@ -861,7 +886,7 @@ pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err_with_filename(
         } else {
             format!("[WinError {errno_val}]")
         };
-        let exc = vm.new_exception_msg(exc_type, msg.into());
+        let exc = new_os_or_base_exception(vm, exc_type, None, msg.into());
         if !filename.is_null() {
             let fname = unsafe { core::ffi::CStr::from_ptr(filename) }
                 .to_str()
@@ -895,7 +920,7 @@ pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err_with_filename_object
                 .to_owned()
         };
         let msg = format!("[WinError {errno_val}]");
-        let exc = vm.new_exception_msg(exc_type, msg.into());
+        let exc = new_os_or_base_exception(vm, exc_type, None, msg.into());
         if !filename.is_null() {
             let fn_obj = unsafe { &*filename }.to_owned();
             exc.as_object().set_attr("filename", fn_obj, vm)?;
@@ -927,7 +952,7 @@ pub unsafe extern "C" fn rp_va_err_set_exc_from_windows_err_with_filename_object
                 .to_owned()
         };
         let msg = format!("[WinError {errno_val}]");
-        let exc = vm.new_exception_msg(exc_type, msg.into());
+        let exc = new_os_or_base_exception(vm, exc_type, None, msg.into());
         if !filename.is_null() || !filename2.is_null() {
             let filename_tuple = vm.ctx.new_tuple(vec![
                 if filename.is_null() {
