@@ -868,9 +868,11 @@ pub(crate) fn dec_sqrt(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec>
         return Ok(d.clone());
     }
     if d.is_zero() {
-        // sqrt(-0) = -0; ideal exponent exp // 2
+        // sqrt(-0) = -0; ideal exponent exp // 2. Floor division, not
+        // truncating: sqrt(0.0) keeps one fractional place (exp -1), while
+        // truncating turned -1 into 0 and printed "0" instead of "0.0".
         let mut r = d.clone();
-        r.exp = d.exp / 2;
+        r.exp = d.exp.div_euclid(2);
         return apply_context(vm, ctx, r);
     }
     if d.sign {
