@@ -1062,11 +1062,17 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
         #[pymethod]
         fn same_quantum(&self, other: PyObjectRef, vm: &VirtualMachine) -> PyResult<bool> {
             let b = to_dec(&other, vm)?;
-            // Any special operand makes the result 0, whatever its exponent
-            // is (CPython: samq0317 samequantum NaN -0 -> 0).
-            Ok(self.d.special == Special::Finite
-                && b.special == Special::Finite
-                && self.d.exp == b.exp)
+            // decTest samq0211/0212/0312/0325: two NaNs are the same quantum,
+            // two infinities are the same quantum, anything mixed with a
+            // finite (or NaN vs Inf) is not (samq0317 NaN -0 -> 0). Finite
+            // operands compare exponents.
+            use Special::{Finite, Infinity, NaN, SignalingNaN};
+            Ok(match (self.d.special, b.special) {
+                (NaN | SignalingNaN, NaN | SignalingNaN) => true,
+                (Infinity, Infinity) => true,
+                (Finite, Finite) => self.d.exp == b.exp,
+                _ => false,
+            })
         }
 
         #[pymethod]
@@ -2047,6 +2053,23 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 .ok_or_else(|| vm.new_type_error("shift requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let n_obj = to_dec_ctx(&n_argv, vm)?;
+            // A NaN operand propagates before the count is validated, matching
+            // the Context method (decTest shix821: shift(NaN, -Inf) -> NaN
+            // with no signal).
+            if self.d.special == Special::SignalingNaN || n_obj.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "shift with sNaN"));
+                }
+                let src = if self.d.special == Special::SignalingNaN { &self.d } else { &n_obj };
+                return Ok(PyDecimal::to_py(vm, quiet_snan_payload(&ctx, src)));
+            }
+            if self.d.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            if n_obj.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, n_obj.clone()));
+            }
             if self.d.exp < 0 || n_obj.exp != 0 {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
@@ -2076,9 +2099,20 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             // (as this used to) instead invents a borrow and reported a rounded
             // zero where ddshi005 expects 1E+16.
             let result = if n >= 0 {
+                // The left shift overflows the prec-wide window from the top:
+                // CPython keeps the LOW prec digits silently (shift(12345, 4)
+                // at prec 5 -> 50000, shift(99999, 1) -> 99990, no flags) -
+                // the high digits drop off, there is no rounding and no
+                // Rounded/Inexact signal.
+                let mut c = &self.d.coeff * BigInt::from(10).pow(n as u32);
+                let cd = _decimal_core::coeff_digits_of(&c);
+                if cd > ctx.prec as usize {
+                    let window = BigInt::from(10).pow(ctx.prec as u32);
+                    c = c % window;
+                }
                 _decimal_core::Dec {
                     sign: self.d.sign,
-                    coeff: &self.d.coeff * BigInt::from(10).pow(n as u32),
+                    coeff: c,
                     exp: self.d.exp,
                     special: Special::Finite,
                 }
@@ -2094,8 +2128,9 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                     special: Special::Finite,
                 }
             };
-            let r = _decimal_core::apply_context(vm, &ctx, result)?;
-            Ok(PyDecimal::to_py(vm, r))
+            // decTest shift: no case carries any signal (shix...: exact
+            // coefficient window operation). Return as-is.
+            Ok(PyDecimal::to_py(vm, result))
         }
 
         #[pymethod]
@@ -2116,7 +2151,54 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let other_d = to_dec_ctx(&other, vm)?;
             let third_d = to_dec_ctx(&third, vm)?;
             let ctx = ctx_from_funcargs(&args, vm)?;
-            let prod = _decimal_core::dec_mul(&ctx, vm, &self.d, &other_d)?;
+            if let Some(r) = _decimal_core::fma_special(vm, &ctx, &self.d, &other_d, &third_d)? {
+                return Ok(PyDecimal::to_py(vm, r));
+            }
+            // The spec's fma is a SINGLE rounding of the exact x*y + z. The
+            // old chain rounded x*y to the context precision first, and the
+            // double rounding cost one ulp (fma0201: 888565290 * 1557.96930
+            // - 86087.7578 -> 1.38435736E+12, we gave ...35E+12). The
+            // product's infinities are built here so the add's special path
+            // handles Inf +- Inf (fmax0801: Inf Inf -Inf -> NaN
+            // Invalid_operation); 0 * Inf signals through the mul's rule.
+            let prod = if self.d.special == Special::Infinity
+                || other_d.special == Special::Infinity
+            {
+                let x_inf = self.d.special == Special::Infinity;
+                let y_inf = other_d.special == Special::Infinity;
+                let x_zero = !x_inf && self.d.coeff == BigInt::from(0);
+                let y_zero = !y_inf && other_d.coeff == BigInt::from(0);
+                if (x_inf && y_zero) || (y_inf && x_zero) {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(
+                            vm,
+                            "InvalidOperation",
+                            "0 * Infinity",
+                        ));
+                    }
+                    _decimal_core::Dec {
+                        sign: false,
+                        coeff: BigInt::from(0),
+                        exp: 0,
+                        special: Special::NaN,
+                    }
+                } else {
+                    _decimal_core::Dec {
+                        sign: self.d.sign != other_d.sign,
+                        coeff: BigInt::from(0),
+                        exp: 0,
+                        special: Special::Infinity,
+                    }
+                }
+            } else {
+                _decimal_core::Dec {
+                    sign: self.d.sign != other_d.sign,
+                    coeff: &self.d.coeff * &other_d.coeff,
+                    exp: self.d.exp + other_d.exp,
+                    special: Special::Finite,
+                }
+            };
             let r = _decimal_core::dec_add(&ctx, vm, &prod, &third_d)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -2130,6 +2212,32 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 .ok_or_else(|| vm.new_type_error("remainder_near requires an argument".to_string()))?;
             let ctx = ctx_from_funcargs(&args, vm)?;
             let b = to_dec_ctx(&other, vm)?;
+            // A NaN operand propagates first, and a zero divisor is always
+            // InvalidOperation + NaN (never Division_by_zero) - see the
+            // Context method for the decTest cases (rmnx101-120).
+            if self.d.special == Special::SignalingNaN || b.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "Division_undefined"));
+                }
+                let src = if self.d.special == Special::SignalingNaN { &self.d } else { &b };
+                return Ok(PyDecimal::to_py(vm, quiet_snan_payload(&ctx, src)));
+            }
+            if self.d.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, self.d.clone()));
+            }
+            if b.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, b.clone()));
+            }
+            if b.special == Special::Finite && b.coeff == BigInt::from(0) {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "Division_undefined"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             // CPython: if the exponent difference is >= prec+1 the quotient is
             // too large to compute (abs(self/other) > 10**prec) -> DivisionImpossible.
             let adj = |d: &Dec| d.exp + _decimal_core::coeff_digits_of(&d.coeff) as isize - 1;
@@ -2153,17 +2261,53 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let mut coeff = div.coeff.clone();
             let mut exp = div.exp;
             if exp < 0 {
-                let pow = BigInt::from(10).pow((-exp) as u32);
-                let (q, r) = (&coeff / &pow, &coeff % &pow);
-                let tie = &r * BigInt::from(2) == pow;
-                let round_up = (&r * BigInt::from(2) > pow)
-                    || (tie && (&q % BigInt::from(2)) == BigInt::from(1));
-                coeff = if round_up { q + BigInt::from(1) } else { q };
+                // Fast path for an ultra-tiny quotient (rmnx270:
+                // remaindernear 1 1e999999999 -> 1): the shift far exceeds the
+                // coefficient's digit count, so the integer part is 0 and the
+                // remainder is the whole coefficient; no tie is possible,
+                // and building 10**shift would materialise a billion-digit
+                // number. round to nearest (half-even): n = 0.
+                let shift = (-exp) as usize;
+                let digits = _decimal_core::coeff_digits_of(&coeff) as usize;
+                if shift > digits {
+                    coeff = BigInt::from(0);
+                } else {
+                    let pow = BigInt::from(10).pow(shift as u32);
+                    let (q, r) = (&coeff / &pow, &coeff % &pow);
+                    let tie = &r * BigInt::from(2) == pow;
+                    let round_up = (&r * BigInt::from(2) > pow)
+                        || (tie && (&q % BigInt::from(2)) == BigInt::from(1));
+                    coeff = if round_up { q + BigInt::from(1) } else { q };
+                }
                 exp = 0;
+            } else if exp > 0 {
+                // A quotient above 1E+0 (remaindernear(1E+2, 3) -> 33.33E+0
+                // style): fold the positive exponent into the coefficient so
+                // n is the integer quotient.
+                coeff *= BigInt::from(10).pow(exp as u32);
+                exp = 0;
+            }
+            // After rounding to the nearest integer the quotient must still fit
+            // the context precision: decTest rmnx076-080 - 999999999 % 1 is
+            // fine (n = 999999999, 9 digits at prec 9) but 999999999.5 % 1
+            // rounds to n = 1000000000, 10 digits -> Division_impossible.
+            if _decimal_core::coeff_digits_of(&coeff) > ctx.prec as usize {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "DivisionImpossible"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
             }
             let n = Dec { sign: div.sign, coeff, exp: 0, special: Special::Finite };
             let prod = _decimal_core::dec_mul(&wide, vm, &b, &n)?;
-            let result = _decimal_core::dec_sub(&wide, vm, &self.d, &prod)?;
+            let mut result = _decimal_core::dec_sub(&wide, vm, &self.d, &prod)?;
+            // GDA: the zero-sign of remainder_near follows the dividend
+            // (rmnx134: remaindernear -0 1 -> -0; remaindernear 0 1 -> 0).
+            if result.is_zero() {
+                result.sign = self.d.sign;
+            }
             let r = _decimal_core::apply_context(vm, &ctx, result)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -4243,23 +4387,108 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
-            let div = _decimal_core::dec_div(&ctx, vm, &xd, &yd)?;
+            // A NaN operand propagates first (decTest rmnx: a quiet NaN gives
+            // NaN with no signal; a signaling NaN signals Invalid_operation
+            // with its payload quieted).
+            if xd.special == Special::SignalingNaN || yd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "Division_undefined"));
+                }
+                let src = if xd.special == Special::SignalingNaN { &xd } else { &yd };
+                return Ok(PyDecimal::to_py(vm, quiet_snan_payload(&ctx, src)));
+            }
+            if xd.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, xd.clone()));
+            }
+            if yd.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, yd.clone()));
+            }
+            // A ZERO divisor is always InvalidOperation + NaN for remainder-near
+            // (decTest rmnx101-120: 0 % 0 -> NaN Division_undefined and
+            // 1 % 0 -> NaN Invalid_operation - never Division_by_zero's
+            // Infinity, and checked before Division_impossible so rmnx113's
+            // 1E+100 % 0.0 is Invalid_operation).
+            if yd.special == Special::Finite && yd.coeff == BigInt::from(0) {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "Division_undefined"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
+            // Division impossible: an integer quotient far above the context
+            // precision cannot be computed (and building 10**exp below would
+            // be unbounded), decTest rmnx081-083.
+            let adj = |d: &_decimal_core::Dec| {
+                d.exp + _decimal_core::coeff_digits_of(&d.coeff) as isize - 1
+            };
+            if xd.special == Special::Infinity
+                || (xd.special == Special::Finite
+                    && yd.special == Special::Finite
+                    && adj(&xd) - adj(&yd) >= ctx.prec + 1)
+            {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "DivisionImpossible"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
+            // The internal division/multiply/subtract run in an ISOLATED wide
+            // context: the intermediate quotient of remaindernear(1, 3) is
+            // inexact, and running it at the caller's precision leaked
+            // Inexact+Rounded into the caller's flags (decTest rmnx007
+            // expects none - the final remainder 1 is exact).
+            let wide = Ctx::from_parts(50, Rounding::HalfEven, 999999999, -999999999, 0,
+                vm.ctx.new_dict(), vm.ctx.new_dict());
+            let div = _decimal_core::dec_div(&wide, vm, &xd, &yd)?;
             let mut coeff = div.coeff.clone();
             if div.exp < 0 {
-                let pow = BigInt::from(10).pow((-div.exp) as u32);
-                let (q, r) = (&coeff / &pow, &coeff % &pow);
-                let half = &pow / BigInt::from(2);
-                let round_up = if &r * BigInt::from(2) > pow { true }
-                    else if &r * BigInt::from(2) < pow { false }
-                    else { (&q % BigInt::from(2)) == BigInt::from(1) };
-                coeff = if round_up { q + BigInt::from(1) } else { q };
+                // Fast path for an ultra-tiny quotient (rmnx270: the shift
+                // exceeds the coefficient's digit count, the integer part is
+                // 0 and no tie is possible - avoid 10**shift for huge
+                // exponents). See the instance variant for the full note.
+                let shift = (-div.exp) as usize;
+                let digits = _decimal_core::coeff_digits_of(&coeff) as usize;
+                if shift > digits {
+                    coeff = BigInt::from(0);
+                } else {
+                    let pow = BigInt::from(10).pow(shift as u32);
+                    let (q, r) = (&coeff / &pow, &coeff % &pow);
+                    let round_up = if &r * BigInt::from(2) > pow { true }
+                        else if &r * BigInt::from(2) < pow { false }
+                        else { (&q % BigInt::from(2)) == BigInt::from(1) };
+                    coeff = if round_up { q + BigInt::from(1) } else { q };
+                }
             } else if div.exp > 0 {
                 coeff *= BigInt::from(10).pow(div.exp as u32);
             }
+            // After rounding to the nearest integer the quotient must still fit
+            // the context precision: decTest rmnx076-080 - 999999999 % 1 is
+            // fine (n = 999999999, 9 digits at prec 9) but 999999999.5 % 1
+            // rounds to n = 1000000000, 10 digits -> Division_impossible.
+            if _decimal_core::coeff_digits_of(&coeff) > ctx.prec as usize {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "DivisionImpossible"));
+                }
+                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                    sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                }));
+            }
             let rounded = _decimal_core::Dec { sign: div.sign, coeff, exp: 0, special: Special::Finite };
-            let prod = _decimal_core::dec_mul(&ctx, vm, &yd, &rounded)?;
-            let result = _decimal_core::dec_sub(&ctx, vm, &xd, &prod)?;
-            Ok(PyDecimal::to_py(vm, result))
+            let prod = _decimal_core::dec_mul(&wide, vm, &yd, &rounded)?;
+            let mut result = _decimal_core::dec_sub(&wide, vm, &xd, &prod)?;
+            // GDA: the zero-sign of remainder_near follows the dividend
+            // (rmnx134: remaindernear -0 1 -> -0; remaindernear 0 1 -> 0).
+            if result.is_zero() {
+                result.sign = xd.sign;
+            }
+            let r = _decimal_core::apply_context(vm, &ctx, result)?;
+            Ok(PyDecimal::to_py(vm, r))
         }
 
         #[pymethod]
@@ -4346,6 +4575,24 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
+            // A NaN operand propagates before the count is validated (decTest
+            // shix821-830: shift(NaN, -Inf) and shift(-Inf, NaN) are plain
+            // NaN with NO signal; shix810-815 show that a non-NaN operand
+            // with an infinite count is Invalid_operation).
+            if xd.special == Special::SignalingNaN || yd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "shift with sNaN"));
+                }
+                let src = if xd.special == Special::SignalingNaN { &xd } else { &yd };
+                return Ok(PyDecimal::to_py(vm, quiet_snan_payload(&ctx, src)));
+            }
+            if xd.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, xd.clone()));
+            }
+            if yd.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, yd.clone()));
+            }
             // The shift count must be a plain integer; shift(1, 0.1) is
             // InvalidOperation. A negative count is legal (shifts right).
             if yd.exp != 0 || yd.special != Special::Finite {
@@ -4378,7 +4625,16 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 }));
             }
             let coeff = if n >= 0 {
-                &xd.coeff * BigInt::from(10).pow(n as u32)
+                // The left shift overflows the prec-wide window from the top:
+                // keep the LOW prec digits silently (shift(12345, 4) at
+                // prec 5 -> 50000), no rounding, no signal.
+                let mut c = &xd.coeff * BigInt::from(10).pow(n as u32);
+                let cd = _decimal_core::coeff_digits_of(&c);
+                if cd > ctx.prec as usize {
+                    let window = BigInt::from(10).pow(ctx.prec as u32);
+                    c = c % window;
+                }
+                c
             } else {
                 let pow = BigInt::from(10).pow((-n) as u32);
                 &xd.coeff / &pow
@@ -4386,8 +4642,8 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let result = _decimal_core::Dec {
                 sign: xd.sign, coeff, exp: xd.exp, special: xd.special,
             };
-            let r = _decimal_core::apply_context(vm, &ctx, result)?;
-            Ok(PyDecimal::to_py(vm, r))
+            // decTest shift: no case carries any signal. Return as-is.
+            Ok(PyDecimal::to_py(vm, result))
         }
 
         /// Logical operations are digit-wise over 0/1 coefficients (CPython
@@ -4661,9 +4917,14 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
         fn same_quantum(&self, x: PyObjectRef, y: PyObjectRef, vm: &VirtualMachine) -> PyResult {
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
-            let same = xd.special == Special::Finite
-                && yd.special == Special::Finite
-                && xd.exp == yd.exp;
+            // Same rule as the instance method (decTest samq0211/0312/0325).
+            use Special::{Finite, Infinity, NaN, SignalingNaN};
+            let same = match (xd.special, yd.special) {
+                (NaN | SignalingNaN, NaN | SignalingNaN) => true,
+                (Infinity, Infinity) => true,
+                (Finite, Finite) => xd.exp == yd.exp,
+                _ => false,
+            };
             Ok(vm.ctx.new_bool(same).into())
         }
 
@@ -4845,8 +5106,47 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let yd = to_dec_ctx(&y, vm)?;
             let zd = to_dec_ctx(&z, vm)?;
             let ctx = self.ctx();
-            // x*y + z
-            let prod = _decimal_core::dec_mul(&ctx, vm, &xd, &yd)?;
+            if let Some(r) = _decimal_core::fma_special(vm, &ctx, &xd, &yd, &zd)? {
+                return Ok(PyDecimal::to_py(vm, r));
+            }
+            // x*y + z: single rounding of the exact product plus z
+            // (see the instance fma note - the mul-first chain double-rounds).
+            let prod = if xd.special == Special::Infinity || yd.special == Special::Infinity {
+                let x_inf = xd.special == Special::Infinity;
+                let y_inf = yd.special == Special::Infinity;
+                let x_zero = !x_inf && xd.coeff == BigInt::from(0);
+                let y_zero = !y_inf && yd.coeff == BigInt::from(0);
+                if (x_inf && y_zero) || (y_inf && x_zero) {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(
+                            vm,
+                            "InvalidOperation",
+                            "0 * Infinity",
+                        ));
+                    }
+                    _decimal_core::Dec {
+                        sign: false,
+                        coeff: BigInt::from(0),
+                        exp: 0,
+                        special: Special::NaN,
+                    }
+                } else {
+                    _decimal_core::Dec {
+                        sign: xd.sign != yd.sign,
+                        coeff: BigInt::from(0),
+                        exp: 0,
+                        special: Special::Infinity,
+                    }
+                }
+            } else {
+                _decimal_core::Dec {
+                    sign: xd.sign != yd.sign,
+                    coeff: &xd.coeff * &yd.coeff,
+                    exp: xd.exp + yd.exp,
+                    special: Special::Finite,
+                }
+            };
             let r = _decimal_core::dec_add(&ctx, vm, &prod, &zd)?;
             Ok(PyDecimal::to_py(vm, r))
         }
@@ -4856,6 +5156,24 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let xd = to_dec_ctx(&x, vm)?;
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
+            // A NaN operand propagates before the count is validated (decTest
+            // rotx821-834: rotate(NaN, -Inf) and rotate(-Inf, NaN) are both
+            // plain NaN with NO signal; rotx810-815 show that a non-NaN
+            // operand with an infinite count is Invalid_operation).
+            if xd.special == Special::SignalingNaN || yd.special == Special::SignalingNaN {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "rotate with sNaN"));
+                }
+                let src = if xd.special == Special::SignalingNaN { &xd } else { &yd };
+                return Ok(PyDecimal::to_py(vm, quiet_snan_payload(&ctx, src)));
+            }
+            if xd.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, xd.clone()));
+            }
+            if yd.special == Special::NaN {
+                return Ok(PyDecimal::to_py(vm, yd.clone()));
+            }
             if yd.exp != 0 || yd.special != Special::Finite {
                 let ctx = self.ctx();
                 ctx.set_flag(vm, "InvalidOperation")?;
@@ -4877,6 +5195,25 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let d = to_dec_ctx(&x, vm)?;
             Ok(vm.ctx.new_str(d.to_eng_string()).into())
         }
+    }
+
+    /// Quiet a signaling NaN for the coefficient operations (rotate/shift and
+    /// the remainder families): Invalid_operation has already been flagged by
+    /// the caller, and the payload is truncated to the context precision
+    /// keeping the LOW digits with the sign preserved - decTest rotx886
+    /// rotate(11, -sNaN1234567890) at prec 5 -> -NaN67890.
+    fn quiet_snan_payload(ctx: &_decimal_core::Ctx, src: &Dec) -> Dec {
+        let mut n = src.clone();
+        n.special = Special::NaN;
+        n.exp = 0;
+        let digits = n.coeff.to_string();
+        let keep = (ctx.prec as usize).max(1);
+        if digits.len() > keep {
+            n.coeff = digits[digits.len() - keep..]
+                .parse()
+                .unwrap_or_else(|_| BigInt::from(0));
+        }
+        n
     }
 
     /// Shared implementation of `rotate` for both the Decimal method and the
@@ -4926,7 +5263,10 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             cleaned.parse().unwrap_or_else(|_| BigInt::from(0))
         };
         let result = Dec { sign: d.sign, coeff, exp: d.exp, special: Special::Finite };
-        _decimal_core::apply_context(vm, ctx, result)
+        // decTest rotate: no case carries any signal (rotx151's result
+        // 1.0000000E-1000 is subnormal-shaped but CPython flags nothing).
+        // rotate is an exact coefficient operation: return as-is.
+        Ok(result)
     }
     impl Representable for PyContext {
         fn repr(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyStrRef> {

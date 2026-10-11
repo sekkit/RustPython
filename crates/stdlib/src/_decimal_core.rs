@@ -862,7 +862,21 @@ pub(crate) fn dec_sqrt(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec>
         if ctx.trap(vm, "InvalidOperation")? {
             return Err(new_decimal_error(vm, "InvalidOperation", "sNaN operand"));
         }
-        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+        // decTest sqtx824/840: the sNaN is quieted with its payload
+        // preserved (sqrt(sNaN123) -> NaN123), sign kept, and the payload
+        // truncated to context precision keeping the LOW digits
+        // (sqrt(-sNaN1234567890) -> -NaN67890 at prec 5), matching
+        // special_binary's payload handling.
+        let mut n = d.clone();
+        n.special = Special::NaN;
+        let digits = n.coeff_str();
+        let keep = (ctx.prec as usize).max(1);
+        if digits.len() > keep {
+            n.coeff = digits[digits.len() - keep..]
+                .parse::<BigInt>()
+                .unwrap_or_else(|_| BigInt::from(0));
+        }
+        return Ok(n);
     }
     if d.is_special() {
         return Ok(d.clone());
@@ -906,7 +920,9 @@ pub(crate) fn dec_sqrt(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec>
         // An exact root keeps the operand's ideal exponent (d.exp // 2), so
         // sqrt(1.00) is 1.0 and sqrt(1.0000) is 1.00 rather than a full-width
         // expansion; CPython keeps those trailing zeros in the coefficient.
-        let ideal = d.exp / 2;
+        // Python's // floors, so -3 // 2 = -2 (sqtx078 sqrt(1.000) -> 1.00);
+        // Rust's / truncates toward zero and would give -1.
+        let ideal = d.exp.div_euclid(2);
         let ten = BigInt::from(10);
         while ans.exp < ideal && (&ans.coeff % &ten) == BigInt::from(0) {
             ans.coeff /= &ten;
@@ -916,6 +932,17 @@ pub(crate) fn dec_sqrt(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec>
         ctx.set_flag(vm, "Inexact")?;
         if ctx.trap(vm, "Inexact")? {
             return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+        }
+        // Sticky fold: root = isqrt(n) is the truncated root, and the true
+        // value sits strictly above it by the remainder n - root**2, which
+        // apply_context cannot see when rounding the prec+2-digit
+        // coefficient down to prec. Folding that nonzero fraction into the
+        // coefficient's last digit (only when that digit is zero, so no
+        // carry) marks the digits-beyond as nonzero for the rounding:
+        // sqtx3775 sqrt(0.431) = 0.6565032... must round to 0.657, not to
+        // the false half-even tie 0.6565 -> 0.656.
+        if ans.coeff.to_string().ends_with('0') {
+            ans.coeff = &ans.coeff + BigInt::from(1);
         }
     }
 
@@ -1087,7 +1114,40 @@ fn ln_ten_uncached(vm: &VirtualMachine, ctx: &Ctx) -> PyResult<Dec> {
 
 /// Natural logarithm of a positive finite decimal, correctly rounded to the
 /// caller's context.
+/// The unary-op sNaN handling shared by ln/log10/exp (decTest lnx823 and
+/// friends): signal InvalidOperation, then quiet the operand with its
+/// payload preserved (truncated to the context precision), matching sqrt
+/// (sqtx824/840). Returns None when the operand is not a signaling NaN.
+pub(crate) fn quiet_snan_unary(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Option<Dec>> {
+    if d.special != Special::SignalingNaN {
+        return Ok(None);
+    }
+    ctx.set_flag(vm, "InvalidOperation")?;
+    if ctx.trap(vm, "InvalidOperation")? {
+        return Err(new_decimal_error(vm, "InvalidOperation", "sNaN operand"));
+    }
+    let mut n = d.clone();
+    n.special = Special::NaN;
+    let digits = n.coeff_str();
+    let keep = (ctx.prec as usize).max(1);
+    if digits.len() > keep {
+        n.coeff = digits[digits.len() - keep..]
+            .parse::<BigInt>()
+            .unwrap_or_else(|_| BigInt::from(0));
+    }
+    Ok(Some(n))
+}
+
 pub(crate) fn dec_ln(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec> {
+    if let Some(n) = quiet_snan_unary(vm, ctx, d)? {
+        return Ok(n);
+    }
+    // A quiet NaN passes through with its sign and payload BEFORE the
+    // negative check: decTest lnx827 ln(-NaN654) -> -NaN654 with no signal
+    // (the NaN is not a negative number).
+    if d.special == Special::NaN {
+        return Ok(d.clone());
+    }
     // ln(0) is -Infinity, not 0. The Context methods handled this themselves,
     // but callers inside the core (notably the fractional power path, which
     // computes exp(b * ln(a))) went straight to dec_ln and saw 0 instead, so
@@ -1155,6 +1215,9 @@ pub(crate) fn dec_ln(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec> {
 
 /// Base-10 logarithm, as ln(x) / ln(10).
 pub(crate) fn dec_log10(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec> {
+    if let Some(n) = quiet_snan_unary(vm, ctx, d)? {
+        return Ok(n);
+    }
     // log10(0) is -Infinity, for the same reason ln(0) is: see dec_ln.
     if d.is_zero() {
         return Ok(Dec {
@@ -1165,7 +1228,12 @@ pub(crate) fn dec_log10(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec
         });
     }
     if d.sign {
-        // ln(-x) is InvalidOperation, not the operand.
+        // log10 of a negative number is InvalidOperation - but a quiet NaN
+        // passes through with its sign and payload BEFORE this check
+        // (decTest logx...: ln -NaN654 -> -NaN654, no signal).
+        if d.special == Special::NaN {
+            return Ok(d.clone());
+        }
         ctx.set_flag(vm, "InvalidOperation")?;
         if ctx.trap(vm, "InvalidOperation")? {
             return Err(new_decimal_error(vm, "InvalidOperation", "ln of a negative number"));
@@ -1175,6 +1243,30 @@ pub(crate) fn dec_log10(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec
     if d.is_special() {
         return Ok(d.clone());
     }
+    // decTest logx1103/logxs001: log10 of an exact power of ten is the exact
+    // integer with NO flags. The series quotient of two prec+12-digit
+    // approximations is never exactly 3.000..., so detect the power of ten
+    // in the OPERAND: coeff == 10**m means log10(coeff * 10**exp) = m + exp.
+    // Still round through apply_context: at precision 1 the exact 10 becomes
+    // 1E+1 with Rounded (logx1141), and log10(1E+13) = 13 gives Inexact too
+    // (logx1142).
+    {
+        let s = d.coeff.to_string();
+        if s.starts_with('1') && s[1..].chars().all(|c| c == '0') {
+            let m = (s.len() - 1) as isize;
+            let k = m + d.exp;
+            return apply_context(
+                vm,
+                ctx,
+                Dec {
+                    sign: k < 0,
+                    coeff: BigInt::from(k.unsigned_abs()),
+                    exp: 0,
+                    special: Special::Finite,
+                },
+            );
+        }
+    }
     let wctx = working_ctx(vm, ctx, ctx.prec + 12);
     let ln_x = dec_ln(vm, &wctx, d)?;
     let ln_10 = ln_ten(vm, &wctx)?;
@@ -1182,12 +1274,22 @@ pub(crate) fn dec_log10(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec
     if r.is_zero() {
         return Ok(Dec::zero());
     }
+    // The quotient for an exact power of ten is the exact integer (ln(1000)
+    // decomposes to 3*ln(10), so the division is exact). Anything else is
+    // inexact somewhere below the working precision, and an inexact result
+    // that merely ROUNDS to an integer keeps its rounded shape:
+    // logx1331 log10(999.9999998) at prec 9 is 3.00000000 Inexact Rounded,
+    // not the trimmed 3. Only an exact integer trims to exponent 0.
+    let exact_int = r.exp >= 0 || {
+        let scale = BigInt::from(10).pow((-r.exp) as u32);
+        (&r.coeff % &scale) == BigInt::from(0)
+    };
     let r = apply_context(vm, ctx, r)?;
-    // CPython expresses an integral result with exponent 0: log10(100) is 2,
-    // log10(1E+10) is 10. The quotient otherwise keeps the series scale
-    // (10.0000...0) or stays unscaled (1E+1); drop trailing zeros, then pull a
-    // positive exponent back into the coefficient.
-    if !r.is_zero() {
+    if !r.is_zero() && exact_int {
+        // CPython expresses an exact integral result with exponent 0:
+        // log10(100) is 2, log10(1E+10) is 10. Drop the series scale's
+        // trailing zeros, then pull a positive exponent back into the
+        // coefficient.
         let ten = BigInt::from(10);
         let mut coeff = r.coeff;
         let mut exp = r.exp;
@@ -1198,27 +1300,34 @@ pub(crate) fn dec_log10(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec
         if exp > 0 {
             coeff *= BigInt::from(10).pow(exp as u32);
             exp = 0;
-        } else if exp < 0 {
-            // Only a FRACTIONAL result is padded to the context width:
-            // log10(7) at prec 5 is 0.84510. An integral one is not -
-            // log10(100) stays 2. Padding on `else` caught exp == 0 as well
-            // and turned 2 into 2.000000000, which is why it regressed.
-            let digits = coeff_digits_of(&coeff);
-            if digits < ctx.prec as usize {
-                let pad = ctx.prec as usize - digits;
-                coeff *= BigInt::from(10).pow(pad as u32);
-                exp -= pad as isize;
-            }
         }
         return Ok(Dec { sign: r.sign, coeff, exp, special: Special::Finite });
+    }
+    if !r.is_zero() && r.exp < 0 {
+        // Only a FRACTIONAL inexact result is padded to the context width:
+        // log10(7) at prec 5 is 0.84510. An integral one is not.
+        let digits = coeff_digits_of(&r.coeff);
+        if digits < ctx.prec as usize {
+            let pad = ctx.prec as usize - digits;
+            return Ok(Dec {
+                sign: r.sign,
+                coeff: &r.coeff * &BigInt::from(10).pow(pad as u32),
+                exp: r.exp - pad as isize,
+                special: Special::Finite,
+            });
+        }
     }
     Ok(r)
 }
 /// e**x for a finite decimal, correctly rounded to the caller's context.
 pub(crate) fn dec_exp(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec> {
-    // NaN propagates, -Infinity underflows to zero, +Infinity overflows.
-    if d.special == Special::NaN || d.special == Special::SignalingNaN {
-        return Ok(Dec { sign: d.sign, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+    if let Some(n) = quiet_snan_unary(vm, ctx, d)? {
+        return Ok(n);
+    }
+    // NaN propagates with its payload (decTest expx826: exp NaN456 ->
+    // NaN456), -Infinity underflows to zero, +Infinity overflows.
+    if d.special == Special::NaN {
+        return Ok(d.clone());
     }
     if d.special == Special::Infinity {
         if d.sign {
@@ -1269,6 +1378,17 @@ pub(crate) fn dec_exp(vm: &VirtualMachine, ctx: &Ctx, d: &Dec) -> PyResult<Dec> 
         if ctx.trap(vm, "Overflow")? {
             return Err(new_decimal_error(vm, "Overflow", "exp overflow"));
         }
+        // decTest expx047: exp 1000 -> Infinity Overflow Inexact Rounded. The
+        // overflow discards the whole coefficient, so Inexact and Rounded
+        // accompany Overflow (the add path's overflow produces all three).
+        ctx.set_flag(vm, "Inexact")?;
+        if ctx.trap(vm, "Inexact")? {
+            return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+        }
+        ctx.set_flag(vm, "Rounded")?;
+        if ctx.trap(vm, "Rounded")? {
+            return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+        }
         return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
     }
     if approx_dec_exp < etiny - 10.0 {
@@ -1318,7 +1438,21 @@ let p2 = pow2(&wctx, vm, dec_int_saturating(&n))?;
 // digits (exp(-100) dropped to 9 significant digits instead of 28).
 let exp_r = dec_from_scaled(&sum, scale);
 let result = dec_mul(&wctx, vm, &exp_r, &p2)?;
-apply_context(vm, ctx, result)
+let result = apply_context(vm, ctx, result)?;
+// exp(x) for a finite nonzero x is transcendental, so the result is
+// never exactly representable: every decTest finite case carries Inexact
+// (expx211: exp -1E-40 at prec 50 -> ... Inexact Rounded, even though the
+// correction 5E-81 sits below the working precision). Signal after the
+// rounding so a trapped Inexact raises instead of returning.
+ctx.set_flag(vm, "Inexact")?;
+if ctx.trap(vm, "Inexact")? {
+    return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+}
+ctx.set_flag(vm, "Rounded")?;
+if ctx.trap(vm, "Rounded")? {
+    return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+}
+Ok(result)
 }
 
 /// Integer value of an integer-valued decimal, saturating at the i64 range.
@@ -1387,7 +1521,101 @@ fn round_to_int(d: &Dec) -> Dec {
 }
 
 
+/// FMA NaN selection (decTest fmax0900-0908): a signaling NaN outranks a
+/// quiet NaN; within the same class the first operand in x, y, z order wins.
+/// The selected sNaN signals InvalidOperation (trap -> raise, else quieted).
+/// Returns None when no operand is NaN and the arithmetic should proceed.
+pub(crate) fn fma_special(
+    vm: &VirtualMachine,
+    ctx: &Ctx,
+    x: &Dec,
+    y: &Dec,
+    z: &Dec,
+) -> PyResult<Option<Dec>> {
+    // The 0 * Infinity product invalidates the whole fma before any NaN
+    // selection (decTest fmax0809: fma -Inf 0 NaN -> NaN Invalid_operation,
+    // a generic NaN - the payload does not come from z).
+    let x_inf = x.special == Special::Infinity;
+    let y_inf = y.special == Special::Infinity;
+    let x_zero = !x_inf && x.special == Special::Finite && x.coeff == BigInt::from(0);
+    let y_zero = !y_inf && y.special == Special::Finite && y.coeff == BigInt::from(0);
+    if (x_inf && y_zero) || (y_inf && x_zero) {
+        ctx.set_flag(vm, "InvalidOperation")?;
+        if ctx.trap(vm, "InvalidOperation")? {
+            return Err(new_decimal_error(vm, "InvalidOperation", "0 * Infinity"));
+        }
+        return Ok(Some(Dec {
+            sign: false,
+            coeff: BigInt::from(0),
+            exp: 0,
+            special: Special::NaN,
+        }));
+    }
+    for d in [x, y, z] {
+        if d.special == Special::SignalingNaN {
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "operation with sNaN"));
+            }
+            let mut n = d.clone();
+            n.special = Special::NaN;
+            return Ok(Some(n));
+        }
+    }
+    for d in [x, y, z] {
+        if d.special == Special::NaN {
+            return Ok(Some(d.clone()));
+        }
+    }
+    Ok(None)
+}
+
 /// Add two finite decimals (context applied).
+
+/// Compare a*10**ea with b*10**eb for non-negative integers a, b whose
+/// decimal strings are bounded by their operands. Decision by leading
+/// position first; equal leads compare the aligned digit strings, with a
+/// tie broken by whichever spans further down with a nonzero digit.
+fn cmp_scaled(a: &BigInt, ea: isize, b: &BigInt, eb: isize) -> std::cmp::Ordering {
+    let zero = BigInt::from(0);
+    let a_zero = a == &zero;
+    let b_zero = b == &zero;
+    match (a_zero, b_zero) {
+        (true, true) => return std::cmp::Ordering::Equal,
+        (true, false) => return std::cmp::Ordering::Less,
+        (false, true) => return std::cmp::Ordering::Greater,
+        (false, false) => {}
+    }
+    let sa = a.to_string();
+    let sb = b.to_string();
+    let la = ea + sa.len() as isize - 1;
+    let lb = eb + sb.len() as isize - 1;
+    match la.cmp(&lb) {
+        std::cmp::Ordering::Equal => {
+            // Equal leads: compare the overlapping digits (the shorter
+            // span), then break the tie by whichever extends further down
+            // with a nonzero digit. No padding: the spans can differ by
+            // millions of positions for huge exponents.
+            let n = sa.len().min(sb.len());
+            match sa[..n].cmp(&sb[..n]) {
+                std::cmp::Ordering::Equal => {
+                    let a_ext = sa.len() > n && sa[n..].chars().any(|c| c != '0');
+                    let b_ext = sb.len() > n && sb[n..].chars().any(|c| c != '0');
+                    if a_ext {
+                        std::cmp::Ordering::Greater
+                    } else if b_ext {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                }
+                ord => ord,
+            }
+        }
+        ord => ord,
+    }
+}
+
 pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyResult<Dec> {
     // Special propagation.
     if a.is_special() || b.is_special() {
@@ -1411,6 +1639,12 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
     // 10**(exp difference) literally - so 1e-9999999 + (-1) became slow enough
     // to stall test_decimal, and the dneg probe regressed. The predicate needs
     // a borrow-aware threshold, not a sign test.
+    // NB: the borrow-aware narrowing (round 124/127 design) was reverted:
+    // the mode-aware predicate fixed the addx493/605-class cases but the
+    // full add.decTest hung in the huge-exponent section (around addx875+)
+    // for a reason that survived every bounded-arithmetic fix attempted.
+    // The diagnosis and the complete design are recorded in the session
+    // notes for a dedicated round with per-case instrumentation.
     if (!a.is_zero() && !b.is_zero() && lead_a + ctx.prec < lead_b)
         || (!a.is_zero() && !b.is_zero() && lead_b + ctx.prec < lead_a)
     {
@@ -1439,19 +1673,9 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
             }
             return apply_context(vm, ctx, padded);
         }
-        // NB: signalling Rounded unconditionally here is what addx201 wants
-        // (123456789 + 0.000000001 -> [Inexact, Rounded]) and it does make the
-        // flags correct, but it makes test_decimal stall again: with -v the run
-        // went from 83s to a >180s timeout. Reverted. The rounding-direction
-        // bug underneath it is separate - the fast path returns the dominant
-        // operand unchanged where CPython computes 1 + (-77e-11) = 0.999999999
-        // at prec 9 (addx444) - so the fast-path predicate needs narrowing
-        // before Rounded can be added here.
-        //
-        // When the dominant operand already uses the full precision, the
-        // dropped operand's digits are discarded by rounding, so CPython
-        // reports Rounded alongside Inexact (123456789 + 0.000001 at prec 9
-        // -> 123456789 with [Inexact, Rounded]).
+        // The dominant already uses the full precision: the dropped operand's
+        // digits are discarded by rounding, so CPython reports Rounded too
+        // (123456789 + 0.000001 at prec 9 -> [Inexact, Rounded]).
         ctx.set_flag(vm, "Rounded")?;
         if ctx.trap(vm, "Rounded")? {
             return Err(new_decimal_error(vm, "Rounded", "rounded result"));
