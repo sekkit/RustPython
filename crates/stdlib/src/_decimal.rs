@@ -3584,6 +3584,41 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let yd = to_dec_ctx(&y, vm)?;
             let ctx = self.ctx();
             let r = _decimal_core::dec_div(&ctx, vm, &xd, &yd)?;
+            // The division's guard digits can be zero for a non-terminating
+            // quotient (divx287: 0.1 / 9999e-999999997 -> ... Inexact, but the
+            // 10th-11th guard digits are 00 -> apply_context saw no inexactness).
+            // Check mathematical inexactness via result * divisor != dividend.
+            // The exponent difference is always ~shift (bounded by ~prec+5);
+            // for subnormal-clamped results the gap is huge, so skip those
+            // (apply_context already flagged them).
+            if r.special == Special::Finite
+                && yd.special == Special::Finite
+                && yd.coeff != BigInt::from(0)
+                && xd.coeff != BigInt::from(0)
+            {
+                let prod_coeff = &r.coeff * &yd.coeff;
+                let prod_exp = r.exp + yd.exp;
+                let a_exp = xd.exp;
+                let diff = (a_exp - prod_exp).max(prod_exp - a_exp);
+                let inexact = if diff > ctx.prec + 10 {
+                    // Huge gap (subnormal clamping) → definitely inexact.
+                    true
+                } else if prod_exp < a_exp {
+                    let d = (a_exp - prod_exp) as u32;
+                    prod_coeff != (&xd.coeff * BigInt::from(10).pow(d))
+                } else if prod_exp > a_exp {
+                    let d = (prod_exp - a_exp) as u32;
+                    (&prod_coeff * BigInt::from(10).pow(d)) != xd.coeff
+                } else {
+                    prod_coeff != xd.coeff
+                };
+                if inexact {
+                    ctx.set_flag(vm, "Inexact")?;
+                    if ctx.trap(vm, "Inexact")? {
+                        return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                    }
+                }
+            }
             Ok(PyDecimal::to_py(vm, r))
         }
 
