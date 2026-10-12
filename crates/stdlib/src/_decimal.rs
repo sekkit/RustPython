@@ -2238,6 +2238,22 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
             }
+            // An INFINITE divisor: x / Infinity = 0, so n = 0 and the result
+            // is x itself for a FINITE x (rmnx688). An INFINITE x with an
+            // infinite divisor is Inf/Inf -> Invalid (rmnx680).
+            if b.special == Special::Infinity {
+                if self.d.special == Special::Infinity {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "Inf % Inf"));
+                    }
+                    return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                        sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                    }));
+                }
+                let r = _decimal_core::apply_context(vm, &ctx, self.d.clone())?;
+                return Ok(PyDecimal::to_py(vm, r));
+            }
             // CPython: if the exponent difference is >= prec+1 the quotient is
             // too large to compute (abs(self/other) > 10**prec) -> DivisionImpossible.
             let adj = |d: &Dec| d.exp + _decimal_core::coeff_digits_of(&d.coeff) as isize - 1;
@@ -4417,6 +4433,24 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
                     sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
                 }));
+            }
+            // An INFINITE divisor: x / Infinity = 0, so n = 0 and the result
+            // is x itself for a FINITE x (rmnx688: remaindernear -1000 Inf
+            // -> -1000; no Inf*0 to trigger 0*Inf's Invalid_operation). An
+            // INFINITE x with an infinite divisor is Inf/Inf -> Invalid
+            // (rmnx680: remaindernear Inf -Inf -> NaN Invalid_operation).
+            if yd.special == Special::Infinity {
+                if xd.special == Special::Infinity {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "Inf % Inf"));
+                    }
+                    return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
+                        sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN,
+                    }));
+                }
+                let r = _decimal_core::apply_context(vm, &ctx, xd.clone())?;
+                return Ok(PyDecimal::to_py(vm, r));
             }
             // Division impossible: an integer quotient far above the context
             // precision cannot be computed (and building 10**exp below would

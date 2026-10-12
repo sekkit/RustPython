@@ -1621,6 +1621,50 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
     if a.is_special() || b.is_special() {
         return special_binary(vm, ctx, a, b, "add");
     }
+    // A zero operand contributes nothing but can pull the exponent down:
+    // add(0.00, 5) -> 5.00 and add(5, 0E-999999999) -> 5.000...(prec digits,
+    // Rounded). The result's exponent is min(e_a, e_b) clamped so the
+    // coefficient still fits the precision; only the clamping (an unreachable
+    // ideal exponent) signals Rounded - the padded zeros are exact, so never
+    // Inexact. Never align literally: add(1, 0E+999999999) would otherwise
+    // build a billion-digit BigInt below (rmnx270 hung test_remainderNear).
+    if a.is_zero() || b.is_zero() {
+        let min_e = a.exp.min(b.exp);
+        if a.is_zero() && b.is_zero() {
+            let sign = if ctx.rounding == Rounding::Floor {
+                a.sign || b.sign
+            } else {
+                a.sign && b.sign
+            };
+            return apply_context(vm, ctx, Dec {
+                sign,
+                coeff: BigInt::from(0),
+                exp: min_e,
+                special: Special::Finite,
+            });
+        }
+        let keep = if a.is_zero() { b } else { a };
+        let digits = keep.coeff_digits() as isize;
+        // The most negative exponent the result may take: the coefficient can
+        // absorb at most (prec - digits) trailing zeros (never more: an
+        // over-prec operand is rounded by apply_context, not padded).
+        let floor_e = keep.exp - (ctx.prec - digits).max(0);
+        let new_exp = min_e.max(floor_e);
+        let pad = (keep.exp - new_exp) as u32;
+        let coeff = &keep.coeff * BigInt::from(10).pow(pad);
+        if new_exp > min_e {
+            ctx.set_flag(vm, "Rounded")?;
+            if ctx.trap(vm, "Rounded")? {
+                return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+            }
+        }
+        return apply_context(vm, ctx, Dec {
+            sign: keep.sign,
+            coeff,
+            exp: new_exp,
+            special: Special::Finite,
+        });
+    }
     // Aligning exponents literally would build 10**(exp difference), which for
     // operands like 1e-9999999 is a ten-million-digit BigInt and takes seconds.
     // When one operand's leading digit sits more than a context precision
