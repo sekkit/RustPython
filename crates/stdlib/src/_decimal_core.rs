@@ -2496,9 +2496,140 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
     if b.special != Special::Finite {
-        // Inf ** -Inf = 0 (powx580: power Inf -Inf -> 0).
-        if a.special == Special::Infinity && b.special == Special::Infinity && b.sign {
+        // sNaN exponent signals before the NaN base propagates (powx652:
+        // power NaN sNaN -> NaN Invalid_operation).
+        if b.special == Special::SignalingNaN {
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "sNaN exponent"));
+            }
+            let mut n = b.clone();
+            n.special = Special::NaN;
+            return Ok(n);
+        }
+        // A NaN base propagates before the exponent's special handling
+        // (powx621: power NaN -Inf -> NaN, not Infinity).
+        if a.special == Special::SignalingNaN {
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? {
+                return Err(new_decimal_error(vm, "InvalidOperation", "sNaN operand"));
+            }
+            let mut n = a.clone();
+            n.special = Special::NaN;
+            return Ok(n);
+        }
+        if a.special == Special::NaN {
+            return Ok(a.clone());
+        }
+        // b = +Inf: depends on |a| and a's sign.
+        // b = -Inf: Inf**(-Inf) = 0 (powx580).
+        if b.special == Special::Infinity && !b.sign {
+            // b = +Inf
+            if a.special == Special::Infinity {
+                if a.sign {
+                    // -Inf ** Inf = NaN (powx591)
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? {
+                        return Err(new_decimal_error(vm, "InvalidOperation", "-Inf ** Inf"));
+                    }
+                    return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+                }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+            if a.is_zero() {
+                // 0 ** Inf = +0 (powx594: -0 ** Inf -> 0, not -0).
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+            }
+            if a.sign {
+                // negative finite ** Inf = NaN (powx590, 592, 593)
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "negative ** Inf"));
+                }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            }
+            // positive finite ** Inf: |a| > 1 -> Inf; |a| < 1 -> 0; |a| = 1 -> 1.
+            let adj = a.exp + a.coeff_digits() as isize - 1;
+            if adj > 0 {
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            } else if adj < 0 {
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+            } else if a.coeff == BigInt::from(1) {
+                // 1 ** Inf = 1 padded to context precision with Inexact+Rounded
+                // (powx597: power 1 Inf -> 1.00000000 Inexact Rounded).
+                let pad = (ctx.prec - 1).max(0) as u32;
+                ctx.set_flag(vm, "Inexact")?;
+                if ctx.trap(vm, "Inexact")? {
+                    return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                }
+                ctx.set_flag(vm, "Rounded")?;
+                if ctx.trap(vm, "Rounded")? {
+                    return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+                }
+                return Ok(Dec {
+                    sign: false,
+                    coeff: BigInt::from(10).pow(pad),
+                    exp: -(pad as isize),
+                    special: Special::Finite,
+                });
+            } else {
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+        }
+        // b = -Inf: Inf**(-Inf) = 0 (powx580); -Inf**(-Inf) = NaN (powx600).
+        if a.special == Special::Infinity && b.sign {
+            if a.sign {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "-Inf ** -Inf"));
+                }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            }
             return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+        }
+        // b = -Inf with a finite base: the inverse of b = +Inf
+        // (|a| > 1 -> 0; |a| < 1 -> Inf; |a| = 1 -> 1; negative -> NaN).
+        // 0 ** -Inf = +Infinity (powx614: -0 ** -Inf -> Infinity).
+        if b.sign && a.special == Special::Finite && a.is_zero() {
+            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+        }
+        if b.sign && a.special == Special::Finite && !a.is_zero() {
+            if a.sign {
+                ctx.set_flag(vm, "InvalidOperation")?;
+                if ctx.trap(vm, "InvalidOperation")? {
+                    return Err(new_decimal_error(vm, "InvalidOperation", "negative ** -Inf"));
+                }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            }
+            let adj = a.exp + a.coeff_digits() as isize - 1;
+            if adj > 0 {
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+            } else if adj < 0 {
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            } else if a.coeff == BigInt::from(1) {
+                let pad = (ctx.prec - 1).max(0) as u32;
+                ctx.set_flag(vm, "Inexact")?;
+                if ctx.trap(vm, "Inexact")? {
+                    return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                }
+                ctx.set_flag(vm, "Rounded")?;
+                if ctx.trap(vm, "Rounded")? {
+                    return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+                }
+                return Ok(Dec {
+                    sign: false,
+                    coeff: BigInt::from(10).pow(pad),
+                    exp: -(pad as isize),
+                    special: Special::Finite,
+                });
+            } else {
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+            }
+        }
+        // b = NaN (not Inf): propagate the NaN with its payload (powx676:
+        // power Inf NaN9 -> NaN9, not generic NaN).
+        if b.special == Special::NaN {
+            return Ok(b.clone());
         }
         return Ok(Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: b.special });
     }
@@ -2513,10 +2644,13 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
             if ctx.trap(vm, "InvalidOperation")? {
                 return Err(new_decimal_error(vm, "InvalidOperation", "sNaN operand"));
             }
-            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            // Quiet the sNaN with its payload (powx673: power sNaN8 1 -> NaN8).
+            let mut n = a.clone();
+            n.special = Special::NaN;
+            return Ok(n);
         }
         if a.special == Special::NaN {
-            return Ok(Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+            return Ok(a.clone());
         }
         if !is_integer {
             // A fractional exponent has no parity case: let the exp(b*ln(a))
@@ -2533,7 +2667,12 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
                 0 => Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite },
                 // 1 / Infinity**m is zero; a negative base keeps -Infinity for
                 // odd m only.
-                n if n < 0 => Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite },
+                n if n < 0 => {
+                    // 1 / Inf^|n| = 0; sign negative for -Inf with odd |n|
+                    // (powx602: power -Inf -1 -> -0).
+                    let neg = a.sign && (n.unsigned_abs() % 2 == 1);
+                    Dec { sign: neg, coeff: BigInt::from(0), exp: 0, special: Special::Finite }
+                }
                 n if n % 2 == 0 => Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity },
                 _ => Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: Special::Infinity },
             });
