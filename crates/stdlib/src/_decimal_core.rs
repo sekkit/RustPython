@@ -1693,6 +1693,26 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
             if ctx.trap(vm, "Inexact")? {
                 return Err(new_decimal_error(vm, "Inexact", "inexact result"));
             }
+            // For opposite-sign operands at the Emin boundary, the exact
+            // result dips below Emin (subnormal) even though the rounded
+            // result rounds back to the dominant (normal). CPython signals
+            // Underflow+Subnormal based on the exact value (addx579:
+            // subtract 1E-383 1E-401 -> ... Underflow Inexact Subnormal
+            // Rounded). The dominant's adjusted exponent == Emin means the
+            // exact value is just below.
+            if !same_sign {
+                let dom_adj = dominant.exp + dominant.coeff_digits() as isize - 1;
+                if dom_adj == ctx.emin {
+                    ctx.set_flag(vm, "Subnormal")?;
+                    if ctx.trap(vm, "Subnormal")? {
+                        return Err(ctx_trap_exc(vm, "Subnormal", "subnormal"));
+                    }
+                    ctx.set_flag(vm, "Underflow")?;
+                    if ctx.trap(vm, "Underflow")? {
+                        return Err(ctx_trap_exc(vm, "Underflow", "underflow"));
+                    }
+                }
+            }
             // CPython pads the survivor out to the context precision, because the
             // dropped operand extended the exact result below it:
             // 1 + 1e-9999999 -> 1.000000000000000000000000000.
