@@ -2486,6 +2486,15 @@ fn quantize_inner(vm: &VirtualMachine, ctx: &Ctx, d: &Dec, exp: isize, exact: bo
 
 /// Integer exponentiation with context rounding.
 pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyResult<Dec> {
+    // 0 ** 0 is Invalid_operation (decTest powx001: power 0 0 -> NaN
+    // Invalid_operation; CPython raises too). The result is NaN.
+    if a.is_zero() && b.is_zero() {
+        ctx.set_flag(vm, "InvalidOperation")?;
+        if ctx.trap(vm, "InvalidOperation")? {
+            return Err(new_decimal_error(vm, "InvalidOperation", "0 ** 0 is undefined"));
+        }
+        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+    }
     if b.special != Special::Finite {
         return Ok(Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: b.special });
     }
