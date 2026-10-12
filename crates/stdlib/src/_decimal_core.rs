@@ -1670,61 +1670,86 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
     // When one operand's leading digit sits more than a context precision
     // below the other's, it cannot affect any digit that survives rounding, so
     // the result is the dominant operand alone (and the operation is inexact).
+    //
+    // EXCEPTION: for opposite-sign operands whose gap is small enough that the
+    // subtraction borrows into the kept region (addx444: 1 + (-77e-11) at prec
+    // 9 must be 0.999999999, not 1.00000000), the exact path is bounded
+    // (10**gap ≤ 10**(prec + digits_of_small)) and gives the correct answer.
+    // Only use the fast path when the exact path would be unbounded.
     let lead_a = a.exp + a.coeff_digits() as isize - 1;
     let lead_b = b.exp + b.coeff_digits() as isize - 1;
-    // Both operands must be non-zero: a zero has no meaningful leading digit,
-    // so lead_a/lead_b cannot order it against a real value. add(1E-10, -0)
-    // must be 1E-10, not the zero operand.
-    //
-    // Restricting this to same-sign operands was tried to fix addx444
-    // (1 + (-77e-11) at prec 9 must round to 0.999999999, not the dominant 1,
-    // because subtraction borrows past the leading-digit gap). It does fix that
-    // case, but opposite-sign operands then take the full path, which aligns
-    // 10**(exp difference) literally - so 1e-9999999 + (-1) became slow enough
-    // to stall test_decimal, and the dneg probe regressed. The predicate needs
-    // a borrow-aware threshold, not a sign test.
-    // NB: the borrow-aware narrowing (round 124/127 design) was reverted:
-    // the mode-aware predicate fixed the addx493/605-class cases but the
-    // full add.decTest hung in the huge-exponent section (around addx875+)
-    // for a reason that survived every bounded-arithmetic fix attempted.
-    // The diagnosis and the complete design are recorded in the session
-    // notes for a dedicated round with per-case instrumentation.
-    if (!a.is_zero() && !b.is_zero() && lead_a + ctx.prec < lead_b)
-        || (!a.is_zero() && !b.is_zero() && lead_b + ctx.prec < lead_a)
-    {
-        let dominant = if lead_a > lead_b { a } else { b };
-        ctx.set_flag(vm, "Inexact")?;
-        if ctx.trap(vm, "Inexact")? {
-            return Err(new_decimal_error(vm, "Inexact", "inexact result"));
-        }
-        // CPython pads the survivor out to the context precision, because the
-        // dropped operand extended the exact result below it:
-        // 1 + 1e-9999999 -> 1.000000000000000000000000000.
-        let digits = dominant.coeff_digits() as isize;
-        if digits < ctx.prec {
-            let extra = (ctx.prec - digits) as u32;
-            let padded = Dec {
-                sign: dominant.sign,
-                coeff: &dominant.coeff * BigInt::from(10).pow(extra),
-                exp: dominant.exp - extra as isize,
-                special: Special::Finite,
-            };
-            // The padded exponent is a rounded one, so Rounded goes with
-            // Inexact: CPython reports both for this case.
+    if !a.is_zero() && !b.is_zero() {
+        let (dominant, small, gap) = if lead_a >= lead_b {
+            (a, b, lead_a - lead_b)
+        } else {
+            (b, a, lead_b - lead_a)
+        };
+        let same_sign = dominant.sign == small.sign;
+        let small_digits = small.coeff_digits() as isize;
+        // Fast path: gap > prec AND (same-sign, or the exact path is
+        // unbounded so the borrow can't reach the kept region).
+        if gap > ctx.prec && (same_sign || gap > ctx.prec + small_digits) {
+            ctx.set_flag(vm, "Inexact")?;
+            if ctx.trap(vm, "Inexact")? {
+                return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+            }
+            // CPython pads the survivor out to the context precision, because the
+            // dropped operand extended the exact result below it:
+            // 1 + 1e-9999999 -> 1.000000000000000000000000000.
+            let digits = dominant.coeff_digits() as isize;
+            if digits < ctx.prec {
+                let extra = (ctx.prec - digits) as u32;
+                let padded = Dec {
+                    sign: dominant.sign,
+                    coeff: &dominant.coeff * BigInt::from(10).pow(extra),
+                    exp: dominant.exp - extra as isize,
+                    special: Special::Finite,
+                };
+                ctx.set_flag(vm, "Rounded")?;
+                if ctx.trap(vm, "Rounded")? {
+                    return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+                }
+                return apply_context(vm, ctx, padded);
+            }
             ctx.set_flag(vm, "Rounded")?;
             if ctx.trap(vm, "Rounded")? {
                 return Err(new_decimal_error(vm, "Rounded", "rounded result"));
             }
-            return apply_context(vm, ctx, padded);
+            // Mode-aware rounding: the dominant has prec digits and the small
+            // operand is entirely below the precision (|delta| << 0.5 ulp
+            // since gap > prec + small_digits). For same-sign, ceiling/up
+            // round away from zero (+1); for opposite-sign borrow, down/floor
+            // round toward zero (-1). Half modes round to nearest = dominant.
+            let adj: i32 = if same_sign {
+                match ctx.rounding {
+                    Rounding::Up => 1,
+                    Rounding::Ceiling if !dominant.sign => 1,
+                    Rounding::Floor if dominant.sign => 1,
+                    _ => 0,
+                }
+            } else {
+                match ctx.rounding {
+                    Rounding::Down => -1,
+                    Rounding::Floor if !dominant.sign => -1,
+                    Rounding::Ceiling if dominant.sign => -1,
+                    _ => 0,
+                }
+            };
+            if adj != 0 {
+                let coeff = if adj > 0 {
+                    &dominant.coeff + BigInt::from(adj as u32)
+                } else {
+                    &dominant.coeff - BigInt::from((-adj) as u32)
+                };
+                return apply_context(vm, ctx, Dec {
+                    sign: dominant.sign,
+                    coeff,
+                    exp: dominant.exp,
+                    special: Special::Finite,
+                });
+            }
+            return apply_context(vm, ctx, dominant.clone());
         }
-        // The dominant already uses the full precision: the dropped operand's
-        // digits are discarded by rounding, so CPython reports Rounded too
-        // (123456789 + 0.000001 at prec 9 -> [Inexact, Rounded]).
-        ctx.set_flag(vm, "Rounded")?;
-        if ctx.trap(vm, "Rounded")? {
-            return Err(new_decimal_error(vm, "Rounded", "rounded result"));
-        }
-        return apply_context(vm, ctx, dominant.clone());
     }
     let e = a.exp.min(b.exp);
     let pa = BigInt::from(10).pow((a.exp - e) as u32);
