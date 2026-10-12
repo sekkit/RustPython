@@ -2577,7 +2577,7 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
             }
         }
         // b = -Inf: Inf**(-Inf) = 0 (powx580); -Inf**(-Inf) = NaN (powx600).
-        if a.special == Special::Infinity && b.sign {
+        if a.special == Special::Infinity && b.special == Special::Infinity && b.sign {
             if a.sign {
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
@@ -2727,13 +2727,106 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         }
         return Ok(r);
     }
-    let mut n: i64 = if b.exp < 0 {
-        let pow = BigInt::from(10).pow((-b.exp) as u32);
-        let q = &b.coeff / &pow;
-        q.to_string().parse().unwrap_or(0)
+    // Parse the integer exponent. If b.exp > 18 the value 10^b.exp doesn't
+    // fit in i64 (powx519: 100 ** 1E+19); if b.exp < -18 and b.coeff has
+    // fewer digits than |b.exp| the quotient is 0. Either way avoid building
+    // 10^|b.exp| which could be a billion-digit BigInt (1E+999999999).
+    let mut n: i64;
+    if b.exp > 18 && b.coeff != BigInt::from(0) {
+        // Huge positive exponent: doesn't fit i64 (avoid 10^b.exp).
+        n = i64::MAX;  // sentinel — the huge-exponent handler below catches this
+    } else if b.exp > 18 && b.coeff == BigInt::from(0) {
+        n = 0;  // 0E+k is just zero, not a huge number
+    } else if b.exp < -18 && (coeff_digits_of(&b.coeff) as isize) <= (-b.exp) {
+        n = 0;  // coeff / 10^|exp| = 0
     } else {
-        (&b.coeff * BigInt::from(10).pow(b.exp as u32)).to_string().parse().unwrap_or(0)
-    };
+        let n_str = if b.exp < 0 {
+            let pow = BigInt::from(10).pow((-b.exp) as u32);
+            let q = &b.coeff / &pow;
+            q.to_string()
+        } else {
+            (&b.coeff * BigInt::from(10).pow(b.exp as u32)).to_string()
+        };
+        n = match n_str.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                // Exponent too large for i64 (powx519: 100 ** 1E+19). The
+                // magnitude is astronomically large, so the result depends on
+                // |a| vs 1 and the sign of b, like ±Inf.
+                let a_adj = a.exp + a.coeff_digits() as isize - 1;
+                let pos = !b.sign;
+                let gt_one = a_adj > 0 || (a_adj == 0 && a.coeff > BigInt::from(1));
+                let lt_one = a_adj < 0 || (a_adj == 0 && a.coeff < BigInt::from(1) && !a.is_zero());
+                if a.is_zero() {
+                    if pos { return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite }); }
+                    return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+                }
+                if a.sign {
+                    ctx.set_flag(vm, "InvalidOperation")?;
+                    if ctx.trap(vm, "InvalidOperation")? { return Err(new_decimal_error(vm, "InvalidOperation", "huge exponent, parity unknown")); }
+                    return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+                }
+                if gt_one {
+                    if pos {
+                        ctx.set_flag(vm, "Overflow")?;
+                        if ctx.trap(vm, "Overflow")? { return Err(ctx_trap_exc(vm, "Overflow", "overflow")); }
+                        ctx.set_flag(vm, "Inexact")?; if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
+                        ctx.set_flag(vm, "Rounded")?; if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
+                        return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+                    }
+                    return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+                } else if lt_one {
+                    if pos { return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite }); }
+                    ctx.set_flag(vm, "Overflow")?;
+                    if ctx.trap(vm, "Overflow")? { return Err(ctx_trap_exc(vm, "Overflow", "overflow")); }
+                    return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+                } else {
+                    let pad = (ctx.prec - 1).max(0) as u32;
+                    ctx.set_flag(vm, "Inexact")?; if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
+                    ctx.set_flag(vm, "Rounded")?; if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
+                    return Ok(Dec { sign: false, coeff: BigInt::from(10).pow(pad), exp: -(pad as isize), special: Special::Finite });
+                }
+            }
+        };
+    }
+    // The i64::MAX sentinel from the b.exp > 18 path: handle as huge.
+    // Also catches -i64::MAX (negative huge exponent) which would otherwise
+    // overflow the squaring loop's exp *= 2.
+    if n.abs() == i64::MAX && b.exp > 18 {
+        let a_adj = a.exp + a.coeff_digits() as isize - 1;
+        let pos = !b.sign;
+        let gt_one = a_adj > 0 || (a_adj == 0 && a.coeff > BigInt::from(1));
+        let lt_one = a_adj < 0 || (a_adj == 0 && a.coeff < BigInt::from(1) && !a.is_zero());
+        if a.is_zero() {
+            if pos { return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite }); }
+            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+        }
+        if a.sign {
+            ctx.set_flag(vm, "InvalidOperation")?;
+            if ctx.trap(vm, "InvalidOperation")? { return Err(new_decimal_error(vm, "InvalidOperation", "huge exponent, parity unknown")); }
+            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
+        }
+        if gt_one {
+            if pos {
+                ctx.set_flag(vm, "Overflow")?;
+                if ctx.trap(vm, "Overflow")? { return Err(ctx_trap_exc(vm, "Overflow", "overflow")); }
+                ctx.set_flag(vm, "Inexact")?; if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
+                ctx.set_flag(vm, "Rounded")?; if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
+                return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+            }
+            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+        } else if lt_one {
+            if pos { return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite }); }
+            ctx.set_flag(vm, "Overflow")?;
+            if ctx.trap(vm, "Overflow")? { return Err(ctx_trap_exc(vm, "Overflow", "overflow")); }
+            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+        } else {
+            let pad = (ctx.prec - 1).max(0) as u32;
+            ctx.set_flag(vm, "Inexact")?; if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
+            ctx.set_flag(vm, "Rounded")?; if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
+            return Ok(Dec { sign: false, coeff: BigInt::from(10).pow(pad), exp: -(pad as isize), special: Special::Finite });
+        }
+    }
     if b.sign {
         n = -n;
     }
@@ -2750,19 +2843,40 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         // 12345^3 to 1.8814E+12, losing the precision needed for 1/a^3 ->
         // 5.3153E-13).
         let m = n.unsigned_abs() as i64;
+        let large_neg = m > ctx.prec as i64 * 2;
+        let max_digits = (ctx.prec as usize + 10).max(20);
         let mut rp = Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite };
         let mut coeff = a.coeff.clone();
         let mut exp = a.exp;
         let mut be = m;
+        let ten = BigInt::from(10);
         while be > 0 {
             if be & 1 == 1 {
                 rp.coeff *= &coeff;
                 rp.exp += exp;
+                if large_neg {
+                    let cd = coeff_digits_of(&rp.coeff);
+                    if cd > max_digits {
+                        let drop = cd - max_digits;
+                        let p = ten.pow(drop as u32);
+                        rp.coeff /= &p;
+                        rp.exp += drop as isize;
+                    }
+                }
             }
             be >>= 1;
             if be > 0 {
                 coeff = &coeff * &coeff;
                 exp *= 2;
+                if large_neg {
+                    let cd = coeff_digits_of(&coeff);
+                    if cd > max_digits {
+                        let drop = cd - max_digits;
+                        let p = ten.pow(drop as u32);
+                        coeff /= &p;
+                        exp += drop as isize;
+                    }
+                }
             }
         }
         // The sign of a^m: negative for odd m with a negative base
@@ -2782,22 +2896,86 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
             special: Special::Finite,
         });
     }
+    // Before the expensive repeated-squaring, check whether the result would
+    // be far out of range. For coeff=1 the result is exactly 10^(n*exp). For
+    // coeff>1 the lower bound of the adjusted is n*(exp+1) (coeff^n >= 10 for
+    // large n) and the upper bound is n*(exp+digits)-1. If the lower bound is
+    // above Emax -> Overflow; if the upper bound is below Etiny -> flush to 0
+    // (powx397: 0.02 ** 100000000 would otherwise build a 67M-digit BigInt).
+    let etiny = ctx.emin - (ctx.prec as isize - 1);
+    if n != 0 && n.abs() > ctx.prec as i64 * 2 {
+        let (lower, upper): (i64, i64) = if a.coeff == BigInt::from(1) {
+            let adj = n * a.exp as i64;
+            (adj, adj)
+        } else {
+            // Lower bound: coeff^n has at least 1 digit per power ->
+            // adjusted >= n*(exp+digits-1). Upper bound: coeff^n has at most
+            // n*digits digits -> adjusted <= n*(exp+digits)-1.
+            (n * (a.exp + a.coeff_digits() as isize - 1) as i64,
+             n * (a.exp + a.coeff_digits() as isize) as i64 - 1)
+        };
+        if upper < etiny as i64 {
+            ctx.set_flag(vm, "Subnormal")?;
+            if ctx.trap(vm, "Subnormal")? { return Err(ctx_trap_exc(vm, "Subnormal", "subnormal")); }
+            ctx.set_flag(vm, "Underflow")?;
+            if ctx.trap(vm, "Underflow")? { return Err(ctx_trap_exc(vm, "Underflow", "underflow")); }
+            ctx.set_flag(vm, "Inexact")?;
+            if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
+            ctx.set_flag(vm, "Rounded")?;
+            if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
+            ctx.set_flag(vm, "Clamped")?;
+            if ctx.trap(vm, "Clamped")? { return Err(ctx_trap_exc(vm, "Clamped", "clamped")); }
+            return Ok(Dec { sign: a.sign && (n % 2 == 1), coeff: BigInt::from(0), exp: etiny, special: Special::Finite });
+        }
+        if lower > ctx.emax as i64 {
+            ctx.set_flag(vm, "Overflow")?;
+            if ctx.trap(vm, "Overflow")? { return Err(ctx_trap_exc(vm, "Overflow", "overflow")); }
+            ctx.set_flag(vm, "Inexact")?;
+            if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
+            ctx.set_flag(vm, "Rounded")?;
+            if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
+            return Ok(Dec { sign: a.sign && (n % 2 == 1), coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+        }
+    }
+    let large_n = n.abs() > ctx.prec as i64 * 2;
+    let max_digits = (ctx.prec as usize + 10).max(20);
     let mut result = Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite };
-    // Exact integer power: multiply coefficients with plain BigInt and only
-    // apply the context once at the end (dec_mul would round at every step,
-    // accumulating error: 12345^5 at prec 5 -> 2.8671E+20, not 2.8667E+20).
+    // Integer power via repeated squaring. For large exponents (n > prec*2)
+    // the full coeff^n would be a multi-million-digit BigInt (powx183:
+    // 7**1000000). CPython's mpd_qpow keeps limited precision throughout;
+    // we drop low digits (keeping prec+10 guard digits) at each step so the
+    // multiplications stay O((prec+10)^2) and the final rounding is correct.
     let mut coeff = a.coeff.clone();
     let mut exp = a.exp;
     let mut base_exp = n;
+    let ten = BigInt::from(10);
     while base_exp > 0 {
         if base_exp & 1 == 1 {
             result.coeff *= &coeff;
             result.exp += exp;
+            if large_n {
+                let cd = coeff_digits_of(&result.coeff);
+                if cd > max_digits {
+                    let drop = cd - max_digits;
+                    let p = ten.pow(drop as u32);
+                    result.coeff /= &p;
+                    result.exp += drop as isize;
+                }
+            }
         }
         base_exp >>= 1;
         if base_exp > 0 {
             coeff = &coeff * &coeff;
             exp *= 2;
+            if large_n {
+                let cd = coeff_digits_of(&coeff);
+                if cd > max_digits {
+                    let drop = cd - max_digits;
+                    let p = ten.pow(drop as u32);
+                    coeff /= &p;
+                    exp += drop as isize;
+                }
+            }
         }
     }
     result.sign = a.sign && (n % 2 == 1);
