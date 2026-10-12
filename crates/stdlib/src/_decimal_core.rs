@@ -2496,6 +2496,10 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::NaN });
     }
     if b.special != Special::Finite {
+        // Inf ** -Inf = 0 (powx580: power Inf -Inf -> 0).
+        if a.special == Special::Infinity && b.special == Special::Infinity && b.sign {
+            return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Finite });
+        }
         return Ok(Dec { sign: a.sign, coeff: BigInt::from(0), exp: 0, special: b.special });
     }
     let is_integer = !(b.exp < 0
@@ -2595,6 +2599,13 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         n = -n;
     }
     if n < 0 {
+        // 0 ** (-n) is +Infinity without Division_by_zero (decTest powx126:
+        // power 0 -1 -> Infinity; CPython's mpd_qpow does not signal).
+        // -0 ** (-odd) is -Infinity (powx128: power -0 -1 -> -Infinity).
+        if a.is_zero() {
+            let neg = a.sign && (n.unsigned_abs() % 2 == 1);
+            return Ok(Dec { sign: neg, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
+        }
         // Negative exponent: a^-m = 1 / a^m, computed from the exact power
         // (never the context-rounded base: dec_pow_int at prec 5 rounds
         // 12345^3 to 1.8814E+12, losing the precision needed for 1/a^3 ->
@@ -2615,8 +2626,22 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
                 exp *= 2;
             }
         }
+        // The sign of a^m: negative for odd m with a negative base
+        // (powx448: power -0.04E+334 -3 -> -1.5625E-998, not positive).
+        rp.sign = a.sign && (m % 2 == 1);
         let one = Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite };
         return dec_div(ctx, vm, &one, &rp);
+    }
+    // 0 ** n (n > 0) is zero with exponent 0, not n*exp (decTest powx223:
+    // power 0E-30 3 -> 0, not 0E-90). The sign is negative for odd n and a
+    // negative base.
+    if a.is_zero() {
+        return Ok(Dec {
+            sign: a.sign && (n % 2 == 1),
+            coeff: BigInt::from(0),
+            exp: 0,
+            special: Special::Finite,
+        });
     }
     let mut result = Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite };
     // Exact integer power: multiply coefficients with plain BigInt and only
