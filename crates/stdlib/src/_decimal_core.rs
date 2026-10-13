@@ -2829,6 +2829,25 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
             if ctx.trap(vm, "Overflow")? { return Err(ctx_trap_exc(vm, "Overflow", "overflow")); }
             ctx.set_flag(vm, "Inexact")?; if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
             ctx.set_flag(vm, "Rounded")?; if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
+            // The wide context used HalfEven (-> Infinity on overflow), but
+            // the caller's rounding mode may require a finite result
+            // (powx4125: power 17 81.27116 ROUND_DOWN -> 9.999999E+99,
+            // not Infinity). Match apply_context's overflow clamping.
+            let to_inf = match ctx.rounding {
+                Rounding::HalfUp | Rounding::HalfEven | Rounding::HalfDown | Rounding::Up => true,
+                Rounding::Ceiling => !a.sign,
+                Rounding::Floor => a.sign,
+                Rounding::Down | Rounding::Half05Up | Rounding::Half01Up => false,
+            };
+            if !to_inf {
+                let nines = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
+                return Ok(Dec {
+                    sign: a.sign,
+                    coeff: nines,
+                    exp: ctx.emax - ctx.prec as isize + 1,
+                    special: Special::Finite,
+                });
+            }
             return Ok(r);
         }
         let mut r = apply_context(vm, ctx, r)?;
