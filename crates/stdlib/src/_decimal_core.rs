@@ -1802,6 +1802,11 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
                         Rounding::Up => 1,
                         Rounding::Ceiling if !dominant.sign => 1,
                         Rounding::Floor if dominant.sign => 1,
+                        Rounding::Half05Up => {
+                            let s = padded.coeff.to_string();
+                            let last = s.chars().last().unwrap_or('0');
+                            if last == '0' || last == '5' { 1 } else { 0 }
+                        }
                         _ => 0,
                     }
                 } else {
@@ -1831,6 +1836,11 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
                     Rounding::Up => 1,
                     Rounding::Ceiling if !dominant.sign => 1,
                     Rounding::Floor if dominant.sign => 1,
+                    Rounding::Half05Up => {
+                        let s = dominant.coeff.to_string();
+                        let last = s.chars().last().unwrap_or('0');
+                        if last == '0' || last == '5' { 1 } else { 0 }
+                    }
                     _ => 0,
                 }
             } else {
@@ -1841,7 +1851,7 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
                 // 9.99999E-95 from 1000000-1=999999).
                 let s = dominant.coeff.to_string();
                 let is_pow10 = s.starts_with('1') && s[1..].chars().all(|c| c == '0');
-                let toward_borrow = matches!(ctx.rounding, Rounding::Down)
+                let toward_borrow = matches!(ctx.rounding, Rounding::Down | Rounding::Half05Up)
                     || (matches!(ctx.rounding, Rounding::Floor) && !dominant.sign)
                     || (matches!(ctx.rounding, Rounding::Ceiling) && dominant.sign);
                 if is_pow10 && toward_borrow {
@@ -1857,6 +1867,14 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
                 }
                 match ctx.rounding {
                     Rounding::Down => -1,
+                    Rounding::Half05Up => {
+                        // 05UP = ROUND_DOWN, but if result's last digit is 0/5,
+                        // undo (round away from zero = keep dominant).
+                        let r = &dominant.coeff - BigInt::from(1);
+                        let rs = r.to_string();
+                        let last = rs.chars().last().unwrap_or('0');
+                        if last == '0' || last == '5' { 0 } else { -1 }
+                    }
                     Rounding::Floor if !dominant.sign => -1,
                     Rounding::Ceiling if dominant.sign => -1,
                     _ => 0,
@@ -2190,7 +2208,12 @@ pub(crate) fn dec_div(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
             }
             (coeff, exp)
         } else {
-            (quotient, exp)
+            // Non-terminating: add a sticky bit (1 in the last position)
+            // so apply_context's tie-breaking sees >0.5 instead of exactly
+            // 0.5 when the remainder is nonzero (rdvx215: divide 12345
+            // 5.0001 at prec 5 ROUND_HALF_DOWN -> 2469.0, not 2468.9).
+            let sticky = &quotient * BigInt::from(10) + BigInt::from(1);
+            (sticky, exp - 1)
         }
     };
     let sign = a.sign ^ b.sign;
