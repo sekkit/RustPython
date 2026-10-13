@@ -1716,7 +1716,7 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
         let dom_digits = dominant.coeff_digits() as isize;
         let skip_for_mode = !same_sign && dom_digits < ctx.prec
             && matches!(ctx.rounding, Rounding::Down | Rounding::Floor);
-        if gap > ctx.prec && (same_sign || gap > ctx.prec + small_digits) && !skip_for_mode {
+        if gap > ctx.prec && gap > ctx.prec + small_digits && !skip_for_mode {
             ctx.set_flag(vm, "Inexact")?;
             if ctx.trap(vm, "Inexact")? {
                 return Err(new_decimal_error(vm, "Inexact", "inexact result"));
