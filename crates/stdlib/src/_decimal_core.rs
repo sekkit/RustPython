@@ -2840,15 +2840,20 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
                     let pad = ctx.prec as usize - digits;
                     r.coeff *= BigInt::from(10).pow(pad as u32);
                     r.exp -= pad as isize;
+                    // The padding means the computation's guard digits didn't
+                    // fill the full precision -> inexact (powx2015: power 1
+                    // 12.3 at prec 2 -> 1.00 Inexact Rounded). But if no
+                    // padding was needed the result is exact (powx4007: power
+                    // 1 1.1E+999999 at prec 1 -> 1, no flags).
+                    ctx.set_flag(vm, "Inexact")?;
+                    if ctx.trap(vm, "Inexact")? {
+                        return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                    }
+                    ctx.set_flag(vm, "Rounded")?;
+                    if ctx.trap(vm, "Rounded")? {
+                        return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+                    }
                 }
-            }
-            ctx.set_flag(vm, "Inexact")?;
-            if ctx.trap(vm, "Inexact")? {
-                return Err(new_decimal_error(vm, "Inexact", "inexact result"));
-            }
-            ctx.set_flag(vm, "Rounded")?;
-            if ctx.trap(vm, "Rounded")? {
-                return Err(new_decimal_error(vm, "Rounded", "rounded result"));
             }
         }
         return Ok(r);
@@ -2907,10 +2912,9 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
                     if ctx.trap(vm, "Overflow")? { return Err(ctx_trap_exc(vm, "Overflow", "overflow")); }
                     return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
                 } else {
-                    let pad = (ctx.prec - 1).max(0) as u32;
-                    ctx.set_flag(vm, "Inexact")?; if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
-                    ctx.set_flag(vm, "Rounded")?; if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
-                    return Ok(Dec { sign: false, coeff: BigInt::from(10).pow(pad), exp: -(pad as isize), special: Special::Finite });
+                    // |a| = 1: 1^n = 1 (exact, no flags — powx4007: power 1
+                    // 1.1E+999999 -> 1, not 1.000...0 with Inexact+Rounded).
+                    return Ok(Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite });
                 }
             }
         };
@@ -2947,10 +2951,8 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
             if ctx.trap(vm, "Overflow")? { return Err(ctx_trap_exc(vm, "Overflow", "overflow")); }
             return Ok(Dec { sign: false, coeff: BigInt::from(0), exp: 0, special: Special::Infinity });
         } else {
-            let pad = (ctx.prec - 1).max(0) as u32;
-            ctx.set_flag(vm, "Inexact")?; if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
-            ctx.set_flag(vm, "Rounded")?; if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
-            return Ok(Dec { sign: false, coeff: BigInt::from(10).pow(pad), exp: -(pad as isize), special: Special::Finite });
+            // |a| = 1: 1^n = 1 (exact, no flags — powx4007).
+            return Ok(Dec { sign: false, coeff: BigInt::from(1), exp: 0, special: Special::Finite });
         }
     }
     if b.sign {
