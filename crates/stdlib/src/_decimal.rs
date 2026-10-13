@@ -2118,12 +2118,21 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 }
             } else {
                 // Shift right: drop the last |n| digits of the value, toward
-                // zero, and fold them into the exponent (mpd_qshiftr).
+                // zero, and fold into exponent. Truncate coefficient to
+                // prec-wide window first (keep RIGHTMOST prec digits).
+                // Guard: ctx.prec > 0 prevents 10^(neg as u32) hang.
+                // test_named_parameters: D('23').shift(-1, prec=1) -> 0.
                 let drop = (-n) as u32;
-                let pow10 = BigInt::from(10).pow(drop);
+                let pow_drop = BigInt::from(10).pow(drop);
+                let final_coeff = if ctx.prec > 0 && ctx.prec <= 1000 {
+                    let pow_prec = BigInt::from(10).pow(ctx.prec as u32);
+                    &self.d.coeff % &pow_prec / &pow_drop
+                } else {
+                    &self.d.coeff / &pow_drop
+                };
                 _decimal_core::Dec {
                     sign: self.d.sign,
-                    coeff: &self.d.coeff / &pow10,
+                    coeff: final_coeff,
                     exp: self.d.exp + n as isize,
                     special: Special::Finite,
                 }
