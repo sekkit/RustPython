@@ -2829,11 +2829,18 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         // power 1 12.3 -> 1.00 Inexact Rounded). But zero/special results from
         // extreme inputs (Inf ** -0.5 -> 0) are exact, not inexact (powx583).
         if !r.is_zero() && !r.is_special() {
-            let digits = coeff_digits_of(&r.coeff);
-            if digits < ctx.prec as usize {
-                let pad = ctx.prec as usize - digits;
-                r.coeff *= BigInt::from(10).pow(pad as u32);
-                r.exp -= pad as isize;
+            // Only pad to full precision if the result is NORMAL (adjusted >=
+            // Emin). Subnormal results keep their natural coefficient width
+            // (pwsx804: power 1E-19 0.5 at prec 11/Emin -9 -> 3.162277660E-10,
+            // 10 digits, not 3.1622776600E-10 with a trailing zero).
+            let adj = r.exp + coeff_digits_of(&r.coeff) as isize - 1;
+            if adj >= ctx.emin {
+                let digits = coeff_digits_of(&r.coeff);
+                if digits < ctx.prec as usize {
+                    let pad = ctx.prec as usize - digits;
+                    r.coeff *= BigInt::from(10).pow(pad as u32);
+                    r.exp -= pad as isize;
+                }
             }
             ctx.set_flag(vm, "Inexact")?;
             if ctx.trap(vm, "Inexact")? {
