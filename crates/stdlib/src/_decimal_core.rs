@@ -2713,16 +2713,38 @@ pub(crate) fn dec_pow_int(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> P
         // a**b == exp(b * ln(a)), evaluated at extra precision and rounded
         // once at the end with the caller's context (which may overflow).
         let r = dec_exp(vm, &wide, &dec_mul(&wide, vm, b, &dec_ln(vm, &wide, a)?)?)?;
+        // If the result overflowed in the wide context, the flags were set
+        // in the wide ctx's dict (lost). Re-signal in the caller's ctx.
+        // Only for FINITE bases: an Infinity base yields Infinity from the
+        // input (powx586: Inf ** 0.5 -> Infinity, no overflow).
+        if r.special == Special::Infinity && a.special == Special::Finite {
+            ctx.set_flag(vm, "Overflow")?;
+            if ctx.trap(vm, "Overflow")? { return Err(ctx_trap_exc(vm, "Overflow", "overflow")); }
+            ctx.set_flag(vm, "Inexact")?; if ctx.trap(vm, "Inexact")? { return Err(new_decimal_error(vm, "Inexact", "inexact result")); }
+            ctx.set_flag(vm, "Rounded")?; if ctx.trap(vm, "Rounded")? { return Err(new_decimal_error(vm, "Rounded", "rounded result")); }
+            return Ok(r);
+        }
         let mut r = apply_context(vm, ctx, r)?;
         // CPython's non-integer power keeps the full context width even when the
         // result is exact: 1 ** 0.5 is 1.000000000000000000000000000. This is the
         // opposite of the integral-quotient rule log10 and divmod follow.
+        // The non-integer power is transcendental: always inexact (powx2015:
+        // power 1 12.3 -> 1.00 Inexact Rounded). But zero/special results from
+        // extreme inputs (Inf ** -0.5 -> 0) are exact, not inexact (powx583).
         if !r.is_zero() && !r.is_special() {
             let digits = coeff_digits_of(&r.coeff);
             if digits < ctx.prec as usize {
                 let pad = ctx.prec as usize - digits;
                 r.coeff *= BigInt::from(10).pow(pad as u32);
                 r.exp -= pad as isize;
+            }
+            ctx.set_flag(vm, "Inexact")?;
+            if ctx.trap(vm, "Inexact")? {
+                return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+            }
+            ctx.set_flag(vm, "Rounded")?;
+            if ctx.trap(vm, "Rounded")? {
+                return Err(new_decimal_error(vm, "Rounded", "rounded result"));
             }
         }
         return Ok(r);
