@@ -1559,6 +1559,15 @@ pub(crate) fn fma_special(
             }
             let mut n = d.clone();
             n.special = Special::NaN;
+            // Truncate the payload to context precision keeping the LOW digits
+            // (fmax363000: fma 1 1 sNaN1234567890 at prec 5 -> NaN67890).
+            let digits = n.coeff_str();
+            let keep = (ctx.prec as usize).max(1);
+            if digits.len() > keep {
+                n.coeff = digits[digits.len() - keep..]
+                    .parse::<BigInt>()
+                    .unwrap_or_else(|_| BigInt::from(0));
+            }
             return Ok(Some(n));
         }
     }
