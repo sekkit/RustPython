@@ -4421,7 +4421,8 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 } else {
                     xd.clone()
                 };
-                return Ok(PyDecimal::to_py(vm, n));
+                let r = _decimal_core::apply_context(vm, &ctx, n)?;
+                return Ok(PyDecimal::to_py(vm, r));
             }
             let r = if max_mag_picks_a(&xd, &yd) { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
@@ -4505,7 +4506,8 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 } else {
                     xd.clone()
                 };
-                return Ok(PyDecimal::to_py(vm, n));
+                let r = _decimal_core::apply_context(vm, &ctx, n)?;
+                return Ok(PyDecimal::to_py(vm, r));
             }
             let r = if min_mag_picks_a(&xd, &yd) { xd } else { yd };
             let r = _decimal_core::apply_context(vm, &ctx, r)?;
