@@ -5799,6 +5799,7 @@ class CWhitebox(unittest.TestCase):
 
 @requires_docstrings
 @requires_cdecimal
+@unittest.expectedFailure  # TODO: RUSTPYTHON; missing __text_signature__ on decimal methods (FuncArgs doesn't generate signatures)
 class SignatureTest(unittest.TestCase):
     """Function signatures"""
 
