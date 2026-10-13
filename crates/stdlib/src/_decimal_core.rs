@@ -788,6 +788,16 @@ pub(crate) fn apply_context(
                         return Err(ctx_trap_exc(vm, "Rounded", "rounded result"));
                     }
                 }
+                // IEEE 754: Underflow is signaled when the result is both
+                // subnormal AND inexact. The inexactness comes from the
+                // rounding above (pwsx807: power 1E-20 0.5 -> 1.0000000000E-10
+                // Underflow Subnormal Inexact Rounded).
+                if inexact {
+                    ctx.set_flag(vm, "Underflow")?;
+                    if ctx.trap(vm, "Underflow")? {
+                        return Err(ctx_trap_exc(vm, "Underflow", "underflow"));
+                    }
+                }
             }
         }
     } else if (dec.exp as i128) + coeff_digits_of(&dec.coeff) as i128 - 1 > ctx.emax as i128 {

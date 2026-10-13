@@ -3721,6 +3721,47 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                     if ctx.trap(vm, "Rounded")? {
                         return Err(new_decimal_error(vm, "Rounded", "rounded result"));
                     }
+                    // IEEE 754: Underflow when subnormal AND inexact.
+                    // The inexactness from the transcendental computation
+                    // wasn't visible to apply_context (no digits dropped in
+                    // rounding), so Underflow wasn't set there. Set it here
+                    // if the result is subnormal (pwsx807: power 1E-20 0.5
+                    // -> 1.000000000E-10 Underflow Subnormal Inexact Rounded).
+                    let adj = r.exp + _decimal_core::coeff_digits_of(&r.coeff) as isize - 1;
+                    if adj < ctx.emin {
+                        ctx.set_flag(vm, "Underflow")?;
+                        if ctx.trap(vm, "Underflow")? {
+                            return Err(_decimal_core::ctx_trap_exc(vm, "Underflow", "underflow"));
+                        }
+                    }
+                }
+            } else if r.special == Special::Finite && r.is_zero()
+                && !ad.is_zero() && ad.special == Special::Finite
+            {
+                // The non-integer power underflowed to zero in the wide ctx.
+                // apply_context saw a zero and returned early (only Clamped).
+                // The computation was inexact and subnormal — re-signal the
+                // missing flags (powx4013: power 1.1E-1999997 1.1 ->
+                // 0E-1000008 Clamped Inexact Rounded Subnormal Underflow).
+                let is_noninteger = bd.exp < 0
+                    && (&bd.coeff % BigInt::from(10).pow((-bd.exp) as u32)) != BigInt::from(0);
+                if is_noninteger {
+                    ctx.set_flag(vm, "Subnormal")?;
+                    if ctx.trap(vm, "Subnormal")? {
+                        return Err(_decimal_core::ctx_trap_exc(vm, "Subnormal", "subnormal"));
+                    }
+                    ctx.set_flag(vm, "Underflow")?;
+                    if ctx.trap(vm, "Underflow")? {
+                        return Err(_decimal_core::ctx_trap_exc(vm, "Underflow", "underflow"));
+                    }
+                    ctx.set_flag(vm, "Inexact")?;
+                    if ctx.trap(vm, "Inexact")? {
+                        return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                    }
+                    ctx.set_flag(vm, "Rounded")?;
+                    if ctx.trap(vm, "Rounded")? {
+                        return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+                    }
                 }
             }
             Ok(PyDecimal::to_py(vm, r))
