@@ -3702,6 +3702,27 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 return Ok(PyDecimal::to_py(vm, r));
             }
             let r = _decimal_core::dec_pow_int(&ctx, vm, &ad, &bd)?;
+            // The non-integer power path (exp(b*ln(a))) is transcendental:
+            // the result is always inexact, but when it fills the precision
+            // (no padding needed), _decimal_core doesn't signal Inexact.
+            // Signal here (user-facing, no VM perf cliff) for non-integer
+            // exponents on non-1 bases with finite nonzero results
+            // (pwsx027: power 4.0 0.5 -> 2.00000000 Inexact Rounded).
+            if r.special == Special::Finite && !r.is_zero() {
+                let is_noninteger = bd.exp < 0
+                    && (&bd.coeff % BigInt::from(10).pow((-bd.exp) as u32)) != BigInt::from(0);
+                let base_is_one = ad.coeff == BigInt::from(1) && ad.exp == 0 && !ad.sign;
+                if is_noninteger && !base_is_one {
+                    ctx.set_flag(vm, "Inexact")?;
+                    if ctx.trap(vm, "Inexact")? {
+                        return Err(new_decimal_error(vm, "Inexact", "inexact result"));
+                    }
+                    ctx.set_flag(vm, "Rounded")?;
+                    if ctx.trap(vm, "Rounded")? {
+                        return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+                    }
+                }
+            }
             Ok(PyDecimal::to_py(vm, r))
         }
 
