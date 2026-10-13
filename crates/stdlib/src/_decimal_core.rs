@@ -1743,6 +1743,10 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
                         let dom_adj = dominant.exp + digits - 1;
                         let borrow_coeff = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
                         let borrow_exp = dom_adj - ctx.prec as isize;
+                        ctx.set_flag(vm, "Rounded")?;
+                        if ctx.trap(vm, "Rounded")? {
+                            return Err(new_decimal_error(vm, "Rounded", "rounded result"));
+                        }
                         return apply_context(vm, ctx, Dec {
                             sign: dominant.sign,
                             coeff: borrow_coeff,
@@ -1781,6 +1785,27 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
                     _ => 0,
                 }
             } else {
+                // For opposite-sign with Down/Floor(positive)/Ceiling(negative)
+                // and a power-of-10 dominant, the borrow is 10^prec-1 (all 9s)
+                // at a lower exponent, not dominant-1 which gives the wrong digit
+                // count (addx1131: 1.000000E-94 - 1e-200 -> 9.999999E-95, not
+                // 9.99999E-95 from 1000000-1=999999).
+                let s = dominant.coeff.to_string();
+                let is_pow10 = s.starts_with('1') && s[1..].chars().all(|c| c == '0');
+                let toward_borrow = matches!(ctx.rounding, Rounding::Down)
+                    || (matches!(ctx.rounding, Rounding::Floor) && !dominant.sign)
+                    || (matches!(ctx.rounding, Rounding::Ceiling) && dominant.sign);
+                if is_pow10 && toward_borrow {
+                    let dom_adj = dominant.exp + dominant.coeff_digits() as isize - 1;
+                    let borrow_coeff = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
+                    let borrow_exp = dom_adj - ctx.prec as isize;
+                    return apply_context(vm, ctx, Dec {
+                        sign: dominant.sign,
+                        coeff: borrow_coeff,
+                        exp: borrow_exp,
+                        special: Special::Finite,
+                    });
+                }
                 match ctx.rounding {
                     Rounding::Down => -1,
                     Rounding::Floor if !dominant.sign => -1,
