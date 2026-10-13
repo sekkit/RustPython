@@ -3709,7 +3709,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             // exponents on non-1 bases with finite nonzero results
             // (pwsx027: power 4.0 0.5 -> 2.00000000 Inexact Rounded).
             if r.special == Special::Finite && !r.is_zero() {
-                let is_noninteger = bd.exp < 0
+                let is_noninteger = bd.exp < 0 && bd.exp > -18
                     && (&bd.coeff % BigInt::from(10).pow((-bd.exp) as u32)) != BigInt::from(0);
                 let base_is_one = ad.coeff == BigInt::from(1) && ad.exp == 0 && !ad.sign;
                 if is_noninteger && !base_is_one {
@@ -3743,7 +3743,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 // The computation was inexact and subnormal — re-signal the
                 // missing flags (powx4013: power 1.1E-1999997 1.1 ->
                 // 0E-1000008 Clamped Inexact Rounded Subnormal Underflow).
-                let is_noninteger = bd.exp < 0
+                let is_noninteger = bd.exp < 0 && bd.exp > -18
                     && (&bd.coeff % BigInt::from(10).pow((-bd.exp) as u32)) != BigInt::from(0);
                 if is_noninteger {
                     ctx.set_flag(vm, "Subnormal")?;
