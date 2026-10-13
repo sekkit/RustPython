@@ -2172,7 +2172,7 @@ pub(crate) fn dec_div(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
         // 1/7 at prec 28 ends ...428|5 and must round up, not to even.
         let num_digits = coeff_digits_of(&num);
         let den_digits = coeff_digits_of(&den);
-        let shift = (prec + 5 + den_digits).saturating_sub(num_digits);
+        let shift = (prec + 2 + den_digits).saturating_sub(num_digits);
         let scaled = &num * BigInt::from(10).pow(shift as u32);
         let quotient = &scaled / &den;
         let remainder = &scaled % &den;
