@@ -1727,6 +1727,30 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
             // 1 + 1e-9999999 -> 1.000000000000000000000000000.
             let digits = dominant.coeff_digits() as isize;
             if digits < ctx.prec {
+                // For opposite-sign with modes that round toward the borrow
+                // (Down always; Floor for positive; Ceiling for negative),
+                // the padded result (100.000...0) is wrong — the correct
+                // answer is all 9s (99.999...9). Compute the borrow directly:
+                // (10^prec - 1) at exp = dom_adjusted - 1 - prec + 1.
+                if !same_sign {
+                    let toward_borrow = match ctx.rounding {
+                        Rounding::Down => true,
+                        Rounding::Floor => !dominant.sign,
+                        Rounding::Ceiling => dominant.sign,
+                        _ => false,
+                    };
+                    if toward_borrow {
+                        let dom_adj = dominant.exp + digits - 1;
+                        let borrow_coeff = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
+                        let borrow_exp = dom_adj - ctx.prec as isize;
+                        return apply_context(vm, ctx, Dec {
+                            sign: dominant.sign,
+                            coeff: borrow_coeff,
+                            exp: borrow_exp,
+                            special: Special::Finite,
+                        });
+                    }
+                }
                 let extra = (ctx.prec - digits) as u32;
                 let padded = Dec {
                     sign: dominant.sign,
