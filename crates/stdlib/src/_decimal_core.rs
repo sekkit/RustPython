@@ -1688,7 +1688,16 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
         let small_digits = small.coeff_digits() as isize;
         // Fast path: gap > prec AND (same-sign, or the exact path is
         // unbounded so the borrow can't reach the kept region).
-        if gap > ctx.prec && (same_sign || gap > ctx.prec + small_digits) {
+        // EXCEPTION: for opposite-sign with Down/Floor AND the dominant
+        // needs padding (digits < prec), the padded result is 100.000...0
+        // but the correct answer is 99.999...9 (the borrow). The mode-aware
+        // adj only handles the full-precision case; for padded results with
+        // Down/Floor, fall through to the exact path (ddadd71100: add 1e+2
+        // -1e-383 under ROUND_DOWN -> 99.99999999999999, not 100.0000000000000).
+        let dom_digits = dominant.coeff_digits() as isize;
+        let skip_for_mode = !same_sign && dom_digits < ctx.prec
+            && matches!(ctx.rounding, Rounding::Down | Rounding::Floor);
+        if gap > ctx.prec && (same_sign || gap > ctx.prec + small_digits) && !skip_for_mode {
             ctx.set_flag(vm, "Inexact")?;
             if ctx.trap(vm, "Inexact")? {
                 return Err(new_decimal_error(vm, "Inexact", "inexact result"));
