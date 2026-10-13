@@ -1774,6 +1774,28 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
                 if ctx.trap(vm, "Rounded")? {
                     return Err(new_decimal_error(vm, "Rounded", "rounded result"));
                 }
+                // Mode-aware rounding for the padded case: same-sign with
+                // Up/Ceiling rounds the padded value up (+1 in the last
+                // digit, addx62072: add 12345678 1E-10 ROUND_UP ->
+                // 12345678.00000001, not 12345678.00000000).
+                let pad_adj: i32 = if same_sign {
+                    match ctx.rounding {
+                        Rounding::Up => 1,
+                        Rounding::Ceiling if !dominant.sign => 1,
+                        Rounding::Floor if dominant.sign => 1,
+                        _ => 0,
+                    }
+                } else {
+                    0
+                };
+                if pad_adj != 0 {
+                    return apply_context(vm, ctx, Dec {
+                        sign: padded.sign,
+                        coeff: &padded.coeff + BigInt::from(pad_adj as u32),
+                        exp: padded.exp,
+                        special: Special::Finite,
+                    });
+                }
                 return apply_context(vm, ctx, padded);
             }
             ctx.set_flag(vm, "Rounded")?;
