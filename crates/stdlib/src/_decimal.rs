@@ -3840,7 +3840,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 || d.special == _decimal_core::Special::SignalingNaN
             {
                 let payload_digits = _decimal_core::coeff_digits_of(&d.coeff) as isize;
-                if payload_digits > ctx.prec {
+                if payload_digits >= ctx.prec {
                     ctx.set_flag(vm, "InvalidOperation")?;
                     if ctx.trap(vm, "InvalidOperation")? {
                         return Err(new_decimal_error(vm, "InvalidOperation", "NaN payload too long"));
