@@ -1711,7 +1711,15 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
             // exact value is just below.
             if !same_sign {
                 let dom_adj = dominant.exp + dominant.coeff_digits() as isize - 1;
-                if dom_adj == ctx.emin {
+                // Only signal Subnormal+Underflow when the borrow changes the
+                // leading digit (the dominant is a power of 10 at the Emin
+                // boundary: 1E-383 - 1E-401 -> exact dips below Emin).
+                // For non-power-of-10 dominants the borrow changes a lower
+                // digit and the adjusted stays at Emin (addx1132: 1.000001E-95
+                // - 1e-200 -> 1.000000E-95, no Subnormal).
+                let ds = dominant.coeff.to_string();
+                let is_pow10 = ds.starts_with('1') && ds[1..].chars().all(|c| c == '0');
+                if dom_adj == ctx.emin && is_pow10 {
                     ctx.set_flag(vm, "Subnormal")?;
                     if ctx.trap(vm, "Subnormal")? {
                         return Err(ctx_trap_exc(vm, "Subnormal", "subnormal"));
