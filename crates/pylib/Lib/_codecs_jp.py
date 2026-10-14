@@ -1,4 +1,4 @@
-import codecs
+﻿import codecs
 import sys
 
 if sys.platform != 'win32':
@@ -14,6 +14,8 @@ class _Codec:
         return codecs.code_page_encode(self.code_page, input, errors)
 
     def decode(self, input, errors='strict', final=True):
+        if isinstance(input, str):
+            raise TypeError("decoding to str: need a bytes-like object, got str")
         return codecs.code_page_decode(self.code_page, input, errors, final)
 
 
@@ -24,6 +26,11 @@ _CODECS = {
     'shift_jis': (932, 'shift_jis'),
     'cp932': (932, 'shift_jis'),
     'jisx0213': (932, 'shift_jis'),
+    'euc_jp': (20932, 'euc_jp'),
+    'shift_jis_2004': (932, 'shift_jis_2004'),
+    'euc_jis_2004': (20932, 'euc_jis_2004'),
+    'shift_jisx0213': (932, 'shift_jisx0213'),
+    'euc_jisx0213': (20932, 'euc_jisx0213'),
 }
 
 

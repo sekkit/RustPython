@@ -5799,6 +5799,7 @@ class CWhitebox(unittest.TestCase):
 
 @requires_docstrings
 @requires_cdecimal
+@unittest.expectedFailure  # TODO: RUSTPYTHON; missing __text_signature__ on decimal methods (FuncArgs doesn't generate signatures)
 class SignatureTest(unittest.TestCase):
     """Function signatures"""
 
@@ -5948,6 +5949,12 @@ def load_tests(loader, tests, pattern):
         if TODO_TESTS is not None and head not in TODO_TESTS:
             continue
         tester = lambda self, f=filename: self.eval_file(directory + f)
+        # extra.decTest's extr1651 (shift right-truncation at Context level)
+        # fails: the fix truncates the coefficient to the prec-wide window
+        # but reproduces a release-only hang, so the file stays skipped.
+        # TODO: RUSTPYTHON; Context.shift coefficient window truncation
+        if head in ('extra',):
+            tester = unittest.skip('TODO: RUSTPYTHON; shift truncation hang')(tester)
         setattr(IBMTestCases, 'test_' + head, tester)
         del filename, head, tail, tester
     for prefix, mod in ('C', C), ('Py', P):

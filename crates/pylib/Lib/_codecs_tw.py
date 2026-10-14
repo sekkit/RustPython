@@ -1,4 +1,4 @@
-import codecs
+﻿import codecs
 import sys
 
 if sys.platform != 'win32':
@@ -14,6 +14,8 @@ class _Codec:
         return codecs.code_page_encode(self.code_page, input, errors)
 
     def decode(self, input, errors='strict', final=True):
+        if isinstance(input, str):
+            raise TypeError("decoding to str: need a bytes-like object, got str")
         return codecs.code_page_decode(self.code_page, input, errors, final)
 
 
@@ -24,6 +26,9 @@ class _Codec:
 _CODECS = {
     'big5': (950, 'big5'),
     'cp950': (950, 'big5'),
+    # big5hkscs: code page 951 not available on all Windows builds;
+    # map to Big5 (950) as an approximation for ASCII-range chars.
+    'big5hkscs': (950, 'big5hkscs'),
 }
 
 
