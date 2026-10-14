@@ -1042,14 +1042,17 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 return Ok(PyDecimal::to_py(vm, n));
             }
             let mut d = self.d.clone();
+            // Rounded when the operand's exponent is below Etiny (decNumber
+            // rule; see the Context-level normalize).
+            let etiny = ctx.emin - (ctx.prec as isize - 1);
+            let operand_clamped = d.exp < etiny;
             if d.is_zero() {
                 d.exp = 0;
                 let r = _decimal_core::apply_context(vm, &ctx, d)?;
                 return Ok(PyDecimal::to_py(vm, r));
             }
             // Strip trailing zeros with the origami cap (see the
-            // Context-level normalize). No Rounded flag: CPython does not
-            // signal one here (redx213's expectation is decNumber-specific).
+            // Context-level normalize).
             let cap = normalize_exp_cap(&ctx);
             while d.coeff_digits() > 1
                 && (&d.coeff % BigInt::from(10)) == BigInt::from(0)
@@ -1058,7 +1061,24 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 d.coeff /= BigInt::from(10);
                 d.exp += 1;
             }
+            if operand_clamped {
+                ctx.set_flag(vm, "Rounded")?;
+                if ctx.trap(vm, "Rounded")? {
+                    return Err(new_decimal_error(vm, "Rounded", "normalize"));
+                }
+            }
             let mut r = _decimal_core::apply_context(vm, &ctx, d)?;
+            // The underflow clamp can INTRODUCE trailing zeros (redx215);
+            // reduce strips the final result too (silently, same cap).
+            if !r.is_special() && !r.is_zero() {
+                while r.coeff_digits() > 1
+                    && (&r.coeff % BigInt::from(10)) == BigInt::from(0)
+                    && r.exp + 1 <= cap
+                {
+                    r.coeff /= BigInt::from(10);
+                    r.exp += 1;
+                }
+            }
             // Underflow to zero: CPython normalizes to plain '0' (exp 0).
             if r.is_zero() {
                 r.exp = 0;
@@ -4998,6 +5018,11 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 return Ok(PyDecimal::to_py(vm, n));
             }
             let mut d = xd.clone();
+            // Rounded when the operand's exponent is below Etiny (decNumber
+            // rule: redx213 reduce 0.100E-999 -> 1E-1000 Subnormal Rounded,
+            // while redx212 at exp == Etiny gets no Rounded).
+            let etiny = ctx.emin - (ctx.prec as isize - 1);
+            let operand_clamped = d.exp < etiny;
             if d.is_zero() {
                 d.exp = 0;
             } else {
@@ -5014,7 +5039,24 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                     d.exp += 1;
                 }
             }
+            if operand_clamped {
+                ctx.set_flag(vm, "Rounded")?;
+                if ctx.trap(vm, "Rounded")? {
+                    return Err(new_decimal_error(vm, "Rounded", "normalize"));
+                }
+            }
             let mut r = _decimal_core::apply_context(vm, &ctx, d)?;
+            // The underflow clamp can INTRODUCE trailing zeros (redx215);
+            // reduce strips the final result too (silently, same cap).
+            if !r.is_special() && !r.is_zero() {
+                while r.coeff_digits() > 1
+                    && (&r.coeff % BigInt::from(10)) == BigInt::from(0)
+                    && r.exp + 1 <= normalize_exp_cap(&ctx)
+                {
+                    r.coeff /= BigInt::from(10);
+                    r.exp += 1;
+                }
+            }
             // Underflow to zero: CPython normalizes to plain '0' (exp 0).
             if r.is_zero() {
                 r.exp = 0;
