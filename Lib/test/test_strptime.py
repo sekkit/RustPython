@@ -88,6 +88,7 @@ class LocaleTime_Tests(unittest.TestCase):
                             "timezone %s not found in %s" %
                             (timezone, self.LT_ins.timezone))
 
+    @unittest.expectedFailure  # TODO: RUSTPYTHON; Windows locale defaults differ (system vs C/POSIX)
     def test_date_time(self):
         # Check that LC_date_time, LC_date, and LC_time are correct
         # the magic date is used so as to not have issues with %c when day of
