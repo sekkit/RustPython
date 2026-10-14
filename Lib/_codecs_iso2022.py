@@ -1,4 +1,4 @@
-"""ISO-2022-JP family codec module (Windows code-page backend).
+﻿"""ISO-2022-JP family codec module (Windows code-page backend).
 
 Implements ISO-2022-JP, JP-1, JP-2, JP-2004, JP-3, JP-EXT, and
 ISO-2022-KR by translating between JIS X 0208 and Shift-JIS (cp932).
@@ -161,6 +161,8 @@ class _Codec:
         return (bytes(out), len(input))
 
     def decode(self, input, errors='strict', final=True):
+        if isinstance(input, str):
+            raise TypeError("decoding to str: need a bytes-like object, got str")
         data = bytes(input)
         out = []
         state = ASCII

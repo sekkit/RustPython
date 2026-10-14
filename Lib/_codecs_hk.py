@@ -1,4 +1,4 @@
-import codecs
+﻿import codecs
 import sys
 
 if sys.platform != 'win32':
@@ -14,6 +14,8 @@ class _Codec:
         return codecs.code_page_encode(self.code_page, input, errors)
 
     def decode(self, input, errors='strict', final=True):
+        if isinstance(input, str):
+            raise TypeError("decoding to str: need a bytes-like object, got str")
         return codecs.code_page_decode(self.code_page, input, errors, final)
 
 

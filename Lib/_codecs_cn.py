@@ -100,6 +100,8 @@ class _HZCodec:
         return bytes(out), in_double
 
     def decode(self, input, errors='strict', final=True):
+        if isinstance(input, str):
+            raise TypeError("decoding to str: need a bytes-like object, got str")
         out = []
         pos = 0
         length = len(input)

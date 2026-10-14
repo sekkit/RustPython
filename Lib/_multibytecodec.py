@@ -46,6 +46,11 @@ class MultibyteIncrementalDecoder(codecs.BufferedIncrementalDecoder):
 class MultibyteStreamReader(codecs.StreamReader):
     codec = None
 
+    def __init__(self, stream, errors='strict'):
+        if self.codec is None:
+            raise AttributeError('codec')
+        super().__init__(stream, errors)
+
     def decode(self, input, errors='strict'):
         return self.codec.decode(input, errors, True)
 
@@ -61,6 +66,11 @@ class MultibyteStreamReader(codecs.StreamReader):
 
 class MultibyteStreamWriter(codecs.StreamWriter):
     codec = None
+
+    def __init__(self, stream, errors='strict'):
+        if self.codec is None:
+            raise AttributeError('codec')
+        super().__init__(stream, errors)
 
     def encode(self, input, errors='strict'):
         return self.codec.encode(input, errors)
