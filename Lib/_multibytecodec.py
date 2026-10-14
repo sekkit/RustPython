@@ -4,8 +4,36 @@ import codecs
 class MultibyteIncrementalEncoder(codecs.IncrementalEncoder):
     codec = None
 
+    def __init__(self, errors='strict'):
+        super().__init__(errors)
+        self._enc = None
+
+    def _get_encoder(self):
+        if self._enc is None and hasattr(self.codec, '_StatefulEncoder'):
+            self._enc = self.codec._StatefulEncoder(self.codec.name)
+        return self._enc
+
     def encode(self, input, final=False):
+        enc = self._get_encoder()
+        if enc is not None:
+            return enc.encode(input, self.errors)[0]
         return self.codec.encode(input, self.errors)[0]
+
+    def getstate(self):
+        enc = self._get_encoder()
+        if enc is not None:
+            return getattr(enc, '_state', 0)
+        return 0
+
+    def setstate(self, state):
+        enc = self._get_encoder()
+        if enc is not None:
+            enc._state = state
+
+    def reset(self):
+        enc = self._get_encoder()
+        if enc is not None:
+            enc._state = 0
 
 
 class MultibyteIncrementalDecoder(codecs.BufferedIncrementalDecoder):

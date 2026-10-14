@@ -55,7 +55,62 @@ def _sjis_to_jis(s1, s2):
     return j1, j2
 
 
+class _StatefulEncoder:
+    """Stateful ISO-2022 encoder that tracks escape mode between calls."""
+
+    def __init__(self, name):
+        self.name = name
+        self._state = 0  # 0=ASCII, 1=KANJI
+
+    def encode(self, input, errors='strict'):
+        out = bytearray()
+        state = self._state
+        for idx, ch in enumerate(input):
+            o = ord(ch)
+            if o < 0x80:
+                if state != ASCII:
+                    out.extend(b'\x1b(B')
+                    state = ASCII
+                out.append(o)
+            else:
+                try:
+                    r = codecs.code_page_encode(932, ch, errors)
+                    sb = r[0] if isinstance(r, tuple) else r
+                except Exception:
+                    if errors == 'replace':
+                        if state != ASCII:
+                            out.extend(b'\x1b(B')
+                            state = ASCII
+                        out.append(0x3f)
+                        continue
+                    elif errors == 'ignore':
+                        continue
+                    raise UnicodeEncodeError(
+                        self.name, input, idx, idx + 1, 'illegal character')
+                if len(sb) == 2:
+                    j1, j2 = _sjis_to_jis(sb[0], sb[1])
+                    if state != KANJI:
+                        out.extend(b'\x1b$B')
+                        state = KANJI
+                    out.append(j1)
+                    out.append(j2)
+                elif len(sb) == 1 and sb[0] >= 0xa1:
+                    if state != ASCII:
+                        out.extend(b'\x1b(B')
+                        state = ASCII
+                    out.append(sb[0])
+                else:
+                    if state != ASCII:
+                        out.extend(b'\x1b(B')
+                        state = ASCII
+                    out.append(sb[0])
+        self._state = state
+        return (bytes(out), len(input))
+
+
 class _Codec:
+    _StatefulEncoder = _StatefulEncoder
+
     def __init__(self, name):
         self.name = name
 
