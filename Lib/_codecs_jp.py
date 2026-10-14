@@ -24,6 +24,11 @@ _CODECS = {
     'shift_jis': (932, 'shift_jis'),
     'cp932': (932, 'shift_jis'),
     'jisx0213': (932, 'shift_jis'),
+    'euc_jp': (20932, 'euc_jp'),
+    'shift_jis_2004': (932, 'shift_jis_2004'),
+    'euc_jis_2004': (20932, 'euc_jis_2004'),
+    'shift_jisx0213': (932, 'shift_jisx0213'),
+    'euc_jisx0213': (20932, 'euc_jisx0213'),
 }
 
 

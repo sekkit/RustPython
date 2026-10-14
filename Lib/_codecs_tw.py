@@ -24,6 +24,9 @@ class _Codec:
 _CODECS = {
     'big5': (950, 'big5'),
     'cp950': (950, 'big5'),
+    # big5hkscs: code page 951 not available on all Windows builds;
+    # map to Big5 (950) as an approximation for ASCII-range chars.
+    'big5hkscs': (950, 'big5hkscs'),
 }
 
 
