@@ -86,8 +86,15 @@ class _HZCodec:
             try:
                 encoded, _ = codecs.code_page_encode(self.code_page, char, errors)
             except UnicodeEncodeError:
+                if errors != 'strict':
+                    # Custom handler already processed — skip
+                    pos = pos + 1
+                    continue
                 raise UnicodeEncodeError('hz', input, start, pos,
                                          'illegal multibyte sequence') from None
+            if not encoded:
+                # Character was skipped by error handler
+                continue
             if len(encoded) != 2:
                 raise UnicodeEncodeError('hz', input, start, pos,
                                          'illegal multibyte sequence')

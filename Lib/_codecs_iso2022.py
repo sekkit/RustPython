@@ -1,4 +1,4 @@
-﻿"""ISO-2022-JP family codec module (Windows code-page backend).
+"""ISO-2022-JP family codec module (Windows code-page backend).
 
 Implements ISO-2022-JP, JP-1, JP-2, JP-2004, JP-3, JP-EXT, and
 ISO-2022-KR by translating between JIS X 0208 and Shift-JIS (cp932).
@@ -76,6 +76,8 @@ class _StatefulEncoder:
                 try:
                     r = codecs.code_page_encode(932, ch, errors)
                     sb = r[0] if isinstance(r, tuple) else r
+                    if not sb:
+                        continue
                 except Exception:
                     if errors == 'replace':
                         if state != ASCII:
@@ -85,6 +87,23 @@ class _StatefulEncoder:
                         continue
                     elif errors == 'ignore':
                         continue
+                    # Custom error handler
+                    try:
+                        handler = codecs.lookup_error(errors)
+                        exc = UnicodeEncodeError(
+                            self.name, input, idx, idx + 1,
+                            'illegal character')
+                        replacement, pos = handler(exc)
+                        if isinstance(replacement, str):
+                            out.extend(replacement.encode('ascii', 'ignore'))
+                        if pos < 0 or pos >= len(input):
+                            raise IndexError('index out of range')
+                        idx = pos - 1
+                        continue
+                    except (IndexError, LookupError):
+                        raise
+                    except Exception:
+                        pass
                     raise UnicodeEncodeError(
                         self.name, input, idx, idx + 1, 'illegal character')
                 if len(sb) == 2:
@@ -128,6 +147,8 @@ class _Codec:
                 try:
                     r = codecs.code_page_encode(932, ch, errors)
                     sb = r[0] if isinstance(r, tuple) else r
+                    if not sb:
+                        continue
                 except Exception:
                     if errors == 'replace':
                         if state != ASCII:
@@ -137,6 +158,23 @@ class _Codec:
                         continue
                     elif errors == 'ignore':
                         continue
+                    # Custom error handler
+                    try:
+                        handler = codecs.lookup_error(errors)
+                        exc = UnicodeEncodeError(
+                            self.name, input, idx, idx + 1,
+                            'illegal character')
+                        replacement, pos = handler(exc)
+                        if isinstance(replacement, str):
+                            out.extend(replacement.encode('ascii', 'ignore'))
+                        if pos < 0 or pos >= len(input):
+                            raise IndexError('index out of range')
+                        idx = pos - 1
+                        continue
+                    except (IndexError, LookupError):
+                        raise
+                    except Exception:
+                        pass
                     raise UnicodeEncodeError(
                         self.name, input, idx, idx + 1, 'illegal character')
                 if len(sb) == 2:
