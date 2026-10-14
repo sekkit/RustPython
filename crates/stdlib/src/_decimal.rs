@@ -186,7 +186,7 @@ mod _decimal {
     /// the chosen operand depends on representation (sign and exponent), not
     /// on argument order. Returns true when the first operand `a` is the one
     /// CPython selects. Same rule is reused by `max_mag` on a magnitude tie.
-    /// (Restored from f38aaae14 — f0a813ee2 accidentally reverted it.)
+    /// (Restored from f38aaae14 Ã¢â‚¬â€ f0a813ee2 accidentally reverted it.)
     fn max_picks_a(a: &Dec, b: &Dec) -> bool {
         match dec_cmp(a, b) {
             1 => true,
@@ -248,7 +248,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float/str) to Dec.
-    /// Used by Decimal constructor — accepts str.
+    /// Used by Decimal constructor Ã¢â‚¬â€ accepts str.
     fn to_dec(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -279,7 +279,7 @@ mod _decimal {
     }
 
     /// Convert a Python object (Decimal/int/float) to Dec.
-    /// Used by Context methods — rejects str (CPython behavior).
+    /// Used by Context methods Ã¢â‚¬â€ rejects str (CPython behavior).
     fn to_dec_ctx(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Dec> {
         if let Some(pd) = obj.downcast_ref::<PyDecimal>() {
             return Ok(pd.d.clone());
@@ -898,7 +898,7 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
             };
             // Wrap in the DecimalTuple namedtuple (sign, digits, exponent).
             // A process-level shared class so all _decimal module instances
-            // (fresh re-imports) use the same type — matches the pickle
+            // (fresh re-imports) use the same type Ã¢â‚¬â€ matches the pickle
             // interchange test's identity expectations.
             let dt_cls = DECIMAL_TUPLE
                 .lock()
@@ -2413,7 +2413,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
         type Args = FuncArgs;
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
-            // CPython: Decimal(value[, context]) — the second positional may be
+            // CPython: Decimal(value[, context]) Ã¢â‚¬â€ the second positional may be
             // a Context; anything more or a non-Context second arg -> TypeError.
             if args.args.len() > 2 {
                 return Err(vm.new_type_error(
@@ -2549,7 +2549,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 Ok(b) => b,
                 Err(_) => {
                     // Fraction comparison: exact via numerator/denominator.
-                    // self (Decimal) vs other (Fraction) — compare the exact
+                    // self (Decimal) vs other (Fraction) Ã¢â‚¬â€ compare the exact
                     // rational self.d against num/den.
                     // Specials first: Infinity/NaN never convert to Dec here
                     // (Fraction is not a Decimal), but compare naturally.
@@ -2588,7 +2588,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                                     let result = matches!(op, PyComparisonOp::Ne);
                                     return Ok(PyComparisonValue::Implemented(result));
                                 }
-                                // Infinity ±: always greater/less than any
+                                // Infinity Ã‚Â±: always greater/less than any
                                 // finite rational.
                                 let self_pos = !zelf.d.sign;
                                 let result = match op {
@@ -2781,7 +2781,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                         "unhashable type: 'decimal.Decimal'".to_string(),
                     )),
                     Special::NaN => Ok(zelf.as_object().get_id() as hash::PyHash),
-                    // CPython: hash matches the float hash (±inf).
+                    // CPython: hash matches the float hash (Ã‚Â±inf).
                     Special::Infinity => {
                         let f: f64 = if d.sign { f64::NEG_INFINITY } else { f64::INFINITY };
                         let float_obj: PyObjectRef = vm.ctx.new_float(f).into();
@@ -3244,6 +3244,13 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
         clamp: PyMutex<isize>,
         traps: PyMutex<PyDictRef>,
         flags: PyMutex<PyDictRef>,
+        // Cached SignalDict views: repeated `.traps`/`.flags` access must
+        // return the SAME object (CPython caches the view on the context);
+        // fresh temporaries break id()-identity checks in test_copy.
+        #[pytraverse(skip)]
+        traps_view: PyMutex<Option<PyObjectRef>>,
+        #[pytraverse(skip)]
+        flags_view: PyMutex<Option<PyObjectRef>>,
     }
 
     impl PyContext {
@@ -3268,6 +3275,8 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 clamp: PyMutex::new(0),
                 traps: PyMutex::new(traps),
                 flags: PyMutex::new(flags),
+                traps_view: PyMutex::new(None),
+                flags_view: PyMutex::new(None),
             }
         }
 
@@ -3391,7 +3400,14 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
         #[pygetset]
         fn traps(&self, vm: &VirtualMachine) -> PyObjectRef {
             // Return a live SignalDict view sharing this Context's traps dict.
-            SignalDict { dict: Some(self.traps.lock().clone()) }.into_ref(&vm.ctx).into()
+            // Cache the view: repeated access must yield the SAME object.
+            if let Some(v) = self.traps_view.lock().clone() {
+                return v;
+            }
+            let v: PyObjectRef =
+                SignalDict { dict: Some(self.traps.lock().clone()) }.into_ref(&vm.ctx).into();
+            *self.traps_view.lock() = Some(v.clone());
+            v
         }
         #[pygetset(setter)]
         fn set_traps(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
@@ -3418,12 +3434,22 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 }
             }
             *self.traps.lock() = dict_value;
+            // Invalidate the cached view; the next access rebuilds it
+            // around the new dict.
+            *self.traps_view.lock() = None;
             Ok(())
         }
         #[pygetset]
         fn flags(&self, vm: &VirtualMachine) -> PyObjectRef {
             // Return a live SignalDict view sharing this Context's flags dict.
-            SignalDict { dict: Some(self.flags.lock().clone()) }.into_ref(&vm.ctx).into()
+            // Cache the view: repeated access must yield the SAME object.
+            if let Some(v) = self.flags_view.lock().clone() {
+                return v;
+            }
+            let v: PyObjectRef =
+                SignalDict { dict: Some(self.flags.lock().clone()) }.into_ref(&vm.ctx).into();
+            *self.flags_view.lock() = Some(v.clone());
+            v
         }
         #[pygetset(setter)]
         fn set_flags(&self, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
@@ -3447,6 +3473,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 }
             }
             *self.flags.lock() = dict_value;
+            *self.flags_view.lock() = None;
             Ok(())
         }
 
@@ -3470,6 +3497,8 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 clamp: PyMutex::new(*zelf.clamp.lock()),
                 traps: PyMutex::new(new_traps),
                 flags: PyMutex::new(new_flags),
+                traps_view: PyMutex::new(None),
+                flags_view: PyMutex::new(None),
             }
         }
 
@@ -3610,7 +3639,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 let a_exp = xd.exp;
                 let diff = (a_exp - prod_exp).max(prod_exp - a_exp);
                 let inexact = if diff > ctx.prec + 10 {
-                    // Huge gap (subnormal clamping) → definitely inexact.
+                    // Huge gap (subnormal clamping) Ã¢â€ â€™ definitely inexact.
                     true
                 } else if prod_exp < a_exp {
                     let d = (a_exp - prod_exp) as u32;
@@ -3758,7 +3787,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             {
                 // The non-integer power underflowed to zero in the wide ctx.
                 // apply_context saw a zero and returned early (only Clamped).
-                // The computation was inexact and subnormal — re-signal the
+                // The computation was inexact and subnormal Ã¢â‚¬â€ re-signal the
                 // missing flags (powx4013: power 1.1E-1999997 1.1 ->
                 // 0E-1000008 Clamped Inexact Rounded Subnormal Underflow).
                 let is_noninteger = bd.exp < 0 && {
@@ -3928,7 +3957,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let trap_list = vm.ctx.new_list(trap_names);
             let flag_list = vm.ctx.new_list(flag_names);
             // CPython order: (prec, rounding, Emin, Emax, capitals, clamp,
-            // flags, traps) — flags is the 7th positional arg, traps the 8th.
+            // flags, traps) Ã¢â‚¬â€ flags is the 7th positional arg, traps the 8th.
             let args: PyObjectRef = vm.ctx.new_tuple(vec![
                 vm.ctx.new_int(prec).into(),
                 vm.ctx.new_str(rounding_str).into(),
@@ -4084,7 +4113,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             let order = |d: &Dec| -> i64 {
                 match d.special {
                     // Total order (CPython):
-                    // -NaN < -sNaN < -Inf < 负有限 < -0 < +0 < 正有限 < +Inf
+                    // -NaN < -sNaN < -Inf < Ã¨Â´Å¸Ã¦Å“â€°Ã©â„¢Â < -0 < +0 < Ã¦Â­Â£Ã¦Å“â€°Ã©â„¢Â < +Inf
                     // < +sNaN < +NaN.
                     Special::NaN => if d.sign { 0 } else { 10 },
                     Special::SignalingNaN => if d.sign { 1 } else { 9 },
@@ -4376,7 +4405,9 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 } else {
                     yd.clone()
                 };
-                n.special = Special::NaN;
+                // Truncate the NaN payload to prec (keeping LOW digits):
+                // maxx670 max 11 -sNaN12345678901 -> -NaN78901 at prec 5.
+                let n = quiet_snan_payload(&ctx, &n);
                 return Ok(PyDecimal::to_py(vm, n));
             }
             if x_qnan || y_qnan {
@@ -4389,7 +4420,14 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 } else {
                     xd.clone()
                 };
-                let r = _decimal_core::apply_context(vm, &ctx, n)?;
+                // Quiet NaN ignored with a numeric operand: the picked
+                // operand may be a NUMBER (max(NaN,1000) -> 1000) — only
+                // truncate when the picked value is a NaN.
+                let r = if n.special != Special::NaN {
+                    _decimal_core::apply_context(vm, &ctx, n)?
+                } else {
+                    quiet_snan_payload(&ctx, &n)
+                };
                 return Ok(PyDecimal::to_py(vm, r));
             }
             let r = if max_picks_a(&xd, &yd) { xd } else { yd };
@@ -4418,6 +4456,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                     yd.clone()
                 };
                 n.special = Special::NaN;
+                let n = quiet_snan_payload(&ctx, &n);
                 return Ok(PyDecimal::to_py(vm, n));
             }
             if x_qnan || y_qnan {
@@ -4430,7 +4469,11 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 } else {
                     xd.clone()
                 };
-                let r = _decimal_core::apply_context(vm, &ctx, n)?;
+                let r = if n.special != Special::NaN {
+                    _decimal_core::apply_context(vm, &ctx, n)?
+                } else {
+                    quiet_snan_payload(&ctx, &n)
+                };
                 return Ok(PyDecimal::to_py(vm, r));
             }
             let r = if max_mag_picks_a(&xd, &yd) { xd } else { yd };
@@ -4462,6 +4505,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                     yd.clone()
                 };
                 n.special = Special::NaN;
+                let n = quiet_snan_payload(&ctx, &n);
                 return Ok(PyDecimal::to_py(vm, n));
             }
             if x_qnan || y_qnan {
@@ -4474,7 +4518,11 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 } else {
                     xd.clone()
                 };
-                let r = _decimal_core::apply_context(vm, &ctx, n)?;
+                let r = if n.special != Special::NaN {
+                    _decimal_core::apply_context(vm, &ctx, n)?
+                } else {
+                    quiet_snan_payload(&ctx, &n)
+                };
                 return Ok(PyDecimal::to_py(vm, r));
             }
             let r = if min_picks_a(&xd, &yd) { xd } else { yd };
@@ -4503,6 +4551,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                     yd.clone()
                 };
                 n.special = Special::NaN;
+                let n = quiet_snan_payload(&ctx, &n);
                 return Ok(PyDecimal::to_py(vm, n));
             }
             if x_qnan || y_qnan {
@@ -4515,7 +4564,11 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 } else {
                     xd.clone()
                 };
-                let r = _decimal_core::apply_context(vm, &ctx, n)?;
+                let r = if n.special != Special::NaN {
+                    _decimal_core::apply_context(vm, &ctx, n)?
+                } else {
+                    quiet_snan_payload(&ctx, &n)
+                };
                 return Ok(PyDecimal::to_py(vm, r));
             }
             let r = if min_mag_picks_a(&xd, &yd) { xd } else { yd };
@@ -4982,7 +5035,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 // CPython signals Rounded whenever fractional digits were
                 // discarded, even when the discard is exact
                 // (to_integral_exact(-1.0) -> -1, Rounded; 5.0 -> 5, Rounded)
-                // — but a zero operand never does (to_integral_exact(-0E-3)
+                // Ã¢â‚¬â€ but a zero operand never does (to_integral_exact(-0E-3)
                 // -> -0 has no flags; only an inexact zero like -0.001 does).
                 if !xd.is_zero() || inexact {
                     ctx.set_flag(vm, "Rounded")?;
@@ -5509,7 +5562,7 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
 
         fn py_new(_cls: &Py<PyType>, args: FuncArgs, vm: &VirtualMachine) -> PyResult<Self> {
             let mut c = Self::new_ctx(vm, 28);
-            // Context(prec, rounding, Emin, Emax, capitals, clamp) — accept
+            // Context(prec, rounding, Emin, Emax, capitals, clamp) Ã¢â‚¬â€ accept
             // both positional and keyword forms (the test suite uses keyword
             // args like Context(prec=9, rounding=..., traps=...)).
             let mut pos_iter = args.args.iter();
@@ -5799,6 +5852,8 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 }
                 PyMutex::new(f)
             },
+            traps_view: PyMutex::new(None),
+            flags_view: PyMutex::new(None),
         };
         Ok(c.into_ref(&vm.ctx).into())
     }
@@ -5855,8 +5910,27 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             set(name, ty.into())?;
         }
 
-        let default: PyObjectRef = PyContext::new_ctx(vm, 28).into_ref(&vm.ctx).into();
-        *DEFAULT_CTX.lock() = Some(default.clone());
+        // Reuse the DefaultContext across module re-imports: CPython keeps
+        // per-module state (PEP 489) so each module instance's getcontext
+        // reads its own default, but our get_current_context reads this
+        // global. Re-importing the module (test_decimal's import_fresh_module
+        // dance) must not orphan the object tests mutate, so all module
+        // instances share one DefaultContext.
+        // Bind the clone first: the MutexGuard temporary of a match
+        // scrutinee lives for the whole match, and re-locking inside an
+        // arm would deadlock.
+        let default: PyObjectRef = {
+            let existing = DEFAULT_CTX.0.lock().clone();
+            match existing {
+                Some(obj) => obj,
+                None => {
+                    let c: PyObjectRef =
+                        PyContext::new_ctx(vm, 28).into_ref(&vm.ctx).into();
+                    *DEFAULT_CTX.0.lock() = Some(c.clone());
+                    c
+                }
+            }
+        };
         set("DefaultContext", default)?;
 
         let basic: PyObjectRef = PyContext::new_ctx(vm, 9).into_ref(&vm.ctx).into();
