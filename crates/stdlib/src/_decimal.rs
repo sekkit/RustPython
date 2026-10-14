@@ -1047,7 +1047,14 @@ fn logical_digit_op<F>(a: &BigInt, b: &BigInt, prec: isize, f: F) -> BigInt
                 let r = _decimal_core::apply_context(vm, &ctx, d)?;
                 return Ok(PyDecimal::to_py(vm, r));
             }
-            while d.coeff_digits() > 1 && (&d.coeff % BigInt::from(10)) == BigInt::from(0) {
+            // Strip trailing zeros with the origami cap (see the
+            // Context-level normalize). No Rounded flag: CPython does not
+            // signal one here (redx213's expectation is decNumber-specific).
+            let cap = normalize_exp_cap(&ctx);
+            while d.coeff_digits() > 1
+                && (&d.coeff % BigInt::from(10)) == BigInt::from(0)
+                && d.exp + 1 <= cap
+            {
                 d.coeff /= BigInt::from(10);
                 d.exp += 1;
             }
@@ -1403,18 +1410,24 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             if is_nan(&self.d) || is_nan(&b) {
                 // compare_signal: a NaN operand signals InvalidOperation and,
                 // when not trapped, yields a quiet NaN with that operand's
-                // sign/payload (compare_signal(-NaN, +NaN) -> -NaN).
+                // sign/payload (compare_signal(-NaN, +NaN) -> -NaN). A
+                // signaling NaN takes precedence over a quiet one, with the
+                // payload truncated to prec keeping LOW digits.
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "comparison with NaN"));
                 }
-                let src = if is_nan(&self.d) { &self.d } else { &b };
-                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                    sign: src.sign,
-                    coeff: src.coeff.clone(),
-                    exp: 0,
-                    special: Special::NaN,
-                }));
+                let src = if self.d.special == Special::SignalingNaN {
+                    &self.d
+                } else if b.special == Special::SignalingNaN {
+                    &b
+                } else if is_nan(&self.d) {
+                    &self.d
+                } else {
+                    &b
+                };
+                let n = quiet_snan_payload(&ctx, src);
+                return Ok(PyDecimal::to_py(vm, n));
             }
             let r = dec_cmp(&self.d, &b);
             Ok(vm.ctx.new_int(BigInt::from(r)).into())
@@ -2279,8 +2292,15 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 }));
             }
             // r = self - b * n where n = round(self/b) to nearest int (half-even).
-            // Intermediate division uses extra precision so rounding is exact.
-            let wide = Ctx::from_parts(50, Rounding::HalfEven, 999999999, -999999999, 0,
+            // The wide context must hold the EXACT product b*n: with a fixed
+            // prec 50, a 34-digit x 34-digit product (68 digits) rounds and
+            // the catastrophic cancellation in x - b*n leaves only ~16
+            // correct digits (dqrmn1103/1107). Size it to both operands.
+            let wide_prec = (50_isize)
+                .max(_decimal_core::coeff_digits_of(&self.d.coeff) as isize
+                    + _decimal_core::coeff_digits_of(&b.coeff) as isize
+                    + 10);
+            let wide = Ctx::from_parts(wide_prec, Rounding::HalfEven, 999999999, -999999999, 0,
                 vm.ctx.new_dict(), vm.ctx.new_dict());
             let div = _decimal_core::dec_div(&wide, vm, &self.d, &b)?;
             let mut coeff = div.coeff.clone();
@@ -4087,20 +4107,27 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             if is_nan(&xd) || is_nan(&yd) {
                 // compare_signal: any NaN operand signals InvalidOperation and,
                 // when not trapped, yields a quiet NaN (not a numeric order).
-                // The sign/payload follow the first NaN operand (dqcms840:
+                // A signaling NaN takes precedence over a quiet one
+                // (ddcms875: compare_signal(NaN85, sNaN83) -> NaN83), and
+                // its payload is truncated to prec keeping LOW digits.
+                // The sign/payload follow the chosen NaN operand (dqcms840:
                 // compare_signal(-NaN, +NaN) -> -NaN; ddcms824: (NaN, -0) ->
                 // NaN).
                 ctx.set_flag(vm, "InvalidOperation")?;
                 if ctx.trap(vm, "InvalidOperation")? {
                     return Err(new_decimal_error(vm, "InvalidOperation", "comparison with NaN"));
                 }
-                let src = if is_nan(&xd) { &xd } else { &yd };
-                return Ok(PyDecimal::to_py(vm, _decimal_core::Dec {
-                    sign: src.sign,
-                    coeff: src.coeff.clone(),
-                    exp: 0,
-                    special: Special::NaN,
-                }));
+                let src = if xd.special == Special::SignalingNaN {
+                    &xd
+                } else if yd.special == Special::SignalingNaN {
+                    &yd
+                } else if is_nan(&xd) {
+                    &xd
+                } else {
+                    &yd
+                };
+                let n = quiet_snan_payload(&ctx, src);
+                return Ok(PyDecimal::to_py(vm, n));
             }
             let r = dec_cmp(&xd, &yd);
             Ok(vm.ctx.new_int(BigInt::from(r)).into())
@@ -4654,7 +4681,15 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             // inexact, and running it at the caller's precision leaked
             // Inexact+Rounded into the caller's flags (decTest rmnx007
             // expects none - the final remainder 1 is exact).
-            let wide = Ctx::from_parts(50, Rounding::HalfEven, 999999999, -999999999, 0,
+            // Size the wide context to hold the EXACT product y*n: with a
+            // fixed prec 50, a 34-digit x 34-digit product rounds and the
+            // catastrophic cancellation leaves ~16 correct digits
+            // (dqrmn1103/1107).
+            let wide_prec = (50_isize)
+                .max(_decimal_core::coeff_digits_of(&xd.coeff) as isize
+                    + _decimal_core::coeff_digits_of(&yd.coeff) as isize
+                    + 10);
+            let wide = Ctx::from_parts(wide_prec, Rounding::HalfEven, 999999999, -999999999, 0,
                 vm.ctx.new_dict(), vm.ctx.new_dict());
             let div = _decimal_core::dec_div(&wide, vm, &xd, &yd)?;
             let mut coeff = div.coeff.clone();
@@ -4966,7 +5001,15 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
             if d.is_zero() {
                 d.exp = 0;
             } else {
-                while d.coeff_digits() > 1 && (&d.coeff % BigInt::from(10)) == BigInt::from(0) {
+                // Strip trailing zeros, stopping when the increased exponent
+                // would exceed the clamp cap (decNumber's "origami" behaviour:
+                // with clamp=1 the cap is etop = Emax - prec + 1, so
+                // ddred152 strips only up to the cap and ddred153 with its
+                // exponent already at the cap stays unchanged).
+                while d.coeff_digits() > 1
+                    && (&d.coeff % BigInt::from(10)) == BigInt::from(0)
+                    && d.exp + 1 <= normalize_exp_cap(&ctx)
+                {
                     d.coeff /= BigInt::from(10);
                     d.exp += 1;
                 }
@@ -5426,6 +5469,19 @@ _ => return Ok(PyDecimal::to_py(vm, self.d.clone())),
                 .unwrap_or_else(|_| BigInt::from(0));
         }
         n
+    }
+
+    /// Exponent cap for normalize's trailing-zero stripping (decNumber's
+    /// "origami" behaviour): with clamp=1 the coefficient width is fixed at
+    /// prec digits, so the exponent may not grow past etop = Emax - prec + 1
+    /// (ddred152 strips only up to the cap; ddred153, already at the cap,
+    /// stays unchanged). With clamp=0 the cap is Emax itself.
+    fn normalize_exp_cap(ctx: &_decimal_core::Ctx) -> isize {
+        if ctx.clamp == 1 {
+            ctx.emax - ctx.prec as isize + 1
+        } else {
+            ctx.emax
+        }
     }
 
     /// Shared implementation of `rotate` for both the Decimal method and the

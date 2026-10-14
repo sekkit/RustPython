@@ -1768,6 +1768,26 @@ pub(crate) fn dec_add(ctx: &Ctx, vm: &VirtualMachine, a: &Dec, b: &Dec) -> PyRes
                     };
                     if toward_borrow {
                         let dom_adj = dominant.exp + digits - 1;
+                        // Compute the EXACT borrow when it stays within a
+                        // bounded size: the Overflow signal depends on the
+                        // exact result's adjusted exponent, which the
+                        // all-nines shortcut hides (fma -9E6144 10 1 at
+                        // ceiling -> -9.99..E+6144 Overflow, not the
+                        // no-Overflow 34 nines the shortcut yields).
+                        let gap_digits = (dominant.exp - small.exp) as i64;
+                        if gap_digits >= 0
+                            && (gap_digits as i128 + digits as i128) <= 100_000
+                        {
+                            let exact = &dominant.coeff
+                                * BigInt::from(10).pow(gap_digits as u32)
+                                - &small.coeff;
+                            return apply_context(vm, ctx, Dec {
+                                sign: dominant.sign,
+                                coeff: exact,
+                                exp: small.exp,
+                                special: Special::Finite,
+                            });
+                        }
                         let borrow_coeff = BigInt::from(10).pow(ctx.prec as u32) - BigInt::from(1);
                         let borrow_exp = dom_adj - ctx.prec as isize;
                         ctx.set_flag(vm, "Rounded")?;
