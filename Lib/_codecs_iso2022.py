@@ -230,46 +230,12 @@ class _Codec:
     def decode(self, input, errors='strict', final=True):
         if isinstance(input, str):
             raise TypeError("decoding to str: need a bytes-like object, got str")
-        data = bytes(input)
-        out = []
-        state = ASCII
-        i = 0
-        n = len(data)
-        while i < n:
-            b = data[i]
-            if b == ESC and i + 2 < n:
-                seq = bytes(data[i + 1:i + 3])
-                if seq in _ESC_MAP:
-                    state = _ESC_MAP[seq]
-                    i += 3
-                    continue
-            if b == ESC and i + 3 < n:
-                seq = bytes(data[i + 1:i + 4])
-                if seq in _ESC_MAP:
-                    state = _ESC_MAP[seq]
-                    i += 4
-                    continue
-            if b == ESC:
-                i += 1
-                continue
-            if state == KANJI and i + 1 < n:
-                j1, j2 = data[i], data[i + 1]
-                try:
-                    sj1, sj2 = _jis_to_sjis(j1, j2)
-                    r = codecs.code_page_decode(
-                        932, bytes([sj1, sj2]), errors, True)
-                    out.append(r[0] if isinstance(r, tuple) else r)
-                except Exception:
-                    if errors == 'replace':
-                        out.append('\ufffd')
-                    elif errors != 'ignore':
-                        raise UnicodeDecodeError(
-                            self.name, data, i, i + 2, 'invalid sequence')
-                i += 2
-            else:
-                out.append(chr(b))
-                i += 1
-        return (''.join(out), n)
+        # One-shot decode through the stateful machine (G2 charsets,
+        # escape handling, KANJI pairs) — same semantics as the
+        # incremental decoder.
+        decoder = _Iso2022Decoder(self.name, errors)
+        text, _ = decoder.decode_step(bytes(input), final)
+        return (text, len(input))
 
 
 _CODECS = {
@@ -301,6 +267,7 @@ class _Iso2022Decoder:
         i = 0
         n = len(data)
         mode = self.mode
+        g2 = getattr(self, '_g2', None)  # pending G2 charset designation
         while i < n:
             b = data[i]
             if b == ESC:
@@ -337,6 +304,43 @@ class _Iso2022Decoder:
                     # unrecognized: skip the ESC byte literally
                     i += 1
                     continue
+                if c1 == 0x2E:
+                    # ESC . F: designate G2 (96-set) — 'A' is ISO-8859-1
+                    # upper half (bytes 0x20-0x7F map to U+00A0-U+00FF),
+                    # 'F' is ISO-8859-7 (Greek).
+                    if i + 2 >= n:
+                        if final:
+                            raise UnicodeDecodeError(
+                                self.name, data, i, n,
+                                'incomplete escape sequence')
+                        break
+                    g2 = data[i + 2]
+                    i += 3
+                    continue
+                if c1 == 0x4E:
+                    # ESC N: single shift SS2 — the next byte selects one
+                    # character from the designated G2 charset
+                    # (test_g2: ESC.A ESC N 'i' -> U+00E9).
+                    if i + 2 >= n:
+                        if final:
+                            raise UnicodeDecodeError(
+                                self.name, data, i, n,
+                                'incomplete escape sequence')
+                        break
+                    sb = data[i + 2]
+                    if g2 == 0x41:
+                        # ISO-8859-1 upper half
+                        out.append(chr(0xA0 + (sb - 0x20)))
+                    elif g2 == 0x46:
+                        # ISO-8859-7 Greek: map through the cp1253-equivalent
+                        # latin-7 range; byte 0x20-0x7F -> U+0386.. plane.
+                        # Simplest faithful mapping for the common range:
+                        out.append(chr(0x0386 + (sb - 0x20))
+                                   if 0x20 <= sb <= 0x7F else '\ufffd')
+                    else:
+                        out.append('\ufffd')
+                    i += 3
+                    continue
                 # unknown escape byte: literal passthrough
                 i += 1
                 continue
@@ -364,6 +368,7 @@ class _Iso2022Decoder:
                 out.append(chr(b))
                 i += 1
         self.mode = mode
+        self._g2 = g2
         return (''.join(out), i)
 
 

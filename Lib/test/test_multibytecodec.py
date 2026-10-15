@@ -366,7 +366,6 @@ class Test_StreamWriter(unittest.TestCase):
         self.assertEqual(s.getvalue(), b'abcd')
 
 class Test_ISO2022(unittest.TestCase):
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; ISO-2022 G2 charset support
     def test_g2(self):
         iso2022jp2 = b'\x1b(B:hu4:unit\x1b.A\x1bNi de famille'
         uni = ':hu4:unit\xe9 de famille'
