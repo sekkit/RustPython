@@ -2275,7 +2275,6 @@ class BasicUnicodeTest(unittest.TestCase, MixInCheckStateHandling):
                         self.assertEqual(decodedresult, s,
                                          "encoding=%r" % encoding)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: big5
     def test_seek(self):
         # all codecs should be able to encode these
         s = "%s\n%s\n" % (100*"abc123", 100*"def456")
@@ -2299,7 +2298,6 @@ class BasicUnicodeTest(unittest.TestCase, MixInCheckStateHandling):
             if encoding not in ("idna", "punycode"):
                 self.assertRaises(TypeError, decoder, 42)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: big5
     def test_bad_encode_args(self):
         for encoding in all_unicode_encodings:
             encoder = codecs.getencoder(encoding)

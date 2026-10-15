@@ -335,7 +335,6 @@ class Test_StreamReader(unittest.TestCase):
             os_helper.unlink(TESTFN)
 
 class Test_StreamWriter(unittest.TestCase):
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; gb18030 StreamWriter
     def test_gb18030(self):
         s= io.BytesIO()
         c = codecs.getwriter('gb18030')(s)
