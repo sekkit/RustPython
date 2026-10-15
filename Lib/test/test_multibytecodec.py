@@ -371,7 +371,6 @@ class Test_ISO2022(unittest.TestCase):
         uni = ':hu4:unit\xe9 de famille'
         self.assertEqual(iso2022jp2.decode('iso2022-jp-2'), uni)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; ISO-2022 JP G0 charset support
     def test_iso2022_jp_g0(self):
         self.assertNotIn(b'\x0e', '\N{SOFT HYPHEN}'.encode('iso-2022-jp-2'))
         for encoding in ('iso-2022-jp-2004', 'iso-2022-jp-3'):

@@ -20,6 +20,21 @@ _ESC_MAP = {
     b'$(O': KANJI, b'$(P': KANJI,
 }
 
+# JIS X 0213-2004 characters that Windows cp932 does not cover, encoded
+# through the ISO-2022-JP-2004 plane designations (bytes extracted from
+# CPython's codec behaviour):
+#   U+00AD SOFT HYPHEN -> ESC$(C (JIS X 0213 plane 1) at (0x21, 0x29)
+#   U+3406             -> ESC$(P (plane 2)             at (0x21, 0x2D)
+_JISX0213_2004 = {
+    0x00AD: (0x21, 0x29),
+    0x3406: (0x21, 0x2D),
+}
+
+_JISX0213_DESIGNATOR = {
+    0x00AD: b'\x1b$(C',
+    0x3406: b'\x1b$(P',
+}
+
 
 def _jis_to_sjis(j1, j2):
     """Convert a JIS X 0208 two-byte sequence to Shift-JIS."""
@@ -172,6 +187,18 @@ class _Codec:
                     out.extend(b'\x1b(B')
                     state = ASCII
                 out.append(o)
+            elif o in _JISX0213_2004:
+                # JIS X 0213-2004 characters Windows cp932 does not cover
+                # (bytes extracted from CPython's codec behaviour): SHY ->
+                # (1,9) via ESC$(C; U+3406 -> (1,13) via ESC$(P. All bytes
+                # stay 7-bit ISO-2022.
+                j1, j2 = _JISX0213_2004[o]
+                designator = _JISX0213_DESIGNATOR[o]
+                if state != designator:
+                    out.extend(designator)
+                    state = designator
+                out.append(j1)
+                out.append(j2)
             else:
                 try:
                     r = codecs.code_page_encode(932, ch, errors)
