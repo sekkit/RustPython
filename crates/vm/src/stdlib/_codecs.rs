@@ -891,7 +891,8 @@ mod _codecs_windows {
         encoding_name: &str,
         vm: &VirtualMachine,
     ) -> PyResult<(Vec<u8>, usize)> {
-        use crate::builtins::{PyBytes, PyStr, PyTuple};
+        use crate::builtins::{PyBytes, PyInt, PyStr, PyTuple};
+        use num_traits::ToPrimitive;
 
         let char_len = s.char_len();
         let flags = encode_code_page_flags(code_page, errors);
@@ -1025,7 +1026,32 @@ mod _codecs_windows {
                 return Err(tuple_err());
             }
 
-            let new_pos: isize = new_pos_obj.try_into_value(vm).map_err(|_| tuple_err())?;
+            // CPython accepts any int for the restart position and validates
+            // it against the input length: beyond-range raises IndexError.
+            let new_pos: isize = match new_pos_obj.downcast_ref::<PyInt>() {
+                Some(i) => {
+                    let big = i.as_bigint();
+                    match big.to_i64() {
+                        Some(v) => {
+                            if v > code_points.len() as i64 {
+                                return Err(vm.new_index_error(format!(
+                                    "position {} from error handler out of bounds",
+                                    v
+                                )));
+                            }
+                            v as isize
+                        }
+                        None => {
+                            // Too large for i64 — certainly beyond the input.
+                            return Err(vm.new_index_error(format!(
+                                "position {} from error handler out of bounds",
+                                big
+                            )));
+                        }
+                    }
+                }
+                None => return Err(tuple_err()),
+            };
             pos = if new_pos < 0 {
                 (code_points.len() as isize + new_pos).max(0) as usize
             } else {
@@ -1136,8 +1162,9 @@ mod _codecs_windows {
         encoding_name: &str,
         vm: &VirtualMachine,
     ) -> PyResult<(PyStrRef, usize)> {
-        use crate::builtins::PyTuple;
+        use crate::builtins::{PyInt, PyTuple};
         use crate::common::wtf8::Wtf8Buf;
+        use num_traits::ToPrimitive;
 
         let len = data.len();
         let encoding_str = vm.ctx.new_str(encoding_name);
@@ -1310,10 +1337,36 @@ mod _codecs_windows {
                             .clone()
                             .try_into_value(vm)
                             .map_err(|_| tuple_err())?;
-                        let new_pos: isize = tuple_slice[1]
-                            .clone()
-                            .try_into_value(vm)
-                            .map_err(|_| tuple_err())?;
+                        // CPython accepts any int for the restart position
+                        // and validates it against the data length: a
+                        // position beyond the input raises IndexError
+                        // (sys.maxsize + 1 in
+                        // test_multibytecodec.test_errorcallback_longindex).
+                        let new_pos: isize = match tuple_slice[1].downcast_ref::<PyInt>() {
+                            Some(i) => {
+                                let big = i.as_bigint();
+                                match big.to_i64() {
+                                    Some(v) => {
+                                        if v > len as i64 {
+                                            return Err(vm.new_index_error(format!(
+                                                "position {} from error handler out of bounds",
+                                                v
+                                            )));
+                                        }
+                                        v as isize
+                                    }
+                                    None => {
+                                        // Too large for i64 — certainly beyond
+                                        // the data length.
+                                        return Err(vm.new_index_error(format!(
+                                            "position {} from error handler out of bounds",
+                                            big
+                                        )));
+                                    }
+                                }
+                            }
+                            None => return Err(tuple_err()),
+                        };
 
                         for cp in replacement.as_wtf8().code_points() {
                             let u = cp.to_u32();

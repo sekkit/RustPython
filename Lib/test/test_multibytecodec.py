@@ -37,7 +37,6 @@ ALL_CJKENCODINGS = [
 
 class Test_MultibyteCodec(unittest.TestCase):
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; euc-kr decoder error callback long index
     def test_errorcallback_longindex(self):
         dec = codecs.getdecoder('euc-kr')
         myreplace  = lambda exc: ('', sys.maxsize+1)
@@ -55,7 +54,6 @@ class Test_MultibyteCodec(unittest.TestCase):
         for enc in ALL_CJKENCODINGS:
             self.assertEqual('abcd'.encode(enc), b'abcd')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; euc-kr decoder error callback long index
     def test_errorcallback_longindex(self):
         dec = codecs.getdecoder('euc-kr')
         myreplace  = lambda exc: ('', sys.maxsize+1)
