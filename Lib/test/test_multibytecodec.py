@@ -263,7 +263,6 @@ class Test_IncrementalDecoder(unittest.TestCase):
                           b'\xcc\xbd', True)
         self.assertEqual(decoder.decode(b'\xcc'), '\uc774')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; ISO-2022 incremental decoder state
     def test_iso2022(self):
         decoder = codecs.getincrementaldecoder('iso2022-jp')()
         ESC = b'\x1b'

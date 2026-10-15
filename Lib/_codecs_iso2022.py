@@ -283,6 +283,95 @@ _CODECS = {
 }
 
 
+class _Iso2022Decoder:
+    """Stateful ISO-2022-JP incremental decoder: tracks the active charset
+    across decode() calls, parses partial escape sequences spanning calls,
+    and escapes back handling at final."""
+
+    def __init__(self, name, errors='strict'):
+        self.name = name
+        self.errors = errors
+        self.mode = ASCII
+
+    def decode_step(self, data, final):
+        """Decode data from the start; returns (text, consumed). Incomplete
+        escape sequences or half a multibyte pair hold (consumed < len)
+        unless final, in which case they raise UnicodeDecodeError."""
+        out = []
+        i = 0
+        n = len(data)
+        mode = self.mode
+        while i < n:
+            b = data[i]
+            if b == ESC:
+                if i + 1 >= n:
+                    if final:
+                        raise UnicodeDecodeError(
+                            self.name, data, i, n, 'incomplete escape sequence')
+                    break
+                c1 = data[i + 1]
+                if c1 == 0x28 or c1 == 0x24:
+                    if i + 2 >= n:
+                        if final:
+                            raise UnicodeDecodeError(
+                                self.name, data, i, n,
+                                'incomplete escape sequence')
+                        break
+                    c2 = data[i + 2]
+                    key = bytes([c1, c2])
+                    if key in _ESC_MAP:
+                        mode = _ESC_MAP[key]
+                        i += 3
+                        continue
+                    if key == b'$(':
+                        # 4-byte designation (ESC $ ( F): need one more
+                        if i + 3 >= n:
+                            if final:
+                                raise UnicodeDecodeError(
+                                    self.name, data, i, n,
+                                    'incomplete escape sequence')
+                            break
+                        mode = KANJI
+                        i += 4
+                        continue
+                    # unrecognized: skip the ESC byte literally
+                    i += 1
+                    continue
+                # unknown escape byte: literal passthrough
+                i += 1
+                continue
+            if mode == KANJI:
+                if i + 1 >= n:
+                    if final:
+                        raise UnicodeDecodeError(
+                            self.name, data, i, n,
+                            'incomplete multibyte sequence')
+                    break
+                j1, j2 = data[i], data[i + 1]
+                try:
+                    sj1, sj2 = _jis_to_sjis(j1, j2)
+                    r = codecs.code_page_decode(
+                        932, bytes([sj1, sj2]), self.errors, True)
+                    out.append(r[0] if isinstance(r, tuple) else r)
+                except UnicodeDecodeError:
+                    if self.errors == 'replace':
+                        out.append('\ufffd')
+                    elif self.errors != 'ignore':
+                        raise UnicodeDecodeError(
+                            self.name, data, i, i + 2, 'invalid sequence')
+                i += 2
+            else:
+                out.append(chr(b))
+                i += 1
+        self.mode = mode
+        return (''.join(out), i)
+
+
+_CODEC_INSTANCES = {}
+for _n in _CODECS:
+    _CODECS[_n]._Iso2022Decoder = _Iso2022Decoder
+
+
 def getcodec(name):
     try:
         return _CODECS[name]
