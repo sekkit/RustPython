@@ -58,11 +58,35 @@ def _sjis_to_jis(s1, s2):
 class _StatefulEncoder:
     """Stateful ISO-2022 encoder that tracks escape mode between calls."""
 
-    def __init__(self, name):
+    # CPython's iso2022 encoder state bytes (byte1 = G0 charset final char
+    # with 0x80 set for multibyte; byte2 = the constant secondary byte):
+    # ASCII (ESC ( B) -> 42 42, JIS X 0208 (ESC $ B) -> c2 42.
+    _STATE_BYTES = {ASCII: b'\x42\x42', KANJI: b'\xc2\x42'}
+
+    def __init__(self, name, errors='strict'):
         self.name = name
+        self.errors = errors
         self._state = 0  # 0=ASCII, 1=KANJI
 
-    def encode(self, input, errors='strict'):
+    def getstate(self):
+        return int.from_bytes(
+            b'\x00' + self._STATE_BYTES[self._state].ljust(8, b'\x00'),
+            'little')
+
+    def setstate(self, state):
+        data = state.to_bytes((state.bit_length() + 8) // 8, 'little')
+        data = data.ljust(9, b'\x00')
+        pending_len = data[0]
+        if pending_len:
+            raise UnicodeError('iso2022 encoder does not buffer pending data')
+        charset = bytes(data[1:3])
+        self._state = KANJI if charset == b'\xc2\x42' else ASCII
+
+    def reset(self):
+        self._state = 0
+
+    def encode(self, input, final=False):
+        errors = self.errors
         out = bytearray()
         state = self._state
         for idx, ch in enumerate(input):

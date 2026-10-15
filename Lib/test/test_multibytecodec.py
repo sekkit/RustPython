@@ -1,4 +1,4 @@
-#
+﻿#
 # test_multibytecodec.py
 #   Unit test for multibytecodec itself
 #
@@ -105,7 +105,6 @@ class Test_IncrementalEncoder(unittest.TestCase):
         self.assertEqual(encoder.encode('', False), b'')
         self.assertEqual(encoder.reset(), None)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; euc_jis_2004 stateful encoding (buffer-state codec)
     def test_stateful(self):
         # jisx0213 encoder is stateful for a few code points. eg)
         #   U+00E6 => A9DC
@@ -125,7 +124,6 @@ class Test_IncrementalEncoder(unittest.TestCase):
         self.assertEqual(encoder.encode('', True), b'\xa9\xdc')
         self.assertEqual(encoder.encode('', True), b'')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; jisx0213 buffer-state codec
     def test_stateful_keep_buffer(self):
         encoder = codecs.getincrementalencoder('jisx0213')()
         self.assertEqual(encoder.encode('\u00e6'), b'')
@@ -138,7 +136,6 @@ class Test_IncrementalEncoder(unittest.TestCase):
         self.assertRaises(UnicodeEncodeError, encoder.encode, '\u0123')
         self.assertEqual(encoder.encode('', True), b'\xa9\xdc')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; buffer-state codec (euc_jis_2004)
     def test_state_methods_with_buffer_state(self):
         # euc_jis_2004 stores state as a buffer of pending bytes
         encoder = codecs.getincrementalencoder('euc_jis_2004')()
@@ -171,7 +168,6 @@ class Test_IncrementalEncoder(unittest.TestCase):
         encoder.setstate(en_state)
         self.assertEqual(encoder.encode('z'), b'z')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; CPython internal state format mismatch
     def test_getstate_returns_expected_value(self):
         # Note: getstate is implemented such that these state values
         # are expected to be the same across all builds of Python,
@@ -204,7 +200,6 @@ class Test_IncrementalEncoder(unittest.TestCase):
                              b"\xc2\x42\x00\x00\x00\x00\x00\x00",
                              'little'))
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; setstate input validation (pending size)
     def test_setstate_validates_input_size(self):
         encoder = codecs.getincrementalencoder('euc_jp')()
         pending_size_nine = int.from_bytes(
@@ -214,7 +209,6 @@ class Test_IncrementalEncoder(unittest.TestCase):
             'little')
         self.assertRaises(UnicodeError, encoder.setstate, pending_size_nine)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; setstate input validation (invalid UTF-8)
     def test_setstate_validates_input_bytes(self):
         encoder = codecs.getincrementalencoder('euc_jp')()
         invalid_utf8 = int.from_bytes(
@@ -234,7 +228,7 @@ class Test_IncrementalEncoder(unittest.TestCase):
         # bpo-42846: Test a CJK codec in a subinterpreter
         _testcapi = import_module("_testcapi")
         encoding = 'cp932'
-        text = "Python の開発は、1990 年ごろから開始されています。"
+        text = "Python ã®é–‹ç™ºã¯ã€1990 å¹´ã”ã‚ã‹ã‚‰é–‹å§‹ã•ã‚Œã¦ã„ã¾ã™ã€‚"
         code = textwrap.dedent("""
             import codecs
             encoding = %r
