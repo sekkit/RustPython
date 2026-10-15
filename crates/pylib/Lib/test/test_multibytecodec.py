@@ -37,7 +37,6 @@ ALL_CJKENCODINGS = [
 
 class Test_MultibyteCodec(unittest.TestCase):
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; euc-kr decoder error callback long index
     def test_errorcallback_longindex(self):
         dec = codecs.getdecoder('euc-kr')
         myreplace  = lambda exc: ('', sys.maxsize+1)
@@ -55,7 +54,6 @@ class Test_MultibyteCodec(unittest.TestCase):
         for enc in ALL_CJKENCODINGS:
             self.assertEqual('abcd'.encode(enc), b'abcd')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; euc-kr decoder error callback long index
     def test_errorcallback_longindex(self):
         dec = codecs.getdecoder('euc-kr')
         myreplace  = lambda exc: ('', sys.maxsize+1)
@@ -337,7 +335,6 @@ class Test_StreamReader(unittest.TestCase):
             os_helper.unlink(TESTFN)
 
 class Test_StreamWriter(unittest.TestCase):
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; gb18030 StreamWriter
     def test_gb18030(self):
         s= io.BytesIO()
         c = codecs.getwriter('gb18030')(s)
@@ -368,13 +365,11 @@ class Test_StreamWriter(unittest.TestCase):
         self.assertEqual(s.getvalue(), b'abcd')
 
 class Test_ISO2022(unittest.TestCase):
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; ISO-2022 G2 charset support
     def test_g2(self):
         iso2022jp2 = b'\x1b(B:hu4:unit\x1b.A\x1bNi de famille'
         uni = ':hu4:unit\xe9 de famille'
         self.assertEqual(iso2022jp2.decode('iso2022-jp-2'), uni)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; ISO-2022 JP G0 charset support
     def test_iso2022_jp_g0(self):
         self.assertNotIn(b'\x0e', '\N{SOFT HYPHEN}'.encode('iso-2022-jp-2'))
         for encoding in ('iso-2022-jp-2004', 'iso-2022-jp-3'):
