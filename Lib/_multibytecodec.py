@@ -61,6 +61,27 @@ class MultibyteIncrementalDecoder(codecs.BufferedIncrementalDecoder):
     def _buffer_decode(self, input, errors, final):
         return self.codec.decode(input, errors, final)
 
+    def getstate(self):
+        # CPython keeps an additional integer flag alongside the pending
+        # bytes; round-trip it (test_state_methods: setstate((b'abc',
+        # 123456789)) must read back unchanged).
+        return (self.buffer, getattr(self, '_flags', 0))
+
+    def setstate(self, state):
+        if not isinstance(state, tuple) or len(state) != 2:
+            raise TypeError('state must be a (bytes, int) tuple')
+        pending, flags = state
+        if not isinstance(pending, (bytes, bytearray)):
+            raise TypeError('pending state must be bytes')
+        if not isinstance(flags, int):
+            raise TypeError('state flags must be an int')
+        if len(pending) > 8:
+            raise UnicodeDecodeError(
+                'multibytecodec', pending, 0, len(pending),
+                'pending buffer too long')
+        self.buffer = bytes(pending)
+        self._flags = flags
+
 
 class MultibyteStreamReader(codecs.StreamReader):
     codec = None

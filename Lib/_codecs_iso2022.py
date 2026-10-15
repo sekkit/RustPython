@@ -147,6 +147,11 @@ class _StatefulEncoder:
                         out.extend(b'\x1b(B')
                         state = ASCII
                     out.append(sb[0])
+        # final=True: escape back to the ASCII state so the receiver is
+        # left in a known mode (CPython: encode('', True) -> b'\x1b(B').
+        if final and state != ASCII:
+            out.extend(b'\x1b(B')
+            state = ASCII
         self._state = state
         return (bytes(out), len(input))
 

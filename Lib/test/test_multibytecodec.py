@@ -285,7 +285,6 @@ class Test_IncrementalDecoder(unittest.TestCase):
             decoder = codecs.getincrementaldecoder(enc)()
             self.assertRaises(TypeError, decoder.decode, "")
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; incremental decoder state methods
     def test_state_methods(self):
         decoder = codecs.getincrementaldecoder('euc_jp')()
 
@@ -314,7 +313,6 @@ class Test_IncrementalDecoder(unittest.TestCase):
         decoder.setstate((b'abc', 123456789))
         self.assertEqual(decoder.getstate(), (b'abc', 123456789))
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; decoder setstate input validation
     def test_setstate_validates_input(self):
         decoder = codecs.getincrementaldecoder('euc_jp')()
         self.assertRaises(TypeError, decoder.setstate, 123)
@@ -400,7 +398,6 @@ class TestStateful(unittest.TestCase):
     def test_encode(self):
         self.assertEqual(self.text.encode(self.encoding), self.expected_reset)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; ISO-2022-JP stateful encoding (euc_jis_2004 buffer state)
     def test_incrementalencoder(self):
         # jisx0213 encoder is stateful.
         encoder = codecs.getincrementalencoder(self.encoding)()
@@ -411,7 +408,6 @@ class TestStateful(unittest.TestCase):
         self.assertEqual(encoder.encode('', final=True), self.reset)
         self.assertEqual(encoder.encode('', final=True), b'')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; ISO-2022-JP stateful encoding (final)
     def test_incrementalencoder_final(self):
         encoder = codecs.getincrementalencoder(self.encoding)()
         last_index = len(self.text) - 1
