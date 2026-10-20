@@ -60,30 +60,32 @@ class MultibyteIncrementalDecoder(codecs.BufferedIncrementalDecoder):
 
     def __init__(self, errors='strict'):
         super().__init__(errors)
-        self._iso = None
+        self._custom = None
 
-    def _get_iso_decoder(self):
-        if self._iso is None:
-            factory = getattr(self.codec, '_Iso2022Decoder', None)
-            if factory is not None:
-                self._iso = factory(self.codec.name, self.errors)
-        return self._iso
+    def _get_custom_decoder(self):
+        if self._custom is None:
+            for attr in ('_Iso2022Decoder', '_Jis2004Decoder'):
+                factory = getattr(self.codec, attr, None)
+                if factory is not None:
+                    self._custom = factory(self.codec.name, self.errors)
+                    break
+        return self._custom
 
     def _buffer_decode(self, input, errors, final):
-        iso = self._get_iso_decoder()
-        if iso is not None:
-            # ISO-2022: the charset mode persists across calls; the base
-            # class keeps unconsumed bytes (partial escapes, half pairs)
-            # in self.buffer and passes the combined data as `input`.
-            text, consumed = iso.decode_step(input, final)
+        custom = self._get_custom_decoder()
+        if custom is not None:
+            # Stateful codecs: the decoder machine consumes what it can;
+            # the base class keeps unconsumed bytes (partial escapes,
+            # half pairs) in self.buffer and passes combined data.
+            text, consumed = custom.decode_step(input, final)
             return (text, consumed)
         return self.codec.decode(input, errors, final)
 
     def reset(self):
         super().reset()
-        iso = self._get_iso_decoder()
-        if iso is not None:
-            iso.mode = 0  # ASCII
+        custom = self._get_custom_decoder()
+        if custom is not None:
+            custom.mode = 0  # ASCII (ISO-2022 machines)
 
     def getstate(self):
         # CPython keeps an additional integer flag alongside the pending
