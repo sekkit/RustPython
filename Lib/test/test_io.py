@@ -3326,7 +3326,6 @@ class TextIOWrapperTest(unittest.TestCase):
         finally:
             StatefulIncrementalDecoder.codecEnabled = 0
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: euc_jp
     def test_multibyte_seek_and_tell(self):
         f = self.open(os_helper.TESTFN, "w", encoding="euc_jp")
         f.write("AB\n\u3046\u3048\n")
@@ -4216,7 +4215,6 @@ class CTextIOWrapperTest(TextIOWrapperTest):
         wrapper = self.TextIOWrapper(raw)
         wrapper.close()  # should not crash
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: euc_jis_2004
     def test_seek_with_encoder_state(self):
         return super().test_seek_with_encoder_state()
 
@@ -4229,7 +4227,6 @@ class PyTextIOWrapperTest(TextIOWrapperTest):
     io = pyio
     shutdown_error = "LookupError: unknown encoding: ascii"
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: euc_jis_2004
     def test_seek_with_encoder_state(self):
         return super().test_seek_with_encoder_state()
 

@@ -9,6 +9,7 @@ class _Codec:
     def __init__(self, code_page, name):
         self.code_page = code_page
         self.name = name
+        self._jis2004_decode = (name == 'euc_jis_2004')
 
     def encode(self, input, errors='strict'):
         return codecs.code_page_encode(self.code_page, input, errors)
@@ -16,7 +17,16 @@ class _Codec:
     def decode(self, input, errors='strict', final=True):
         if isinstance(input, str):
             raise TypeError("decoding to str: need a bytes-like object, got str")
-        return codecs.code_page_decode(self.code_page, input, errors, final)
+        if not isinstance(input, (bytes, bytearray, memoryview)):
+            raise TypeError("decoding to str: need a bytes-like object, got int")
+        data = bytes(input)
+        if self._jis2004_decode:
+            # Composition-aware one-shot decode: Windows cp20932 does not
+            # know the JIS X 0213 composed sequences this codec emits.
+            text, _ = _Jis2004Decoder(self.name, errors).decode_step(
+                data, final)
+            return (text, len(data))
+        return codecs.code_page_decode(self.code_page, data, errors, final)
 
 
 # Windows code pages that back the Japanese codecs.  932 is Shift-JIS proper,
@@ -126,6 +136,100 @@ _COMPOSITION = {
 }
 
 
+def _build_decode_map():
+    """Inverse of the encoder's special mappings for the decode direction:
+    composed two-byte sequences map back to base + combining mark; the
+    explicit single-character bytes map back to their character (Windows
+    cp20932 decodes some of them differently or not at all)."""
+    m = {}
+    for (base, mark), out in _COMPOSITION.items():
+        if len(out) == 2:
+            m[out] = chr(base) + chr(mark)
+    for cp, out in _SINGLE.items():
+        m[out] = chr(cp)
+    return m
+
+
+_DECODE_MAP = _build_decode_map()
+
+
+def _decode_one_pair(b1, b2):
+    """Decode one two-byte euc_jis_2004 pair, preferring the codec's own
+    composition/single mappings over Windows cp20932."""
+    pair = bytes((b1, b2))
+    if pair in _DECODE_MAP:
+        return _DECODE_MAP[pair]
+    r = codecs.code_page_decode(20932, pair, 'strict', True)
+    return r[0] if isinstance(r, tuple) else r
+
+
+class _Jis2004Decoder:
+    """Stateful euc_jis_2004 incremental decoder: two-byte pairs decode
+    through the codec's own composition-aware table first."""
+
+    def __init__(self, name, errors='strict'):
+        self.name = name
+        self.errors = errors
+
+    def decode_step(self, data, final):
+        out = []
+        i = 0
+        n = len(data)
+        while i < n:
+            b = data[i]
+            if b < 0x80:
+                out.append(chr(b))
+                i += 1
+                continue
+            if 0xA1 <= b <= 0xFE:
+                if i + 1 >= n:
+                    if final:
+                        raise UnicodeDecodeError(
+                            self.name, data, i, n,
+                            'incomplete multibyte sequence')
+                    break
+                b2 = data[i + 1]
+                if not (0xA1 <= b2 <= 0xFE):
+                    raise UnicodeDecodeError(
+                        self.name, data, i, i + 2,
+                        'illegal multibyte sequence')
+                try:
+                    out.append(_decode_one_pair(b, b2))
+                except UnicodeDecodeError:
+                    if self.errors == 'replace':
+                        out.append('\ufffd')
+                    elif self.errors != 'ignore':
+                        raise UnicodeDecodeError(
+                            self.name, data, i, i + 2,
+                            'illegal multibyte sequence')
+                i += 2
+                continue
+            # three-byte JIS X 0212 plane (0x8F ss2)
+            if b == 0x8F:
+                if i + 2 >= n:
+                    if final:
+                        raise UnicodeDecodeError(
+                            self.name, data, i, n,
+                            'incomplete multibyte sequence')
+                    break
+                try:
+                    r = codecs.code_page_decode(
+                        20932, bytes(data[i:i + 3]), self.errors, True)
+                    out.append(r[0] if isinstance(r, tuple) else r)
+                except UnicodeDecodeError:
+                    if self.errors == 'replace':
+                        out.append('\ufffd')
+                    elif self.errors != 'ignore':
+                        raise UnicodeDecodeError(
+                            self.name, data, i, i + 3,
+                            'illegal multibyte sequence')
+                i += 3
+                continue
+            raise UnicodeDecodeError(
+                self.name, data, i, i + 1, 'illegal multibyte sequence')
+        return ''.join(out), i
+
+
 def _encode_one(ch):
     """Encode a single character to euc_jis_2004 bytes."""
     cp = ord(ch)
@@ -207,4 +311,5 @@ def getcodec(name):
     codec = _Codec(code_page, canonical)
     if code_page == 20932 and canonical == 'euc_jis_2004':
         codec._BufferingEncoder = _BufferingEncoder
+        codec._Jis2004Decoder = _Jis2004Decoder
     return codec
