@@ -2155,7 +2155,6 @@ broken_unicode_with_stateful = [
 
 
 class BasicUnicodeTest(unittest.TestCase, MixInCheckStateHandling):
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: big5
     def test_basics(self):
         s = "abc123"  # all codecs should be able to encode these
         for encoding in all_unicode_encodings:
@@ -2290,7 +2289,6 @@ class BasicUnicodeTest(unittest.TestCase, MixInCheckStateHandling):
                 data = reader.read()
                 self.assertEqual(s, data)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: big5
     def test_bad_decode_args(self):
         for encoding in all_unicode_encodings:
             decoder = codecs.getdecoder(encoding)
@@ -2309,7 +2307,6 @@ class BasicUnicodeTest(unittest.TestCase, MixInCheckStateHandling):
         table_type = type(cp1140.encoding_table)
         self.assertEqual(table_type, table_type)
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: big5
     def test_decoder_state(self):
         # Check that getstate() and setstate() handle the state properly
         u = "abc123"

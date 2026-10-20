@@ -354,6 +354,8 @@ class _GB18030Codec:
     def decode(self, input, errors='strict', final=True):
         if isinstance(input, str):
             raise TypeError("decoding to str: need a bytes-like object, got str")
+        if not isinstance(input, (bytes, bytearray, memoryview)):
+            raise TypeError("decoding to str: need a bytes-like object, got int")
         data = bytes(input)
         out = []
         pos = 0
@@ -505,6 +507,17 @@ class _HZCodec:
     def decode(self, input, errors='strict', final=True):
         if isinstance(input, str):
             raise TypeError("decoding to str: need a bytes-like object, got str")
+        text, _, _ = self.decode_chunk(input, errors, False, final)
+        return text, len(input)
+
+    def decode_chunk(self, input, errors='strict', in_double=False,
+                     final=True):
+        """Decode one chunk, returning ``(text, consumed)``.
+
+        ``in_double`` carries the ``~{`` run state across incremental
+        calls; unconsumed bytes (partial escapes or half a pair) are left
+        for the caller to buffer.
+        """
         out = []
         pos = 0
         length = len(input)
@@ -572,7 +585,7 @@ class _HZCodec:
                                          'unknown escape sequence')
         # Report only what was actually consumed so an incremental decoder
         # keeps an incomplete escape sequence buffered for the next chunk.
-        return ''.join(out), pos
+        return ''.join(out), pos, in_double
 
 
 class IncrementalEncoder(codecs.IncrementalEncoder):
@@ -596,7 +609,26 @@ class IncrementalEncoder(codecs.IncrementalEncoder):
 
 
 class IncrementalDecoder(codecs.BufferedIncrementalDecoder):
-    """Stateful HZ decoder; ``decode`` reports bytes left unconsumed."""
+    """Stateful HZ decoder: keeps the ``~{`` run mode across calls.
+
+    ``_buffer_decode`` feeds the accumulated buffer to ``decode_chunk``
+    and returns only what was fully consumed, so partial escapes and
+    half pairs stay in the base-class buffer.
+    """
+
+    def __init__(self, errors='strict'):
+        super().__init__(errors)
+        self._in_double = False
+
+    def _buffer_decode(self, input, errors, final):
+        text, consumed, in_double = _HZ.decode_chunk(
+            input, errors, self._in_double, final)
+        self._in_double = in_double
+        return text, consumed
+
+    def reset(self):
+        super().reset()
+        self._in_double = False
 
 
 _HZ = _HZCodec()

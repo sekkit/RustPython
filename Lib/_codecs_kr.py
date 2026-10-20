@@ -21,6 +21,8 @@ class _Codec:
     def decode(self, input, errors='strict', final=True):
         if isinstance(input, str):
             raise TypeError("decoding to str: need a bytes-like object, got str")
+        if not isinstance(input, (bytes, bytearray, memoryview)):
+            raise TypeError("decoding to str: need a bytes-like object, got int")
         data = bytes(input)
         if not self.strict_ksx1001:
             return codecs.code_page_decode(self.code_page, data, errors, final)
