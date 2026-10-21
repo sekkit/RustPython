@@ -1112,6 +1112,42 @@ impl VirtualMachine {
                     .register_manual(name, latin1_codec.clone());
             }
         }
+
+        // Register the Windows ANSI code page early: non-console stdio
+        // uses it (CPython gh-95027) and is created before the full
+        // encodings package is importable. The codec lives in
+        // core_modules/encodings_cp1252.py (always frozen) and in
+        // Lib/encodings/cp{acp}.py under freeze-stdlib.
+        #[cfg(windows)]
+        {
+            let acp = crate::host_env::locale::acp();
+            if acp != 65001 {
+                let acp_suffix: &'static str =
+                    Box::leak(format!("{acp}").into_boxed_str());
+                let module_name: &'static str = if cfg!(feature = "freeze-stdlib") {
+                    Box::leak(format!("encodings.cp{acp_suffix}").into_boxed_str())
+                } else {
+                    Box::leak(format!("encodings_cp{acp_suffix}").into_boxed_str())
+                };
+                if self.import(module_name, 0).is_ok() {
+                    if let Ok(module) = sys_modules.get_item(module_name, self) {
+                        if let Ok(getregentry) = module.get_attr("getregentry", self) {
+                            if let Ok(codec_info) = getregentry.call((), self) {
+                                if let Ok(codec) =
+                                    codec_info.try_into_value::<crate::codecs::PyCodec>(self)
+                                {
+                                    let codec_name: &'static str =
+                                        Box::leak(format!("cp{acp_suffix}").into_boxed_str());
+                                    self.state
+                                        .codec_registry
+                                        .register_manual(codec_name, codec);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1173,7 +1209,35 @@ impl VirtualMachine {
                     let line_buffering = buffered_stdio && (isatty || fd == 2);
 
                     let newline = if cfg!(windows) { None } else { Some("\n") };
-                    let encoding = self.state.config.settings.stdio_encoding.as_deref();
+                    // CPython gh-95027: on Windows, non-console stdio uses
+                    // the ANSI code page (e.g. cp1252), not UTF-8. The
+                    // console itself uses UTF-8 (WindowsConsoleIO).
+                    #[cfg(windows)]
+                    let ansi_stdio = (!isatty).then(|| {
+                        let acp = crate::host_env::locale::acp();
+                        if acp == 65001 { "utf-8".to_string() } else { format!("cp{acp}") }
+                    });
+                    #[cfg(not(windows))]
+                    let ansi_stdio: Option<String> = None;
+                    let mut encoding = self
+                        .state
+                        .config
+                        .settings
+                        .stdio_encoding
+                        .as_ref()
+                        .map(String::as_str)
+                        .or(ansi_stdio.as_deref());
+                    // If an explicitly chosen encoding is not (yet)
+                    // resolvable — e.g. the ANSI code page that failed to
+                    // register during bootstrap — fall back to the
+                    // interpreter default (UTF-8) instead of panicking.
+                    if let Some(enc) = encoding {
+                        let codecs_module = self.import("codecs", 0)?;
+                        let lookup = codecs_module.get_attr("lookup", self)?;
+                        if lookup.call((self.ctx.new_str(enc),), self).is_err() {
+                            encoding = None;
+                        }
+                    }
                     // stderr always uses backslashreplace (ignores stdio_errors)
                     let errors = if fd == 2 {
                         Some("backslashreplace")

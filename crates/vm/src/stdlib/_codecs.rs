@@ -470,8 +470,17 @@ mod _codecs {
     }
 
     #[pyfunction]
-    fn charmap_build(args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-        delegate_pycodecs!(charmap_build, args, vm)
+    fn charmap_build(s: PyStrRef, vm: &VirtualMachine) -> PyResult {
+        // {ord(c): i for i, c in enumerate(s)} — implemented natively so
+        // charmap-based encodings work before the disk import system is
+        // up (e.g. registering the ANSI code page for stdio bootstrap).
+        let dict = vm.ctx.new_dict();
+        for (i, c) in s.as_wtf8().code_points().enumerate() {
+            let key = vm.new_pyobj(c.to_u32() as u32 as i64);
+            let value = vm.new_pyobj(i as i64);
+            dict.set_item(&*key, value, vm)?;
+        }
+        Ok(dict.into())
     }
     #[pyfunction]
     fn utf_16_le_encode(args: FuncArgs, vm: &VirtualMachine) -> PyResult {
