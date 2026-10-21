@@ -272,8 +272,99 @@ _CODECS = {
     'iso2022_jp_2004': _Codec('iso2022_jp_2004'),
     'iso2022_jp_3': _Codec('iso2022_jp_3'),
     'iso2022_jp_ext': _Codec('iso2022_jp_ext'),
-    'iso2022_kr': _Codec('iso2022_kr'),
 }
+
+
+class _KRCodec:
+    """ISO-2022-KR (RFC 1557): ESC $ ) C designates KSC 5601 as G1; SO
+    (0x0E) switches to G1, SI (0x0F) returns to ASCII.  G1 bytes are
+    EUC-KR pairs (cp949 encoding), and the designation escape is
+    emitted once before the first SO."""
+
+    name = 'iso2022_kr'
+
+    def __init__(self):
+        self.designated = False
+        self.in_gr = False
+
+    def encode(self, input, errors='strict'):
+        out = bytearray()
+        in_gr = False
+        for idx, ch in enumerate(input):
+            o = ord(ch)
+            if o < 0x80:
+                if in_gr:
+                    out.append(0x0F)  # SI
+                    in_gr = False
+                out.append(o)
+                continue
+            r = codecs.code_page_encode(949, ch, errors)
+            sb = r[0] if isinstance(r, tuple) else r
+            if not sb:
+                continue
+            if not in_gr:
+                out.extend(b'\x1b$)C\x0e')
+                in_gr = True
+            # cp949 gives EUC-KR bytes (0xA1-0xFE); ISO-2022-KR G1 uses
+            # the raw KSC 5601 byte range (0x21-0x7E) — subtract 0x80.
+            out.extend(bytes(b - 0x80 for b in sb))
+        if in_gr:
+            out.append(0x0F)  # SI
+            in_gr = False
+        return (bytes(out), len(input))
+
+    def decode(self, input, errors='strict', final=True):
+        if isinstance(input, str):
+            raise TypeError("decoding to str: need a bytes-like object, got str")
+        if not isinstance(input, (bytes, bytearray, memoryview)):
+            raise TypeError("decoding to str: need a bytes-like object, got int")
+        data = bytes(input)
+        out = []
+        i = 0
+        n = len(data)
+        in_gr = False
+        while i < n:
+            b = data[i]
+            if b == 0x1B:
+                # designation escape: ESC $ ) C
+                if data[i:i + 5] == b'\x1b$)C':
+                    i += 5
+                    continue
+                i += 1
+                continue
+            if b == 0x0E:  # SO
+                in_gr = True
+                i += 1
+                continue
+            if b == 0x0F:  # SI
+                in_gr = False
+                i += 1
+                continue
+            if in_gr:
+                if i + 1 >= n:
+                    if final:
+                        raise UnicodeDecodeError(
+                            self.name, data, i, n,
+                            'incomplete multibyte sequence')
+                    break
+                # G1 bytes are raw KSC 5601 (0x21-0x7E); add 0x80 to get
+                # the EUC-KR bytes cp949 decodes.
+                pair = bytes((data[i] + 0x80, data[i + 1] + 0x80))
+                try:
+                    r = codecs.code_page_decode(949, pair, errors, True)
+                    out.append(r[0] if isinstance(r, tuple) else r)
+                except UnicodeDecodeError:
+                    if errors == 'replace':
+                        out.append('\ufffd')
+                    elif errors != 'ignore':
+                        raise UnicodeDecodeError(
+                            self.name, data, i, i + 2,
+                            'invalid multibyte sequence') from None
+                i += 2
+                continue
+            out.append(chr(b))
+            i += 1
+        return (''.join(out), n)
 
 
 class _Iso2022Decoder:
@@ -405,6 +496,8 @@ for _n in _CODECS:
 
 
 def getcodec(name):
+    if name == 'iso2022_kr':
+        return _KRCodec()
     try:
         return _CODECS[name]
     except KeyError:
