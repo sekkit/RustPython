@@ -1211,9 +1211,13 @@ impl VirtualMachine {
                     let newline = if cfg!(windows) { None } else { Some("\n") };
                     // CPython gh-95027: on Windows, non-console stdio uses
                     // the ANSI code page (e.g. cp1252), not UTF-8. The
-                    // console itself uses UTF-8 (WindowsConsoleIO).
+                    // console itself uses UTF-8 (WindowsConsoleIO). Device
+                    // files like NUL report isatty() == true without being
+                    // a console, so detect consoles via GetConsoleMode.
                     #[cfg(windows)]
-                    let ansi_stdio = (!isatty).then(|| {
+                    let is_console = crate::host_env::nt::console_type_from_fd(fd) != '\0';
+                    #[cfg(windows)]
+                    let ansi_stdio = (!is_console).then(|| {
                         let acp = crate::host_env::locale::acp();
                         if acp == 65001 { "utf-8".to_string() } else { format!("cp{acp}") }
                     });

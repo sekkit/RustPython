@@ -1054,12 +1054,10 @@ class SysModuleTest(unittest.TestCase):
                          'stdout: surrogateescape\n'
                          'stderr: backslashreplace\n')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; iso8859_1 codec not registered
     @support.requires_subprocess()
     def test_c_locale_surrogateescape(self):
         self.check_locale_surrogateescape('C')
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; iso8859_1 codec not registered
     @support.requires_subprocess()
     def test_posix_locale_surrogateescape(self):
         self.check_locale_surrogateescape('POSIX')
