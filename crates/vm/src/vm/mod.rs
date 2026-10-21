@@ -1223,14 +1223,19 @@ impl VirtualMachine {
                     });
                     #[cfg(not(windows))]
                     let ansi_stdio: Option<String> = None;
-                    let mut encoding = self
-                        .state
-                        .config
-                        .settings
-                        .stdio_encoding
-                        .as_ref()
-                        .map(String::as_str)
-                        .or(ansi_stdio.as_deref());
+                    // UTF-8 mode (-X utf8 / PYTHONUTF8=1) forces UTF-8 stdio.
+                    let utf8_mode = self.state.config.settings.utf8_mode > 0;
+                    let mut encoding = if utf8_mode {
+                        Some("utf-8")
+                    } else {
+                        self.state
+                            .config
+                            .settings
+                            .stdio_encoding
+                            .as_ref()
+                            .map(String::as_str)
+                            .or(ansi_stdio.as_deref())
+                    };
                     // If an explicitly chosen encoding is not (yet)
                     // resolvable — e.g. the ANSI code page that failed to
                     // register during bootstrap — fall back to the
