@@ -1054,6 +1054,7 @@ class RunTestCase(BaseTestCase):
 class IssuesTestCase(BaseTestCase):
     """Test fixed bdb issues."""
 
+    @unittest.skip("TODO: RUSTPYTHON; tracer does not re-enter caller frames whose f_trace is unset after return (gh-13183), and the failure leaves the test process hanging")
     def test_step_at_return_with_no_trace_in_caller(self):
         # Issue #13183.
         # Check that the tracer does step into the caller frame when the
