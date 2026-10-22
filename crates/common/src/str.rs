@@ -344,6 +344,18 @@ impl Wtf8IndexSlot {
         // The slot owns the table, never replaces it, and outlives the borrow.
         unsafe { index.as_ref() }
     }
+
+    /// Drop any table built for an older buffer.
+    ///
+    /// In-place appends mutate the bytes the table indexes, so a previously
+    /// published table would report offsets from the pre-append shape.
+    /// The slot takes the leaked pointer back and frees it on drop.
+    fn invalidate(&mut self) {
+        if let Some(index) = self.0.get() {
+            drop(unsafe { Box::from_raw(index.as_ptr()) });
+            self.0 = OncePtr::new();
+        }
+    }
 }
 
 impl fmt::Debug for Wtf8IndexSlot {
@@ -623,6 +635,13 @@ impl StrData {
             other.code_points().count()
         };
         self.len = (old_char_len + added).into();
+        // The kind may have widened (ASCII + non-ASCII): re-deduce it from
+        // the full buffer so later char/byte index math does not take the
+        // ASCII fast path on multi-byte storage.
+        self.kind = buf.as_slice().str_kind();
+        // The bytes changed: a table already built for the old shape would
+        // answer with stale offsets.
+        self.index.invalidate();
         true
     }
 
@@ -644,6 +663,8 @@ impl StrData {
         self.len = chars.into();
         self.kind = kind;
         self.data = StrStorage::Grow(buf);
+        // Bytes were re-seeded: drop any table built for the old shape.
+        self.index.invalidate();
     }
 
     // TODO: rename to to_str

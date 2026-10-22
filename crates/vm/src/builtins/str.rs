@@ -1431,7 +1431,8 @@ impl PyStr {
             return None;
         }
         let bytes = self.data().char_range_to_bytes(range);
-        Some((bytes.start, &self.as_wtf8()[bytes]))
+        let slice = &self.as_wtf8()[bytes.clone()];
+        Some((bytes.start, slice))
     }
 
     /// Searches the character range `range` with `find`, which answers in bytes
@@ -1442,7 +1443,7 @@ impl PyStr {
         F: Fn(&Wtf8, &Wtf8) -> Option<usize>,
     {
         let (sub, range) = args.get_value(self.len());
-        let (start, haystack) = self.char_range_bytes(range)?;
+        let (start, haystack) = self.char_range_bytes(range.clone())?;
         let found = find(haystack, sub.as_wtf8())?;
         Some(self.byte_to_char_index(start + found))
     }

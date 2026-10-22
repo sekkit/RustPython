@@ -190,19 +190,25 @@ fn next_pos(data: &Wtf8, pos: usize) -> usize {
 #[inline]
 fn prev_pos(data: &Wtf8, pos: usize) -> usize {
     let data = data.as_bytes();
-    let mut pos = pos - 1;
+    let mut pos = match pos.checked_sub(1) {
+        Some(p) => p,
+        None => return pos,
+    };
     if pos >= data.len() || data[pos] <= 0x7F {
         return pos;
     }
-    pos -= 1;
-    if data[pos] >= 0xC0 {
-        return pos;
+    // Step back over continuation bytes to the lead byte; up to three steps
+    // cover the widest code point (4 bytes).
+    for _ in 0..3 {
+        pos = match pos.checked_sub(1) {
+            Some(p) => p,
+            None => return pos + 1, // unreachable for valid WTF-8
+        };
+        if data[pos] >= 0xC0 {
+            return pos;
+        }
     }
-    pos -= 1;
-    if data[pos] >= 0xC0 {
-        return pos;
-    }
-    pos - 1
+    pos
 }
 
 #[cfg(test)]
