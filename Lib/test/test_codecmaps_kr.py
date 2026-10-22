@@ -25,7 +25,6 @@ class TestEUCKRMap(multibytecodec_support.TestBase_Mapping,
     pass_enctest = [(b'\xa4\xd4', '\u3164')]
     pass_dectest = [(b'\xa4\xd4', '\u3164')]
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: euc_kr
     def test_mapping_file(self):
         return super().test_mapping_file()
 

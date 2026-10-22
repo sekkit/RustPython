@@ -20,7 +20,6 @@ class TestGBKMap(multibytecodec_support.TestBase_Mapping,
     encoding = 'gbk'
     mapfileurl = 'http://www.pythontest.net/unicode/CP936.TXT'
 
-    @unittest.expectedFailure  # TODO: RUSTPYTHON; LookupError: unknown encoding: gbk
     def test_mapping_file(self):
         return super().test_mapping_file()
 
